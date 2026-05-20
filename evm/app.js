@@ -60,15 +60,19 @@ const DEFAULT_CHAINS = {
     name: "HyperEVM",
     short: "HYPER",
     color: "#97FCE4",
-    subgraphId: "", // pega la URL completa del subgraph de HyperSwap V3 (ej. Goldsky)
+    subgraphId: "", // no hay subgraph público — usamos modo RPC-directo
     explorer: "https://hyperevmscan.io",
     rpcUrl: "https://rpc.hyperliquid.xyz/evm",
     tickField: "scalar",
+    // Contratos HyperSwap V3 en HyperEVM mainnet
+    nftManagerAddress: "0x6eda206207c09e5428f281761ddc0d300851fbc8",
+    factoryAddress:    "0xb1c0fa0b789320044a6f623cfe5ebda9562602e3",
+    stableAddress:     "0x24ac48bf01fd6cb1c3836d08b3edc70a9c4380ca", // USDC en HyperEVM
   },
 };
 
 const GATEWAY = "https://gateway.thegraph.com/api";
-const DEFAULTS_VERSION = 7; // bump cuando cambien IDs por defecto para forzar refresh
+const DEFAULTS_VERSION = 8; // bump cuando cambien IDs por defecto para forzar refresh
 
 // ============================================================================
 // State
@@ -77,8 +81,7 @@ const DEFAULTS_VERSION = 7; // bump cuando cambien IDs por defecto para forzar r
 const state = {
   apiKey: localStorage.getItem("lp:apiKey") || "",
   chains: loadChainConfig(),
-  // hyperevm queda fuera del default (placeholder, sin subgraph público)
-  selectedChains: JSON.parse(localStorage.getItem("lp:selectedChains") || "null") || Object.keys(DEFAULT_CHAINS).filter((k) => !DEFAULT_CHAINS[k].placeholder),
+  selectedChains: JSON.parse(localStorage.getItem("lp:selectedChains") || "null") || Object.keys(DEFAULT_CHAINS),
   address: "",
   connectedAddress: null,
   positions: [],
@@ -417,6 +420,246 @@ async function backfillUncollectedFromRPC(positions, onProgress) {
 }
 
 // ============================================================================
+// RPC-only mode — chains without a public subgraph (e.g. HyperEVM)
+// ============================================================================
+
+const SEL_BALANCE_OF     = "0x70a08231"; // balanceOf(address)
+const SEL_TOKEN_BY_INDEX = "0x2f745c59"; // tokenOfOwnerByIndex(address,uint256)
+const SEL_POSITIONS_NFT  = "0x99fbab88"; // positions(uint256)
+const SEL_SLOT0          = "0x3850c7bd"; // slot0()
+const SEL_FEE_GROWTH_0   = "0xf3058399"; // feeGrowthGlobal0X128()
+const SEL_FEE_GROWTH_1   = "0x46141319"; // feeGrowthGlobal1X128()
+const SEL_TOKEN0_POOL    = "0x0dfe1681"; // token0() en pool
+const SEL_TOKEN1_POOL    = "0xd21220a7"; // token1() en pool
+const SEL_SYMBOL         = "0x95d89b41"; // symbol()
+const SEL_DECIMALS       = "0x313ce567"; // decimals()
+const SEL_GET_POOL       = "0x1698ee82"; // getPool(address,address,uint24)
+
+function encodeAddr32(addr) { return addr.toLowerCase().replace("0x", "").padStart(64, "0"); }
+function encodeU32(n)       { return BigInt(n).toString(16).padStart(64, "0"); }
+function decU(hex, slot)    { const s = hex.startsWith("0x") ? hex.slice(2) : hex; return BigInt("0x" + s.slice(slot*64, slot*64+64)); }
+function decI(hex, slot)    { const v = decU(hex, slot); return v >= (1n<<255n) ? Number(v-(1n<<256n)) : Number(v); }
+function decAddr(hex, slot) { const s = hex.startsWith("0x") ? hex.slice(2) : hex; return ("0x"+s.slice(slot*64+24, slot*64+64)).toLowerCase(); }
+
+function decABIString(hex) {
+  try {
+    const s = hex.startsWith("0x") ? hex.slice(2) : hex;
+    if (s.length === 64) { // bytes32 encoding (old tokens)
+      const trimmed = s.replace(/00+$/, "");
+      return (trimmed.match(/.{2}/g) || []).map(b => String.fromCharCode(parseInt(b,16))).join("").replace(/\0/g,"");
+    }
+    const off = Number(decU(hex, 0)) * 2;
+    const len = Number(BigInt("0x" + s.slice(off, off+64)));
+    if (!len || len > 100) return "?";
+    return (s.slice(off+64, off+64+len*2).match(/.{2}/g) || []).map(b => String.fromCharCode(parseInt(b,16))).join("");
+  } catch { return "?"; }
+}
+
+function decodeRawPos(hex, tokenId) {
+  // positions() → 12 slots: nonce, operator, token0, token1, fee, tickLower, tickUpper,
+  //                           liquidity, feeGrowthInside0Last, feeGrowthInside1Last, tokensOwed0, tokensOwed1
+  return {
+    tokenId,
+    token0:  decAddr(hex, 2),
+    token1:  decAddr(hex, 3),
+    fee:     Number(decU(hex, 4)),
+    tickLower: decI(hex, 5),
+    tickUpper: decI(hex, 6),
+    liquidity: decU(hex, 7).toString(),
+    feeGrowthInside0LastX128: decU(hex, 8).toString(),
+    feeGrowthInside1LastX128: decU(hex, 9).toString(),
+    tokensOwed0: decU(hex, 10),
+    tokensOwed1: decU(hex, 11),
+  };
+}
+
+/** Obtiene precio USD de cada token buscando par token/stable en el factory */
+async function priceTokensViaPool(rpc, factoryAddr, tokenAddresses, stableAddr) {
+  const prices = {};
+  const stable = stableAddr.toLowerCase();
+  prices[stable] = 1.0;
+  await Promise.all(tokenAddresses.map(async (rawAddr) => {
+    const addr = rawAddr.toLowerCase();
+    if (addr === stable) return;
+    for (const fee of [500, 3000, 10000, 100]) {
+      try {
+        const [tA, tB] = addr < stable ? [addr, stable] : [stable, addr];
+        const ph = await rpcEthCall(rpc, factoryAddr, SEL_GET_POOL + encodeAddr32(tA) + encodeAddr32(tB) + encodeU32(fee));
+        const pool = "0x" + ph.slice(-40);
+        if (/^0x0+$/.test(pool)) continue;
+        const [s0h, pt0h, pt1h] = await Promise.all([
+          rpcEthCall(rpc, pool, SEL_SLOT0),
+          rpcEthCall(rpc, pool, SEL_TOKEN0_POOL),
+          rpcEthCall(rpc, pool, SEL_TOKEN1_POOL),
+        ]);
+        const sqrtP = decU(s0h, 0);
+        if (!sqrtP) continue;
+        const pt0 = decAddr(pt0h, 0);
+        const pt1 = decAddr(pt1h, 0);
+        const [d0h, d1h] = await Promise.all([rpcEthCall(rpc, pt0, SEL_DECIMALS), rpcEthCall(rpc, pt1, SEL_DECIMALS)]);
+        const dec0 = Number(decU(d0h, 0)), dec1 = Number(decU(d1h, 0));
+        const sq = Number(sqrtP) / 2**96;
+        const t1PerT0 = sq * sq * 10**(dec0 - dec1);
+        if (pt0 === stable) prices[pt1] = 1 / t1PerT0;
+        else                prices[pt0] = t1PerT0;
+        break;
+      } catch {}
+    }
+  }));
+  return prices;
+}
+
+async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
+  const chain  = state.chains[chainKey];
+  const rpc    = chain.rpcUrl;
+  const nftMgr = chain.nftManagerAddress;
+  const factory = chain.factoryAddress;
+
+  // 1. ¿Cuántas posiciones tiene la wallet?
+  const balHex = await rpcEthCall(rpc, nftMgr, SEL_BALANCE_OF + encodeAddr32(ownerAddress));
+  const balance = Number(decU(balHex, 0));
+  if (!balance) return [];
+
+  // 2. IDs de cada posición NFT
+  const tokenIds = (await Promise.all(
+    Array.from({length: balance}, (_, i) =>
+      rpcEthCall(rpc, nftMgr, SEL_TOKEN_BY_INDEX + encodeAddr32(ownerAddress) + encodeU32(i))
+        .then(h => decU(h, 0)).catch(() => null)
+    )
+  )).filter(Boolean);
+
+  // 3. Datos de cada posición
+  const rawPositions = (await Promise.all(
+    tokenIds.map(id =>
+      rpcEthCall(rpc, nftMgr, SEL_POSITIONS_NFT + encodeU32(id))
+        .then(hex => decodeRawPos(hex, id)).catch(() => null)
+    )
+  )).filter(Boolean);
+
+  if (!rawPositions.length) return [];
+
+  // 4. Dirección del pool para cada combinación token0/token1/fee
+  const poolKeyMap = {};
+  await Promise.all([...new Set(rawPositions.map(p => `${p.token0}-${p.token1}-${p.fee}`))].map(async key => {
+    const [t0, t1, fee] = key.split("-");
+    const h = await rpcEthCall(rpc, factory, SEL_GET_POOL + encodeAddr32(t0) + encodeAddr32(t1) + encodeU32(fee)).catch(() => null);
+    if (h) poolKeyMap[key] = ("0x" + h.slice(-40)).toLowerCase();
+  }));
+
+  // 5. Estado de cada pool (tick actual + feeGrowthGlobal para backfill)
+  const poolStates = {};
+  await Promise.all([...new Set(Object.values(poolKeyMap))].map(async pool => {
+    if (/^0x0+$/.test(pool)) return;
+    try {
+      const [s0, fg0, fg1] = await Promise.all([
+        rpcEthCall(rpc, pool, SEL_SLOT0),
+        rpcEthCall(rpc, pool, SEL_FEE_GROWTH_0),
+        rpcEthCall(rpc, pool, SEL_FEE_GROWTH_1),
+      ]);
+      poolStates[pool] = {
+        tick: decI(s0, 1),
+        sqrtPriceX96: decU(s0, 0).toString(),
+        feeGrowthGlobal0X128: decU(fg0, 0).toString(),
+        feeGrowthGlobal1X128: decU(fg1, 0).toString(),
+      };
+    } catch {}
+  }));
+
+  // 6. Info de tokens (símbolo + decimales)
+  const uniqueTokens = [...new Set(rawPositions.flatMap(p => [p.token0, p.token1]))];
+  const tokenInfos = {};
+  await Promise.all(uniqueTokens.map(async addr => {
+    try {
+      const [sh, dh] = await Promise.all([rpcEthCall(rpc, addr, SEL_SYMBOL), rpcEthCall(rpc, addr, SEL_DECIMALS)]);
+      tokenInfos[addr] = { id: addr, symbol: decABIString(sh), decimals: Number(decU(dh, 0)) };
+    } catch { tokenInfos[addr] = { id: addr, symbol: addr.slice(0,6), decimals: 18 }; }
+  }));
+
+  // 7. Precios USD vía pools stable
+  const stableAddr = chain.stableAddress || "0x24ac48bf01fd6cb1c3836d08b3edc70a9c4380ca";
+  const prices = await priceTokensViaPool(rpc, factory, uniqueTokens, stableAddr).catch(() => ({}));
+
+  // 8. Construir posiciones enriquecidas
+  const now = Math.floor(Date.now() / 1000);
+  const result = [];
+  for (const raw of rawPositions) {
+    const key = `${raw.token0}-${raw.token1}-${raw.fee}`;
+    const poolAddr = poolKeyMap[key];
+    if (!poolAddr || /^0x0+$/.test(poolAddr)) continue;
+    const pool = poolStates[poolAddr];
+    if (!pool) continue;
+
+    const t0 = tokenInfos[raw.token0] || { id: raw.token0, symbol: "?", decimals: 18 };
+    const t1 = tokenInfos[raw.token1] || { id: raw.token1, symbol: "?", decimals: 18 };
+    const p0 = prices[raw.token0] || 0;
+    const p1 = prices[raw.token1] || 0;
+    const closed = raw.liquidity === "0";
+
+    const cur = getAmountsFromLiquidity(raw.liquidity, pool.tick, raw.tickLower, raw.tickUpper, t0.decimals, t1.decimals);
+    const currentValueUSD = cur.amount0 * p0 + cur.amount1 * p1;
+
+    // tokensOwed = fees settled pero no cobradas (el backfill RPC añadirá las no settled)
+    const owed0 = bigIntToDecimal(raw.tokensOwed0, t0.decimals);
+    const owed1 = bigIntToDecimal(raw.tokensOwed1, t1.decimals);
+
+    // raw compatible con backfillUncollectedFromRPC + computeUncollectedFees
+    const fakeRaw = {
+      id: raw.tokenId.toString(),
+      liquidity: raw.liquidity,
+      tickLower: raw.tickLower,
+      tickUpper: raw.tickUpper,
+      feeGrowthInside0LastX128: raw.feeGrowthInside0LastX128,
+      feeGrowthInside1LastX128: raw.feeGrowthInside1LastX128,
+      depositedToken0: "0", depositedToken1: "0",
+      withdrawnToken0: "0", withdrawnToken1: "0",
+      collectedFeesToken0: "0", collectedFeesToken1: "0",
+      transaction: { timestamp: String(now - 86400) },
+      pool: {
+        id: poolAddr, feeTier: String(raw.fee),
+        tick: String(pool.tick), sqrtPrice: pool.sqrtPriceX96,
+        token0Price: "0", token1Price: "0", totalValueLockedUSD: "0",
+        feeGrowthGlobal0X128: pool.feeGrowthGlobal0X128,
+        feeGrowthGlobal1X128: pool.feeGrowthGlobal1X128,
+        token0: { id: t0.id, symbol: t0.symbol, name: t0.symbol, decimals: String(t0.decimals), derivedETH: "0" },
+        token1: { id: t1.id, symbol: t1.symbol, name: t1.symbol, decimals: String(t1.decimals), derivedETH: "0" },
+      },
+    };
+
+    result.push({
+      id: raw.tokenId.toString(),
+      chainKey,
+      nftId: raw.tokenId.toString(),
+      poolId: poolAddr,
+      feeTier: raw.fee,
+      token0: { ...t0, priceUSD: p0 },
+      token1: { ...t1, priceUSD: p1 },
+      tick: pool.tick, tickLower: raw.tickLower, tickUpper: raw.tickUpper,
+      inRange: inRange(pool.tick, raw.tickLower, raw.tickUpper),
+      closed,
+      liquidity: raw.liquidity,
+      amounts: cur,
+      currentValueUSD,
+      depositedUSD: currentValueUSD, // desconocido sin indexer
+      withdrawnUSD: 0,
+      feesUSD: 0,                    // fees cobradas desconocidas sin indexer
+      uncollected: null,             // backfillUncollectedFromRPC lo calculará
+      uncollectedUSD: null,
+      feesTotalUSD: owed0 * p0 + owed1 * p1, // tokensOwed como mínimo
+      hodlUSD: currentValueUSD,
+      pnlUSD: null,
+      ilUSD: null,
+      ilPct: 0,
+      apr: 0,
+      ageDays: 1,
+      openedAt: now - 86400,
+      raw: fakeRaw,
+      _rpcOnly: true, // marca para el UI
+    });
+  }
+  return result;
+}
+
+// ============================================================================
 // Position enrichment (computes metrics from raw subgraph data)
 // ============================================================================
 
@@ -516,6 +759,16 @@ function enrichPosition(raw, ethPriceUSD, chainKey) {
 async function fetchAllPositions(address) {
   const tasks = state.selectedChains.map(async (chainKey) => {
     const chain = state.chains[chainKey];
+    // Modo RPC-directo para redes sin subgraph público (ej. HyperEVM)
+    if (chain.nftManagerAddress) {
+      if (!chain.rpcUrl) return { __skipped: true, chainKey, reason: "sin RPC configurado" };
+      try {
+        return await fetchPositionsFromRPCDirect(address, chainKey);
+      } catch (e) {
+        console.error(`[${chainKey}]`, e);
+        return { __error: e.message, chainKey };
+      }
+    }
     if (!chain.subgraphId) {
       return { __skipped: true, chainKey, reason: "sin subgraph configurado" };
     }
@@ -651,14 +904,27 @@ function renderSettings() {
     const c = state.chains[key];
     const row = document.createElement("div");
     row.className = "space-y-1";
-    const usesDirectUrl = key === "hyperevm";
-    const explorerUrl = usesDirectUrl
-      ? "https://goldsky.com/chains/hyperevm"
-      : `https://thegraph.com/explorer?search=uniswap+v3+${encodeURIComponent(c.name.toLowerCase().replace(" chain", ""))}`;
-    const explorerLabel = usesDirectUrl ? "subgraphs en Goldsky ↗" : "buscar en explorer ↗";
-    const placeholderText = usesDirectUrl ? "URL completa del subgraph (ej. https://api.goldsky.com/…)" : "subgraph ID";
+    const isRpcOnly = !!c.nftManagerAddress;
+
+    if (isRpcOnly) {
+      // Modo RPC-directo: mostramos RPC URL (no subgraph)
+      row.innerHTML = `
+        <div class="flex items-center gap-2">
+          <div class="w-3 h-3 rounded-full shrink-0" style="background:${c.color}"></div>
+          <div class="w-20 text-xs text-slate-300 shrink-0">${c.name}</div>
+          <span class="flex-1 text-[11px] text-slate-400 font-mono truncate">${c.rpcUrl || "sin RPC"}</span>
+          <span class="chip border border-emerald-600/40 bg-emerald-600/10 text-emerald-300 shrink-0">RPC-only</span>
+        </div>
+        <div class="pl-5 text-[10px] text-slate-500">No requiere API key. Usa el contrato NonfungiblePositionManager directamente.</div>
+      `;
+      container.appendChild(row);
+      continue;
+    }
+
+    const explorerUrl = `https://thegraph.com/explorer?search=uniswap+v3+${encodeURIComponent(c.name.toLowerCase().replace(" chain", ""))}`;
     const initialStatus = !c.subgraphId ? "⚠ no configurado" : "—";
     const initialStatusClass = !c.subgraphId ? "text-[10px] text-amber-400" : "text-[10px] text-slate-500";
+    const placeholderText = c.subgraphId?.startsWith("http") ? "URL directa del subgraph" : "subgraph ID (The Graph)";
     row.innerHTML = `
       <div class="flex items-center gap-2">
         <div class="w-3 h-3 rounded-full shrink-0" style="background:${c.color}"></div>
@@ -668,7 +934,7 @@ function renderSettings() {
       </div>
       <div class="flex items-center justify-between pl-5">
         <span data-status="${key}" class="${initialStatusClass}">${initialStatus}</span>
-        <a href="${explorerUrl}" target="_blank" class="text-[10px] text-fuchsia-400 hover:underline">${explorerLabel}</a>
+        <a href="${explorerUrl}" target="_blank" class="text-[10px] text-fuchsia-400 hover:underline">buscar en explorer ↗</a>
       </div>
     `;
     container.appendChild(row);
@@ -766,7 +1032,8 @@ function renderChainChips() {
   for (const key of Object.keys(state.chains)) {
     const c = state.chains[key];
     const active = state.selectedChains.includes(key);
-    const unconfigured = !c.subgraphId;
+    const isRpcOnly = !!c.nftManagerAddress;
+    const unconfigured = !c.subgraphId && !isRpcOnly;
     const btn = document.createElement("button");
     btn.title = unconfigured ? "Sin subgraph configurado — abre Settings para añadir uno" : c.name;
     btn.className = `chip border ${active ? "border-fuchsia-500 bg-fuchsia-500/15 text-fuchsia-200" : "border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"}`;
@@ -1044,8 +1311,10 @@ function isValidAddress(addr) {
 async function analyze() {
   const addr = document.getElementById("addr-input").value.trim();
   if (!isValidAddress(addr)) { setStatus("Dirección EVM no válida (0x + 40 hex).", "err"); return; }
-  if (!state.apiKey) { setStatus("Falta API key. Abre Settings y pega la tuya.", "err"); openSettings(); return; }
   if (!state.selectedChains.length) { setStatus("Selecciona al menos una red.", "err"); return; }
+  // Solo exigimos API key si alguna red seleccionada usa subgraph (no RPC-only)
+  const needsApiKey = state.selectedChains.some(k => state.chains[k]?.subgraphId && !state.chains[k]?.nftManagerAddress);
+  if (needsApiKey && !state.apiKey) { setStatus("Falta API key de The Graph. Abre Settings.", "err"); openSettings(); return; }
 
   state.address = addr;
   state.positions = [];
