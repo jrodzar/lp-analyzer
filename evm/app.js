@@ -68,6 +68,8 @@ const DEFAULT_CHAINS = {
     nftManagerAddress: "0x6eda206207c09e5428f281761ddc0d300851fbc8",
     factoryAddress:    "0xb1c0fa0b789320044a6f623cfe5ebda9562602e3",
     stableAddress:     "0x24ac48bf01fd6cb1c3836d08b3edc70a9c4380ca", // USDC en HyperEVM
+    // API Blockscout (gratis, sin key, sin límite de 1000 bloques) para histórico
+    explorerApi:       "https://www.hyperscan.com/api",
   },
 };
 
@@ -523,6 +525,50 @@ async function priceTokensViaPool(rpc, factoryAddr, tokenInfos) {
   return prices;
 }
 
+// Eventos del NonfungiblePositionManager para un tokenId (Uniswap V3)
+const EV_INCREASE = "0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f";
+const EV_DECREASE = "0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4";
+const EV_COLLECT  = "0x40d0efd1a53d60ecbf40971b9daf7dc90178c3aadc7aab1765632738fa8b8f01";
+
+/**
+ * Reconstruye el histórico de una posición leyendo eventos vía API Blockscout
+ * (sin límite de bloques). Devuelve amounts decimales y el timestamp de minteo.
+ *   deposited = Σ IncreaseLiquidity; withdrawn(principal) = Σ DecreaseLiquidity
+ *   collectedFees = Σ Collect − Σ DecreaseLiquidity  (Collect incluye principal + fees)
+ */
+async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
+  const topic1 = "0x" + BigInt(tokenId).toString(16).padStart(64, "0");
+  const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
+  const getLogs = async (topic0) => {
+    const url = `${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${nftMgr}&topic0=${topic0}&topic1=${topic1}&topic0_1_opr=and`;
+    const r = await fetch(url);
+    const j = await r.json();
+    return Array.isArray(j.result) ? j.result : [];
+  };
+  const [incLogs, decLogs, colLogs] = await Promise.all([getLogs(EV_INCREASE), getLogs(EV_DECREASE), getLogs(EV_COLLECT)]);
+
+  let inc0 = 0n, inc1 = 0n, dec0r = 0n, dec1r = 0n, col0 = 0n, col1 = 0n;
+  let mintTs = null;
+  for (const l of incLogs) {
+    inc0 += word(l.data, 1); inc1 += word(l.data, 2);
+    const ts = parseInt(l.timeStamp, 16);
+    if (mintTs === null || ts < mintTs) mintTs = ts;
+  }
+  for (const l of decLogs) { dec0r += word(l.data, 1); dec1r += word(l.data, 2); }
+  for (const l of colLogs) { col0 += word(l.data, 1); col1 += word(l.data, 2); }
+
+  const max0 = (a, b) => (a > b ? a - b : 0n);
+  return {
+    deposited0: bigIntToDecimal(inc0, dec0),
+    deposited1: bigIntToDecimal(inc1, dec1),
+    withdrawn0: bigIntToDecimal(dec0r, dec0),
+    withdrawn1: bigIntToDecimal(dec1r, dec1),
+    collectedFees0: bigIntToDecimal(max0(col0, dec0r), dec0),
+    collectedFees1: bigIntToDecimal(max0(col1, dec1r), dec1),
+    mintTs,
+  };
+}
+
 async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
   const chain  = state.chains[chainKey];
   const rpc    = chain.rpcUrl;
@@ -592,6 +638,17 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
   // 7. Precios USD vía pools contra stables (detectados por símbolo)
   const prices = await priceTokensViaPool(rpc, factory, tokenInfos).catch(() => ({}));
 
+  // 7.5 Histórico (depósitos/retiros/fees cobradas + fecha de minteo) vía Blockscout
+  const histories = {};
+  if (chain.explorerApi) {
+    await Promise.all(rawPositions.map(async (raw) => {
+      const d0 = tokenInfos[raw.token0]?.decimals ?? 18;
+      const d1 = tokenInfos[raw.token1]?.decimals ?? 18;
+      try { histories[raw.tokenId] = await fetchPositionHistory(chain.explorerApi, nftMgr, raw.tokenId, d0, d1); }
+      catch (e) { /* sin histórico para esta posición */ }
+    }));
+  }
+
   // 8. Construir posiciones enriquecidas
   const now = Math.floor(Date.now() / 1000);
   const result = [];
@@ -615,6 +672,26 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
     const owed0 = bigIntToDecimal(raw.tokensOwed0, t0.decimals);
     const owed1 = bigIntToDecimal(raw.tokensOwed1, t1.decimals);
 
+    // Histórico (si lo hay): depósitos, retiros, fees cobradas y fecha real de minteo
+    const hist = histories[raw.tokenId];
+    let depositedUSD, withdrawnUSD, feesCollectedUSD, openedAt, ageDays, hodlUSD, ilUSD, ilPct, pnlUSD, apr;
+    if (hist && hist.mintTs) {
+      depositedUSD = hist.deposited0 * p0 + hist.deposited1 * p1;
+      withdrawnUSD = hist.withdrawn0 * p0 + hist.withdrawn1 * p1;
+      feesCollectedUSD = hist.collectedFees0 * p0 + hist.collectedFees1 * p1;
+      openedAt = hist.mintTs;
+      ageDays = Math.max((now - openedAt) / 86400, 1 / 24);
+      hodlUSD = depositedUSD; // valor actual de los tokens depositados (precios actuales)
+      ilUSD = (currentValueUSD + withdrawnUSD) - hodlUSD;
+      ilPct = hodlUSD > 0 ? (ilUSD / hodlUSD) * 100 : 0;
+      pnlUSD = currentValueUSD + withdrawnUSD + feesCollectedUSD - depositedUSD; // vs HODL
+      apr = depositedUSD > 0 ? (feesCollectedUSD / depositedUSD) * (365 / ageDays) * 100 : 0;
+    } else {
+      depositedUSD = currentValueUSD; withdrawnUSD = 0; feesCollectedUSD = 0;
+      openedAt = now - 86400; ageDays = 1; hodlUSD = currentValueUSD;
+      ilUSD = null; ilPct = 0; pnlUSD = null; apr = 0;
+    }
+
     // raw compatible con backfillUncollectedFromRPC + computeUncollectedFees
     const fakeRaw = {
       id: raw.tokenId.toString(),
@@ -623,10 +700,10 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
       tickUpper: raw.tickUpper,
       feeGrowthInside0LastX128: raw.feeGrowthInside0LastX128,
       feeGrowthInside1LastX128: raw.feeGrowthInside1LastX128,
-      depositedToken0: "0", depositedToken1: "0",
-      withdrawnToken0: "0", withdrawnToken1: "0",
-      collectedFeesToken0: "0", collectedFeesToken1: "0",
-      transaction: { timestamp: String(now - 86400) },
+      depositedToken0: hist ? String(hist.deposited0) : "0", depositedToken1: hist ? String(hist.deposited1) : "0",
+      withdrawnToken0: hist ? String(hist.withdrawn0) : "0", withdrawnToken1: hist ? String(hist.withdrawn1) : "0",
+      collectedFeesToken0: hist ? String(hist.collectedFees0) : "0", collectedFeesToken1: hist ? String(hist.collectedFees1) : "0",
+      transaction: { timestamp: String(openedAt) },
       pool: {
         id: poolAddr, feeTier: String(raw.fee),
         tick: String(pool.tick), sqrtPrice: pool.sqrtPriceX96,
@@ -652,19 +729,19 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
       liquidity: raw.liquidity,
       amounts: cur,
       currentValueUSD,
-      depositedUSD: currentValueUSD, // desconocido sin indexer
-      withdrawnUSD: 0,
-      feesUSD: 0,                    // fees cobradas desconocidas sin indexer
+      depositedUSD,
+      withdrawnUSD,
+      feesUSD: feesCollectedUSD,      // fees cobradas reconstruidas del histórico
       uncollected: null,             // backfillUncollectedFromRPC lo calculará
       uncollectedUSD: null,
-      feesTotalUSD: owed0 * p0 + owed1 * p1, // tokensOwed como mínimo
-      hodlUSD: currentValueUSD,
-      pnlUSD: null,
-      ilUSD: null,
-      ilPct: 0,
-      apr: 0,
-      ageDays: 1,
-      openedAt: now - 86400,
+      feesTotalUSD: feesCollectedUSD + owed0 * p0 + owed1 * p1,
+      hodlUSD,
+      pnlUSD,
+      ilUSD,
+      ilPct,
+      apr,
+      ageDays,
+      openedAt,
       raw: fakeRaw,
       _rpcOnly: true, // marca para el UI
     });
