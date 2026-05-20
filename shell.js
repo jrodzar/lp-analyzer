@@ -283,14 +283,23 @@ function removePortfolioEntry(address) {
   savePortfolio();
 }
 
+function renamePortfolioEntry(address) {
+  const entry = state.portfolio.find((p) => p.address === address);
+  if (!entry) return;
+  const input = prompt(`Nuevo nombre para ${shortAddr(address)}:`, entry.label || "");
+  if (input === null) return;
+  entry.label = input.trim();
+  renderPortfolioList();
+  savePortfolio();
+}
+
 // Añadir la wallet conectada (Rabby EVM / Phantom SOL) al portfolio.
-// Si no está conectada, dispara la conexión y la añade cuando llegue la dirección.
+// Siempre re-solicita la dirección activa para soportar cambio de cuenta en la wallet.
 function addConnectedWallet(type) {
-  if (state.wallet[type]) { addWalletAddress(type); return; }
   pendingWalletAdd[type] = true;
   const frame = type === "evm" ? els.frameEvm : els.frameSol;
   frame.contentWindow.postMessage({ type: "lp-connect-wallet" }, "*");
-  setPfStatus(`Abriendo ${type === "evm" ? "Rabby/MetaMask" : "Phantom"} para conectar…`);
+  if (!state.wallet[type]) setPfStatus(`Abriendo ${type === "evm" ? "Rabby/MetaMask" : "Phantom"} para conectar…`);
 }
 
 function addWalletAddress(type) {
@@ -299,7 +308,11 @@ function addWalletAddress(type) {
   if (state.portfolio.some((p) => p.address.toLowerCase() === address.toLowerCase())) {
     setPfStatus("Esa wallet ya está en el portfolio.", "err"); return;
   }
-  state.portfolio.push({ address, type, label: type === "evm" ? "Rabby" : "Phantom" });
+  const defaultLabel = type === "evm" ? "Rabby" : "Phantom";
+  const input = prompt(`Nombre para esta dirección (${shortAddr(address)}):`, defaultLabel);
+  if (input === null) return; // usuario canceló
+  const label = input.trim() || defaultLabel;
+  state.portfolio.push({ address, type, label });
   renderPortfolioList();
   savePortfolio();
   setPfStatus(`Añadida ${shortAddr(address)} al portfolio.`, "ok");
@@ -322,10 +335,12 @@ function renderPortfolioList() {
       ${p.label ? `<span class="font-semibold">${p.label}</span>` : ""}
       <span class="font-mono text-xs text-slate-400 truncate">${shortAddr(p.address)}</span>
       <span class="flex-1"></span>
+      <button data-rename="${p.address}" title="Renombrar" class="text-xs text-slate-500 hover:text-sky-400">✎</button>
       <button data-rm="${p.address}" class="text-xs text-slate-500 hover:text-rose-400">✕</button>`;
     els.pfList.appendChild(row);
   }
   els.pfList.querySelectorAll("[data-rm]").forEach((b) => { b.onclick = () => removePortfolioEntry(b.dataset.rm); });
+  els.pfList.querySelectorAll("[data-rename]").forEach((b) => { b.onclick = () => renamePortfolioEntry(b.dataset.rename); });
 }
 
 // ---- Preferencias de redes/protocolos ----

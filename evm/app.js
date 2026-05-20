@@ -1233,7 +1233,10 @@ document.addEventListener("DOMContentLoaded", init);
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
       Promise.resolve(typeof analyze === "function" ? analyze() : null)
-        .then(() => {
+        .then(async () => {
+          // Esperar backfill RPC antes de enviar resultado (Arbitrum/Base usan tickField scalar)
+          const needsRPC = (state.positions || []).filter((p) => p.uncollected === null && !p.closed && state.chains[p.chainKey]?.rpcUrl);
+          if (needsRPC.length > 0) await backfillUncollectedFromRPC(state.positions).catch(() => {});
           const status = (document.getElementById("status-msg") || {}).textContent || "";
           window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status }, "*");
         })
