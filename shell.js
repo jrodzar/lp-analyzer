@@ -560,8 +560,21 @@ function openFbSetup() {
 async function saveFbConfig() {
   els.fbErr.classList.add("hidden");
   let cfg;
-  try { cfg = JSON.parse(els.fbInput.value.trim()); } catch (e) {
-    els.fbErr.textContent = "JSON no válido."; els.fbErr.classList.remove("hidden"); return;
+  try {
+    const raw = els.fbInput.value.trim();
+    // Accept both JSON and JS object literal (keys without quotes)
+    cfg = JSON.parse(raw);
+  } catch {
+    try {
+      const raw = els.fbInput.value.trim()
+        .replace(/^\s*const\s+\w+\s*=\s*/, "").replace(/;?\s*$/, "")
+        .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3')
+        .replace(/'/g, '"');
+      cfg = JSON.parse(raw);
+    } catch (e) {
+      els.fbErr.textContent = "Formato no válido. Pega el objeto firebaseConfig de Firebase Console.";
+      els.fbErr.classList.remove("hidden"); return;
+    }
   }
   if (!cfg.apiKey || !cfg.projectId || !cfg.authDomain) {
     els.fbErr.textContent = "Faltan campos (apiKey, authDomain, projectId)."; els.fbErr.classList.remove("hidden"); return;
