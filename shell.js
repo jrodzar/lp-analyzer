@@ -45,6 +45,7 @@ const EVM_CHAINS = [
   { key: "polygon", name: "Polygon", color: "#8247E5" },
   { key: "base", name: "Base", color: "#0052FF" },
   { key: "bnb", name: "BNB Chain", color: "#F3BA2F" },
+  { key: "hyperevm", name: "HyperEVM", color: "#97FCE4" },
 ];
 const SOL_PROTOCOLS = [
   { key: "orca", name: "Orca", color: "#FFD15C" },
