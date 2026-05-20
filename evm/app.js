@@ -60,9 +60,10 @@ const DEFAULT_CHAINS = {
     name: "HyperEVM",
     short: "HYPER",
     color: "#97FCE4",
-    subgraphId: "", // sin subgraph público todavía — pega uno propio si tienes
+    subgraphId: "", // pega la URL completa del subgraph de HyperSwap V3 (ej. Goldsky)
     explorer: "https://hyperevmscan.io",
-    placeholder: true,
+    rpcUrl: "https://rpc.hyperliquid.xyz/evm",
+    tickField: "scalar",
   },
 };
 
@@ -187,8 +188,9 @@ const SNAPSHOTS_QUERY = `
 async function gql(chainKey, query, variables) {
   const chain = state.chains[chainKey];
   if (!chain) throw new Error(`Red desconocida: ${chainKey}`);
-  if (!state.apiKey) throw new Error("Falta API key de The Graph (Settings).");
-  const url = `${GATEWAY}/${state.apiKey}/subgraphs/id/${chain.subgraphId}`;
+  const isDirectUrl = chain.subgraphId?.startsWith("http");
+  if (!isDirectUrl && !state.apiKey) throw new Error("Falta API key de The Graph (Settings).");
+  const url = isDirectUrl ? chain.subgraphId : `${GATEWAY}/${state.apiKey}/subgraphs/id/${chain.subgraphId}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -555,6 +557,29 @@ async function fetchSnapshotsForChart(positions) {
   return Promise.all(tasks);
 }
 
+/**
+ * Construye una línea temporal de fees acumuladas (cobradas) para el portfolio.
+ * Recibe bundles { position, snapshots[] } y devuelve [{ts, feesUSD}] por día.
+ * Los valores de snapshot son acumulados por posición; se suman en el tiempo.
+ */
+function buildPortfolioTimeline(bundles) {
+  // Devuelve una serie por posición: [{posId, label, points:[{ts,feesUSD}]}]
+  const result = [];
+  for (const b of bundles) {
+    const p = b.position;
+    if (!b.snapshots?.length) continue;
+    const byDay = new Map();
+    for (const s of b.snapshots) {
+      const usd = Number(s.collectedFeesToken0) * p.token0.priceUSD + Number(s.collectedFeesToken1) * p.token1.priceUSD;
+      const day = Math.floor(Number(s.timestamp) * 1000 / 86400000) * 86400000;
+      byDay.set(day, usd); // los snapshots son acumulados, basta con el último del día
+    }
+    const points = [...byDay.entries()].map(([ts, feesUSD]) => ({ ts, feesUSD })).sort((a, b) => a.ts - b.ts);
+    if (points.length) result.push({ posId: p.id, label: `${p.token0.symbol}/${p.token1.symbol}`, points });
+  }
+  return result;
+}
+
 // ============================================================================
 // Formatting helpers
 // ============================================================================
@@ -626,10 +651,14 @@ function renderSettings() {
     const c = state.chains[key];
     const row = document.createElement("div");
     row.className = "space-y-1";
-    const explorerUrl = `https://thegraph.com/explorer?search=uniswap+v3+${encodeURIComponent(c.name.toLowerCase().replace(" chain", ""))}`;
-    const placeholderText = c.placeholder ? "sin subgraph público — pega uno propio" : "subgraph ID";
-    const initialStatus = c.placeholder && !c.subgraphId ? "⚠ no configurado" : "—";
-    const initialStatusClass = c.placeholder && !c.subgraphId ? "text-[10px] text-amber-400" : "text-[10px] text-slate-500";
+    const usesDirectUrl = key === "hyperevm";
+    const explorerUrl = usesDirectUrl
+      ? "https://goldsky.com/chains/hyperevm"
+      : `https://thegraph.com/explorer?search=uniswap+v3+${encodeURIComponent(c.name.toLowerCase().replace(" chain", ""))}`;
+    const explorerLabel = usesDirectUrl ? "subgraphs en Goldsky ↗" : "buscar en explorer ↗";
+    const placeholderText = usesDirectUrl ? "URL completa del subgraph (ej. https://api.goldsky.com/…)" : "subgraph ID";
+    const initialStatus = !c.subgraphId ? "⚠ no configurado" : "—";
+    const initialStatusClass = !c.subgraphId ? "text-[10px] text-amber-400" : "text-[10px] text-slate-500";
     row.innerHTML = `
       <div class="flex items-center gap-2">
         <div class="w-3 h-3 rounded-full shrink-0" style="background:${c.color}"></div>
@@ -639,7 +668,7 @@ function renderSettings() {
       </div>
       <div class="flex items-center justify-between pl-5">
         <span data-status="${key}" class="${initialStatusClass}">${initialStatus}</span>
-        <a href="${explorerUrl}" target="_blank" class="text-[10px] text-fuchsia-400 hover:underline">buscar en explorer ↗</a>
+        <a href="${explorerUrl}" target="_blank" class="text-[10px] text-fuchsia-400 hover:underline">${explorerLabel}</a>
       </div>
     `;
     container.appendChild(row);
@@ -672,14 +701,15 @@ async function testChain(chainKey) {
   statusEl.textContent = "probando…";
   statusEl.className = "text-[10px] text-slate-400";
 
-  if (!state.apiKey) {
-    state.apiKey = document.getElementById("cfg-api-key").value.trim();
-  }
-  if (!state.apiKey) {
-    statusEl.textContent = "✗ falta API key arriba";
-    statusEl.className = "text-[10px] text-rose-400";
-    state.chains[chainKey].subgraphId = previousId;
-    return;
+  const isDirectUrl = state.chains[chainKey].subgraphId?.startsWith("http");
+  if (!isDirectUrl) {
+    if (!state.apiKey) state.apiKey = document.getElementById("cfg-api-key").value.trim();
+    if (!state.apiKey) {
+      statusEl.textContent = "✗ falta API key arriba";
+      statusEl.className = "text-[10px] text-rose-400";
+      state.chains[chainKey].subgraphId = previousId;
+      return;
+    }
   }
 
   try {
@@ -1237,8 +1267,22 @@ document.addEventListener("DOMContentLoaded", init);
           // Esperar backfill RPC antes de enviar resultado (Arbitrum/Base usan tickField scalar)
           const needsRPC = (state.positions || []).filter((p) => p.uncollected === null && !p.closed && state.chains[p.chainKey]?.rpcUrl);
           if (needsRPC.length > 0) await backfillUncollectedFromRPC(state.positions).catch(() => {});
+          // Snapshots para línea temporal de fees
+          let timeline = [];
+          try {
+            const toFetch = (state.positions || []).filter((p) => !p.closed).slice(0, 20);
+            if (toFetch.length) {
+              const bundles = await Promise.all(toFetch.map(async (p) => {
+                try {
+                  const data = await gql(p.chainKey, SNAPSHOTS_QUERY, { positionId: p.id });
+                  return { position: p, snapshots: data.positionSnapshots || [] };
+                } catch { return { position: p, snapshots: [] }; }
+              }));
+              timeline = buildPortfolioTimeline(bundles);
+            }
+          } catch (e) { console.warn("timeline build failed:", e); }
           const status = (document.getElementById("status-msg") || {}).textContent || "";
-          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status }, "*");
+          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline }, "*");
         })
         .catch((err) => {
           window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err) }, "*");

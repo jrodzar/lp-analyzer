@@ -28,7 +28,9 @@ const els = {
   pfSummary: $("pf-summary"), gValue: $("g-value"), gFees: $("g-fees"), gFeesSub: $("g-fees-sub"),
   gPositions: $("g-positions"), gPositionsSub: $("g-positions-sub"), gAddresses: $("g-addresses"),
   pfSections: $("pf-sections"),
-  pfCharts: $("pf-charts"), chartByAddress: $("chart-by-address"), chartByVenue: $("chart-by-venue"),
+  pfCharts: $("pf-charts"), chartByAddress: $("chart-by-address"), chartByVenue: $("chart-by-venue"), chartByFees: $("chart-by-fees"),
+  pfFeesTimeline: $("pf-fees-timeline"), chartFeesTimeline: $("chart-fees-timeline"),
+  pfFeesTimelineTotal: $("pf-fees-timeline-total"), chartFeesTimelineTotal: $("chart-fees-timeline-total"),
   prefChains: $("pref-chains"), prefProtocols: $("pref-protocols"),
   // quick
   modeEvm: $("mode-evm"), modeSol: $("mode-sol"), addr: $("addr"), go: $("go"),
@@ -50,6 +52,8 @@ const SOL_PROTOCOLS = [
 ];
 const DEFAULT_PREFS = { chains: EVM_CHAINS.map((c) => c.key), protocols: SOL_PROTOCOLS.map((p) => p.key) };
 
+const ADMIN_EMAIL = "jrodzar@gmail.com";
+
 const state = {
   tab: "portfolio",
   mode: localStorage.getItem("lp:lastMode") || "evm",
@@ -64,7 +68,7 @@ const state = {
 const fb = { app: null, auth: null, db: null, authMod: null, fsMod: null };
 const pendingReqs = new Map(); // reqId -> resolve
 const pendingWalletAdd = { evm: false, sol: false }; // añadir al portfolio tras conectar
-let pfCharts = { addr: null, venue: null };
+let pfCharts = { addr: null, venue: null, fees: null, timeline: null, timelineTotal: null };
 
 // ============================================================================
 // Helpers
@@ -211,6 +215,8 @@ async function onAuthChange(user) {
 }
 
 function renderAuthArea() {
+  const isAdmin = state.user?.email === ADMIN_EMAIL;
+  els.settings.classList.toggle("hidden", !isAdmin);
   els.authArea.innerHTML = "";
   if (state.user) {
     const wrap = document.createElement("div");
@@ -334,6 +340,9 @@ function renderPortfolioList() {
       ${badge}
       ${p.label ? `<span class="font-semibold">${p.label}</span>` : ""}
       <span class="font-mono text-xs text-slate-400 truncate">${shortAddr(p.address)}</span>
+      <button data-copy="${p.address}" title="Copiar dirección" class="text-slate-500 hover:text-emerald-400 flex-shrink-0">
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </button>
       <span class="flex-1"></span>
       <button data-rename="${p.address}" title="Renombrar" class="text-xs text-slate-500 hover:text-sky-400">✎</button>
       <button data-rm="${p.address}" class="text-xs text-slate-500 hover:text-rose-400">✕</button>`;
@@ -341,6 +350,10 @@ function renderPortfolioList() {
   }
   els.pfList.querySelectorAll("[data-rm]").forEach((b) => { b.onclick = () => removePortfolioEntry(b.dataset.rm); });
   els.pfList.querySelectorAll("[data-rename]").forEach((b) => { b.onclick = () => renamePortfolioEntry(b.dataset.rename); });
+  const copySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+  els.pfList.querySelectorAll("[data-copy]").forEach((b) => {
+    b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = "✓"; setTimeout(() => { b.innerHTML = copySvg; }, 1200); });
+  });
 }
 
 // ---- Preferencias de redes/protocolos ----
@@ -420,7 +433,7 @@ async function analyzeAll() {
     const entry = state.portfolio[i];
     setPfStatus(`Analizando ${entry.label || shortAddr(entry.address)} (${i + 1}/${state.portfolio.length})…`);
     const r = await analyzeAddressHeadless(entry.address, entry.type);
-    state.results.push({ entry, items: r.items || [], status: r.status || "" });
+    state.results.push({ entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [] });
     renderPortfolio();
   }
   const total = state.results.reduce((n, r) => n + r.items.length, 0);
@@ -500,19 +513,107 @@ function renderPortfolioCharts() {
   const venueMap = new Map();
   for (const r of state.results) for (const it of r.items) venueMap.set(it.venue, (venueMap.get(it.venue) || 0) + (it.valueUSD || 0));
   const byVenue = [...venueMap.entries()].map(([label, value]) => ({ label, value })).filter((x) => x.value > 0);
+  // fees (cobradas + pendientes) por dirección
+  const byFees = state.results
+    .map((r) => ({ label: r.entry.label || shortAddr(r.entry.address), value: r.items.reduce((s, it) => s + (it.feesUSD || 0) + (it.feesPendingUSD || 0), 0) }))
+    .filter((x) => x.value > 0);
 
   els.pfCharts.classList.toggle("hidden", byAddr.length === 0);
   drawDoughnut("addr", els.chartByAddress, byAddr);
   drawDoughnut("venue", els.chartByVenue, byVenue);
+  drawDoughnut("fees", els.chartByFees, byFees);
+  renderFeesTimelineChart();
+  renderFeesTimelineTotalChart();
+}
+
+function renderFeesTimelineChart() {
+  if (pfCharts.timeline) { pfCharts.timeline.destroy(); pfCharts.timeline = null; }
+  // Recoger todas las series por posición de todas las direcciones
+  const allSeries = state.results.flatMap((r) => r.timeline || []);
+  els.pfFeesTimeline.classList.toggle("hidden", allSeries.length === 0);
+  if (!allSeries.length || typeof Chart === "undefined") return;
+  const datasets = allSeries.map((s, i) => ({
+    label: s.label,
+    data: s.points.map((pt) => ({ x: pt.ts, y: pt.feesUSD })),
+    borderColor: distinctColor(i),
+    backgroundColor: "transparent",
+    tension: 0.3,
+    pointRadius: 0,
+    borderWidth: 1.5,
+  }));
+  pfCharts.timeline = new Chart(els.chartFeesTimeline, {
+    type: "line",
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: "#cbd5e1", font: { size: 10 }, boxWidth: 12 } },
+        tooltip: { mode: "index", intersect: false, callbacks: { label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}` } },
+      },
+      scales: {
+        x: {
+          type: "linear",
+          ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: (v) => new Date(v).toLocaleDateString("es-ES", { day: "numeric", month: "short" }) },
+          grid: { color: "#1e293b" },
+        },
+        y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSD(v) }, grid: { color: "#1e293b" } },
+      },
+    },
+  });
+}
+
+function renderFeesTimelineTotalChart() {
+  if (pfCharts.timelineTotal) { pfCharts.timelineTotal.destroy(); pfCharts.timelineTotal = null; }
+  // Agregar todas las series por posición en una sola curva total
+  const allSeries = state.results.flatMap((r) => r.timeline || []);
+  els.pfFeesTimelineTotal.classList.toggle("hidden", allSeries.length === 0);
+  if (!allSeries.length || typeof Chart === "undefined") return;
+  // Para cada ts conocido, sumar el valor más reciente de cada posición
+  const events = allSeries.flatMap((s) => s.points.map((pt) => ({ ts: pt.ts, posId: s.posId, feesUSD: pt.feesUSD })));
+  events.sort((a, b) => a.ts - b.ts);
+  const current = new Map();
+  const points = [];
+  for (const ev of events) {
+    current.set(ev.posId, ev.feesUSD);
+    const total = [...current.values()].reduce((s, v) => s + v, 0);
+    points.push({ x: ev.ts, y: total });
+  }
+  // Agrupar por día (último valor del día)
+  const byDay = new Map();
+  for (const pt of points) {
+    const day = Math.floor(pt.x / 86400000) * 86400000;
+    byDay.set(day, pt.y);
+  }
+  const data = [...byDay.entries()].map(([x, y]) => ({ x, y })).sort((a, b) => a.x - b.x);
+  const lineOptions = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { labels: { color: "#cbd5e1", font: { size: 10 } } },
+      tooltip: { callbacks: { label: (c) => `Total: ${fmtUSD(c.parsed.y)}` } },
+    },
+    scales: {
+      x: { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: (v) => new Date(v).toLocaleDateString("es-ES", { day: "numeric", month: "short" }) }, grid: { color: "#1e293b" } },
+      y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSD(v) }, grid: { color: "#1e293b" } },
+    },
+  };
+  pfCharts.timelineTotal = new Chart(els.chartFeesTimelineTotal, {
+    type: "line",
+    data: { datasets: [{ label: "Total fees", data, borderColor: "#10b981", backgroundColor: "rgba(16,185,129,0.08)", fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 }] },
+    options: lineOptions,
+  });
 }
 
 function drawDoughnut(key, canvas, data) {
   if (!canvas || typeof Chart === "undefined") return;
   if (pfCharts[key]) { pfCharts[key].destroy(); pfCharts[key] = null; }
   if (!data.length) return;
+  const total = data.reduce((s, d) => s + d.value, 0);
   const colors = data.map((_, i) => distinctColor(i));
+  const extraPlugins = typeof ChartDataLabels !== "undefined" ? [ChartDataLabels] : [];
   pfCharts[key] = new Chart(canvas, {
     type: "doughnut",
+    plugins: extraPlugins,
     data: { labels: data.map((d) => d.label), datasets: [{ data: data.map((d) => d.value), backgroundColor: colors, borderColor: "#0f172a", borderWidth: 2 }] },
     options: {
       responsive: true,
@@ -520,6 +621,16 @@ function drawDoughnut(key, canvas, data) {
       plugins: {
         legend: { position: "bottom", labels: { color: "#cbd5e1", font: { size: 10 }, boxWidth: 12 } },
         tooltip: { callbacks: { label: (c) => `${c.label}: ${fmtUSD(c.parsed)}` } },
+        datalabels: {
+          color: "#fff",
+          font: { size: 10, weight: "bold" },
+          formatter: (value) => {
+            const pct = total > 0 ? (value / total * 100) : 0;
+            return pct < 4 ? "" : fmtUSD(value);   // ocultar etiqueta si el segmento es muy pequeño
+          },
+          textShadowColor: "rgba(0,0,0,0.6)",
+          textShadowBlur: 4,
+        },
       },
     },
   });
@@ -619,7 +730,7 @@ window.addEventListener("message", (e) => {
   } else if (d.type === "lp-result" && pendingReqs.has(d.reqId)) {
     const resolve = pendingReqs.get(d.reqId);
     pendingReqs.delete(d.reqId);
-    resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app });
+    resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [] });
   }
 });
 

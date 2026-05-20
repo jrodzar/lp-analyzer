@@ -6,6 +6,7 @@
   <title>LP Analyzer — EVM + Solana</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
   <style>
     html, body { height: 100%; margin: 0; }
     body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
@@ -135,7 +136,7 @@
         </section>
 
         <!-- Distribución del valor -->
-        <section id="pf-charts" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <section id="pf-charts" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <h3 class="text-sm font-semibold mb-3">Valor por dirección</h3>
             <div class="relative h-64"><canvas id="chart-by-address"></canvas></div>
@@ -144,6 +145,22 @@
             <h3 class="text-sm font-semibold mb-3">Valor por red / protocolo</h3>
             <div class="relative h-64"><canvas id="chart-by-venue"></canvas></div>
           </div>
+          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h3 class="text-sm font-semibold mb-3">Fees por dirección</h3>
+            <div class="relative h-64"><canvas id="chart-by-fees"></canvas></div>
+          </div>
+        </section>
+
+        <!-- Línea temporal de fees por pool -->
+        <section id="pf-fees-timeline" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <h3 class="text-sm font-semibold mb-3">Fees cobradas acumuladas por pool</h3>
+          <div class="relative h-64"><canvas id="chart-fees-timeline"></canvas></div>
+        </section>
+
+        <!-- Línea temporal de fees totales -->
+        <section id="pf-fees-timeline-total" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <h3 class="text-sm font-semibold mb-3">Fees cobradas acumuladas totales</h3>
+          <div class="relative h-64"><canvas id="chart-fees-timeline-total"></canvas></div>
         </section>
 
         <!-- Secciones por dirección -->
