@@ -247,6 +247,11 @@ async function loadPortfolio(uid) {
       chains: Array.isArray(data.prefs?.chains) ? data.prefs.chains : DEFAULT_PREFS.chains.slice(),
       protocols: Array.isArray(data.prefs?.protocols) ? data.prefs.protocols : DEFAULT_PREFS.protocols.slice(),
     };
+    // Migración v1: HyperEVM activado por defecto (una sola vez para cuentas existentes)
+    if (Number(data.prefsVersion || 0) < 1) {
+      if (!state.prefs.chains.includes("hyperevm")) state.prefs.chains.push("hyperevm");
+      await fb.fsMod.setDoc(ref, { prefs: state.prefs, prefsVersion: 1 }, { merge: true }).catch(() => {});
+    }
   } catch (e) {
     console.error("loadPortfolio", e);
     setPfStatus(`No se pudo cargar el portfolio: ${e.message}`, "err");
