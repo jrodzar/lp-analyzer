@@ -56,7 +56,7 @@ const JUPITER_PRICE = "https://lite-api.jup.ag/price/v3";
 const state = {
   heliusKey: localStorage.getItem("sol:heliusKey") || "",
   birdeyeKey: localStorage.getItem("sol:birdeyeKey") || "",
-  selectedProtocols: JSON.parse(localStorage.getItem("sol:selectedProtocols") || "null") || ["orca"],
+  selectedProtocols: JSON.parse(localStorage.getItem("sol:selectedProtocols") || "null") || ["orca", "raydium"],
   address: "",
   positions: [],
   tokenList: null, // Map<mint, { symbol, name, decimals, logoURI }>
