@@ -441,17 +441,21 @@ function decU(hex, slot)    { const s = hex.startsWith("0x") ? hex.slice(2) : he
 function decI(hex, slot)    { const v = decU(hex, slot); return v >= (1n<<255n) ? Number(v-(1n<<256n)) : Number(v); }
 function decAddr(hex, slot) { const s = hex.startsWith("0x") ? hex.slice(2) : hex; return ("0x"+s.slice(slot*64+24, slot*64+64)).toLowerCase(); }
 
+function hexBytesToUtf8(hexStr) {
+  const bytes = (hexStr.match(/.{2}/g) || []).map((b) => parseInt(b, 16));
+  return new TextDecoder("utf-8").decode(new Uint8Array(bytes));
+}
+
 function decABIString(hex) {
   try {
     const s = hex.startsWith("0x") ? hex.slice(2) : hex;
     if (s.length === 64) { // bytes32 encoding (old tokens)
-      const trimmed = s.replace(/00+$/, "");
-      return (trimmed.match(/.{2}/g) || []).map(b => String.fromCharCode(parseInt(b,16))).join("").replace(/\0/g,"");
+      return hexBytesToUtf8(s.replace(/(00)+$/, "")).replace(/\0/g, "");
     }
     const off = Number(decU(hex, 0)) * 2;
     const len = Number(BigInt("0x" + s.slice(off, off+64)));
     if (!len || len > 100) return "?";
-    return (s.slice(off+64, off+64+len*2).match(/.{2}/g) || []).map(b => String.fromCharCode(parseInt(b,16))).join("");
+    return hexBytesToUtf8(s.slice(off + 64, off + 64 + len * 2)); // UTF-8 (símbolos como USD₮0)
   } catch { return "?"; }
 }
 
@@ -473,37 +477,47 @@ function decodeRawPos(hex, tokenId) {
   };
 }
 
-/** Obtiene precio USD de cada token buscando par token/stable en el factory */
-async function priceTokensViaPool(rpc, factoryAddr, tokenAddresses, stableAddr) {
+/**
+ * Precio USD de cada token. Detecta stables por símbolo (cualquier símbolo con "USD"
+ * → $1) y precia el resto buscando un pool token/stable contra CUALQUIER stable.
+ * `tokenInfos`: { [addr]: { symbol, decimals } }
+ */
+async function priceTokensViaPool(rpc, factoryAddr, tokenInfos) {
   const prices = {};
-  const stable = stableAddr.toLowerCase();
-  prices[stable] = 1.0;
-  await Promise.all(tokenAddresses.map(async (rawAddr) => {
-    const addr = rawAddr.toLowerCase();
-    if (addr === stable) return;
-    for (const fee of [500, 3000, 10000, 100]) {
-      try {
-        const [tA, tB] = addr < stable ? [addr, stable] : [stable, addr];
-        const ph = await rpcEthCall(rpc, factoryAddr, SEL_GET_POOL + encodeAddr32(tA) + encodeAddr32(tB) + encodeU32(fee));
-        const pool = "0x" + ph.slice(-40);
-        if (/^0x0+$/.test(pool)) continue;
-        const [s0h, pt0h, pt1h] = await Promise.all([
-          rpcEthCall(rpc, pool, SEL_SLOT0),
-          rpcEthCall(rpc, pool, SEL_TOKEN0_POOL),
-          rpcEthCall(rpc, pool, SEL_TOKEN1_POOL),
-        ]);
-        const sqrtP = decU(s0h, 0);
-        if (!sqrtP) continue;
-        const pt0 = decAddr(pt0h, 0);
-        const pt1 = decAddr(pt1h, 0);
-        const [d0h, d1h] = await Promise.all([rpcEthCall(rpc, pt0, SEL_DECIMALS), rpcEthCall(rpc, pt1, SEL_DECIMALS)]);
-        const dec0 = Number(decU(d0h, 0)), dec1 = Number(decU(d1h, 0));
-        const sq = Number(sqrtP) / 2**96;
-        const t1PerT0 = sq * sq * 10**(dec0 - dec1);
-        if (pt0 === stable) prices[pt1] = 1 / t1PerT0;
-        else                prices[pt0] = t1PerT0;
-        break;
-      } catch {}
+  const isStable = (sym) => /usd/i.test(sym || "");
+  const addrs = Object.keys(tokenInfos);
+  const stables = addrs.filter((a) => isStable(tokenInfos[a].symbol));
+  for (const s of stables) prices[s] = 1.0;
+  if (!stables.length) return prices;
+
+  await Promise.all(addrs.map(async (addr) => {
+    if (prices[addr] != null) return; // ya es stable
+    for (const stable of stables) {
+      let found = false;
+      for (const fee of [3000, 500, 10000, 100]) {
+        try {
+          const [tA, tB] = addr < stable ? [addr, stable] : [stable, addr];
+          const ph = await rpcEthCall(rpc, factoryAddr, SEL_GET_POOL + encodeAddr32(tA) + encodeAddr32(tB) + encodeU32(fee));
+          const pool = "0x" + ph.slice(-40);
+          if (/^0x0+$/.test(pool)) continue;
+          const [s0h, pt0h] = await Promise.all([
+            rpcEthCall(rpc, pool, SEL_SLOT0),
+            rpcEthCall(rpc, pool, SEL_TOKEN0_POOL),
+          ]);
+          const sqrtP = decU(s0h, 0);
+          if (!sqrtP) continue;
+          const pt0 = decAddr(pt0h, 0);
+          const decTok = tokenInfos[addr]?.decimals ?? 18;
+          const decStb = tokenInfos[stable]?.decimals ?? 6;
+          const sq = Number(sqrtP) / 2 ** 96;
+          prices[addr] = (pt0 === addr)
+            ? sq * sq * 10 ** (decTok - decStb)        // token = token0, stable = token1
+            : 1 / (sq * sq * 10 ** (decStb - decTok)); // stable = token0, token = token1
+          found = true;
+          break;
+        } catch {}
+      }
+      if (found) break;
     }
   }));
   return prices;
@@ -575,9 +589,8 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
     } catch { tokenInfos[addr] = { id: addr, symbol: addr.slice(0,6), decimals: 18 }; }
   }));
 
-  // 7. Precios USD vía pools stable
-  const stableAddr = chain.stableAddress || "0x24ac48bf01fd6cb1c3836d08b3edc70a9c4380ca";
-  const prices = await priceTokensViaPool(rpc, factory, uniqueTokens, stableAddr).catch(() => ({}));
+  // 7. Precios USD vía pools contra stables (detectados por símbolo)
+  const prices = await priceTokensViaPool(rpc, factory, tokenInfos).catch(() => ({}));
 
   // 8. Construir posiciones enriquecidas
   const now = Math.floor(Date.now() / 1000);
