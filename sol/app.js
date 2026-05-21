@@ -1123,7 +1123,9 @@ function renderSummary() {
   section.classList.remove("hidden");
   const agg = aggregate(state.positions);
   document.getElementById("sum-positions").textContent = state.positions.length;
-  document.getElementById("sum-positions-sub").textContent = `${agg.inRange} en rango · ${agg.outRange} fuera · ${agg.closed} cerradas`;
+  document.getElementById("sum-positions-sub").textContent = state.hideClosed
+    ? `${agg.inRange} en rango · ${agg.outRange} fuera`
+    : `${agg.inRange} en rango · ${agg.outRange} fuera · ${agg.closed} cerradas`;
   document.getElementById("sum-current").textContent = fmtUSD(agg.current);
   document.getElementById("sum-fees").textContent = fmtUSD(agg.fees);
   document.getElementById("sum-range").textContent = `${agg.inRange}/${state.positions.length - agg.closed || 0}`;

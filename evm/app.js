@@ -1337,7 +1337,9 @@ function renderSummary() {
   section.classList.remove("hidden");
   const agg = aggregate(state.positions);
   document.getElementById("sum-positions").textContent = state.positions.length;
-  document.getElementById("sum-positions-sub").textContent = `${agg.open} abiertas · ${agg.closed} cerradas`;
+  document.getElementById("sum-positions-sub").textContent = state.hideClosed
+    ? `${agg.open} abiertas`
+    : `${agg.open} abiertas · ${agg.closed} cerradas`;
   document.getElementById("sum-current").textContent = fmtUSD(agg.current);
   const pendingSuffix = agg.uncollectedUnknown ? ` (n/d en ${agg.uncollectedUnknown})` : "";
   document.getElementById("sum-fees").textContent = `${fmtUSD(agg.fees)} +${fmtUSD(agg.uncollected)} pend${pendingSuffix}`;
