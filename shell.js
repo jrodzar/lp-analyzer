@@ -203,7 +203,7 @@ function quickAnalyze(opts = {}) {
   const t = detectType(addr);
   if (!t) { if (!silent) showHint("Formato no reconocido (EVM 0x… o Solana base58).", "err"); _autoBusy = false; return; }
   if (t !== state.mode) setMode(t);
-  showHint(`Detectado: ${t === "evm" ? "EVM" : "Solana"}.${silent ? " Actualizando…" : " Analizando…"}`);
+  showHint(null); // el progreso se ve en el modal; sin aviso de texto
   if (!silent) {
     openAnalyzingModal(`Analizando la dirección en ${t === "evm" ? "EVM" : "Solana"}…`, false);
     clearTimeout(_quickModalTimer);
@@ -1159,12 +1159,10 @@ window.addEventListener("message", (e) => {
     pendingReqs.delete(d.reqId);
     resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [] });
   } else if (d.type === "lp-analyze-done") {
-    // el engine terminó el análisis de Quick → cerrar el modal y actualizar el aviso
+    // el engine terminó el análisis de Quick → cerrar el modal de progreso
     clearTimeout(_quickModalTimer);
     closeAnalyzingModal();
     _autoBusy = false; // liberar el guard de auto-actualización
-    const stamp = new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
-    showHint(`${(d.app || state.mode) === "evm" ? "EVM" : "Solana"} · actualizado a las ${stamp}.`);
   }
 });
 
