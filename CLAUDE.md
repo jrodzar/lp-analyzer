@@ -42,7 +42,10 @@ Abrir `http://localhost:5180`. (En Claude Code: usar el botón de preview; hay
 
 ## Setup que el usuario hace en el navegador (no está en el código)
 
-1. **Firebase**: Portfolio → "Configúralo aquí" → pegar `firebaseConfig`.
+1. **Firebase**: la `firebaseConfig` va **embebida** en `shell.js` (`DEFAULT_FB_CONFIG`),
+   así nadie tiene que configurarla por equipo. (No es secreta: la web apiKey está
+   pensada para el cliente; protegen las reglas de Firestore + dominios autorizados.)
+   "Configúralo aquí" queda solo como override avanzado (localStorage).
    - Firebase Console: habilitar **Authentication → Google**, crear **Firestore**.
    - **Reglas Firestore** (obligatorias, son la barrera real de acceso): ver sección
      "Control de acceso (whitelist de emails)" más abajo. No basta el check en JS.

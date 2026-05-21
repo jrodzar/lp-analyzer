@@ -70,6 +70,19 @@ const DEFAULT_PREFS = { chains: EVM_CHAINS.map((c) => c.key), protocols: SOL_PRO
 
 const ADMIN_EMAIL = "jrodzar@gmail.com";
 
+// Config de Firebase embebida (NO es secreta: la web apiKey está pensada para ir en el
+// cliente; la seguridad la dan las reglas de Firestore + dominios autorizados). Así
+// nadie tiene que pegar nada en cada equipo. Se puede sobrescribir desde "Configúralo aquí".
+const DEFAULT_FB_CONFIG = {
+  apiKey: "AIzaSyARByGz7mXnpvljkIMl4Amp8bEmAu7Inc0",
+  authDomain: "lp-analyzer-jrodzar.firebaseapp.com",
+  projectId: "lp-analyzer-jrodzar",
+  storageBucket: "lp-analyzer-jrodzar.firebasestorage.app",
+  messagingSenderId: "838206100337",
+  appId: "1:838206100337:web:8b2b4a726340c274ce1cd0",
+  measurementId: "G-NCGRBL9BS4",
+};
+
 const state = {
   tab: "portfolio",
   mode: localStorage.getItem("lp:lastMode") || "evm",
@@ -1259,13 +1272,12 @@ els.addPhantom.onclick = () => addConnectedWallet("sol");
   renderPortfolioList();
   renderPrefs();
 
-  const cfg = getStoredFbConfig();
+  // Config guardada por el usuario (override avanzado) o la embebida por defecto.
+  const cfg = getStoredFbConfig() || DEFAULT_FB_CONFIG;
   if (cfg) {
     initFirebase(cfg).catch((e) => {
       console.error("initFirebase", e);
       setPfStatus(`Error al conectar Firebase: ${e.message}. Revisa la config.`, "err");
     });
-  } else {
-    // sin config: el gate ofrece configurarla
   }
 })();
