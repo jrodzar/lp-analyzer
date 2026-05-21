@@ -1320,8 +1320,8 @@ els.autoRefresh.onchange = applyAutoRefresh;
   renderPortfolioList();
   renderPrefs();
 
-  // intervalo de auto-actualización: el guardado, o 1 min por defecto
-  els.autoRefresh.value = localStorage.getItem("lp:autoRefresh") || "60000";
+  // intervalo de auto-actualización: el guardado, o 5 min por defecto
+  els.autoRefresh.value = localStorage.getItem("lp:autoRefresh") || "300000";
   applyAutoRefresh();
 
   // Config guardada por el usuario (override avanzado) o la embebida por defecto.
