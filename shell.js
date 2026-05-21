@@ -676,10 +676,16 @@ function renderPortfolio() {
     head.className = "flex items-center gap-2 mb-2 flex-wrap";
     head.innerHTML = `
       ${badge}
-      <span class="font-semibold">${r.entry.label || shortAddr(r.entry.address)}</span>
+      <span class="font-semibold text-base">${r.entry.label || shortAddr(r.entry.address)}</span>
       <span class="font-mono text-[11px] text-slate-500">${shortAddr(r.entry.address)}</span>
       <span class="flex-1"></span>
-      <span class="text-xs text-slate-400">${items.length} pos · ${fmtUSD(subVal)} · fees ${fmtUSD(subFees)}</span>`;
+      <span class="text-sm text-slate-300 flex items-center gap-2">
+        <span><span class="font-semibold text-slate-100">${items.length}</span> pos</span>
+        <span class="text-slate-600">·</span>
+        <span class="font-semibold text-slate-100">${fmtUSD(subVal)}</span>
+        <span class="text-slate-600">·</span>
+        <span>fees <span class="font-semibold text-emerald-400">${fmtUSD(subFees)}</span></span>
+      </span>`;
     section.appendChild(head);
 
     if (!items.length) {
