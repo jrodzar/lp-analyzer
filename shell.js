@@ -765,32 +765,45 @@ window.addEventListener("message", (e) => {
 function buildHistoricalCurves() {
   const allSeries = state.results.flatMap((r) => r.timeline || []);
   if (!allSeries.length) return null;
-  // eventos ordenados; mantenemos el último estado conocido por posición
+  const timed = allSeries.filter((s) => !s.flat && s.points && s.points.length);
+  const flat = allSeries.filter((s) => s.flat && s.points && s.points.length);
+
+  // Constante aportada por las series "planas" (Solana: sin histórico → valor actual)
+  let flatDep = 0, flatFees = 0;
+  for (const s of flat) { const pt = s.points[s.points.length - 1]; flatDep += pt.depositedUSD || 0; flatFees += pt.feesUSD || 0; }
+
+  // eventos de las series temporales (último estado conocido por posición)
   const events = [];
-  for (const s of allSeries) {
-    for (const pt of s.points) {
-      events.push({ ts: pt.ts, posId: s.posId, fees: pt.feesUSD || 0, dep: pt.depositedUSD || 0, wd: pt.withdrawnUSD || 0 });
-    }
-  }
-  if (!events.length) return null;
+  for (const s of timed) for (const pt of s.points) events.push({ ts: pt.ts, posId: s.posId, fees: pt.feesUSD || 0, dep: pt.depositedUSD || 0 });
   events.sort((a, b) => a.ts - b.ts);
-  const lastFees = new Map(), lastDep = new Map();
-  const aportadoByDay = new Map(), valorByDay = new Map();
-  for (const ev of events) {
-    lastFees.set(ev.posId, ev.fees);
-    lastDep.set(ev.posId, ev.dep); // depositado bruto acumulado de la posición
-    const aportado = [...lastDep.values()].reduce((s, v) => s + v, 0);
-    const fees = [...lastFees.values()].reduce((s, v) => s + v, 0);
-    const day = Math.floor(ev.ts / 86400000) * 86400000;
-    aportadoByDay.set(day, aportado);
-    valorByDay.set(day, aportado + fees); // valor acumulado = aportado + fees ganadas
+
+  let days, aportadoByDay = new Map(), valorByDay = new Map();
+  if (events.length) {
+    const lastFees = new Map(), lastDep = new Map();
+    for (const ev of events) {
+      lastFees.set(ev.posId, ev.fees);
+      lastDep.set(ev.posId, ev.dep);
+      const aportado = [...lastDep.values()].reduce((s, v) => s + v, 0) + flatDep;
+      const fees = [...lastFees.values()].reduce((s, v) => s + v, 0) + flatFees;
+      const day = Math.floor(ev.ts / 86400000) * 86400000;
+      aportadoByDay.set(day, aportado);
+      valorByDay.set(day, aportado + fees);
+    }
+    days = [...aportadoByDay.keys()].sort((a, b) => a - b);
+  } else if (flat.length) {
+    // solo series planas: dibujamos una línea constante de ~30 días
+    const today = Math.floor(Date.now() / 86400000) * 86400000;
+    days = [today - 30 * 86400000, today];
+    for (const d of days) { aportadoByDay.set(d, flatDep); valorByDay.set(d, flatDep + flatFees); }
+  } else {
+    return null;
   }
-  const days = [...new Set([...aportadoByDay.keys(), ...valorByDay.keys()])].sort((a, b) => a - b);
+
   const aportado = days.map((d) => ({ x: d, y: aportadoByDay.get(d) }));
   const valor = days.map((d) => ({ x: d, y: valorByDay.get(d) }));
   const lastAportado = aportado[aportado.length - 1]?.y || 0;
   const lastValor = valor[valor.length - 1]?.y || 0;
-  return { aportado, valor, lastAportado, lastValor, ganado: lastValor - lastAportado };
+  return { aportado, valor, lastAportado, lastValor, ganado: lastValor - lastAportado, hasFlat: flat.length > 0 };
 }
 
 function renderHistorico() {
@@ -807,7 +820,7 @@ function renderHistorico() {
   els.histAportado.textContent = fmtUSD(curves.lastAportado);
   els.histValor.textContent = fmtUSD(curves.lastValor);
   els.histGanado.textContent = fmtUSD(curves.ganado);
-  els.histNote.textContent = "Valor acumulado = capital aportado + fees ganadas (snapshots del subgraph; no incluye variación de precio/IL)";
+  els.histNote.textContent = "Valor = aportado + fees. EVM/HyperEVM/lending: histórico real; Solana: valor actual (sin histórico). No incluye variación de precio/IL.";
 
   const datasets = [
     { label: "Capital aportado", data: curves.aportado, borderColor: "#94a3b8", borderDash: [5, 4], pointRadius: 2, borderWidth: 1.5, tension: 0.2 },

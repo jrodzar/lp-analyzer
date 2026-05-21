@@ -1437,7 +1437,15 @@ document.addEventListener("DOMContentLoaded", init);
       Promise.resolve(typeof analyze === "function" ? analyze() : null)
         .then(() => {
           const status = (document.getElementById("status-msg") || {}).textContent || "";
-          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status }, "*");
+          // Solana no tiene histórico de depósitos (sin eventos fáciles): emitimos una
+          // serie "plana" marcada para que el histórico la muestre como valor constante.
+          const nowMs = Math.floor(Date.now() / 86400000) * 86400000;
+          const timeline = (state.positions || []).filter((p) => !p.closed).map((p) => {
+            const fees = p.feesPendingUSD || 0;
+            const dep = Math.max(0, (p.currentValueUSD || 0) - fees);
+            return { posId: p.mint, label: `${p.token0.symbol}/${p.token1.symbol}`, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: fees }] };
+          });
+          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline }, "*");
         })
         .catch((err) => {
           window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err) }, "*");

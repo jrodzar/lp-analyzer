@@ -386,9 +386,31 @@ async function fetchLendingHistory(apiBase, vault, owner, dec) {
   const dep = await get(`topic0=${EV_4626_DEPOSIT}&topic2=${ownerTopic}&topic0_2_opr=and`);
   const wth = await get(`topic0=${EV_4626_WITHDRAW}&topic3=${ownerTopic}&topic0_3_opr=and`);
   let d = 0n, w = 0n, firstTs = null;
-  for (const l of dep) { d += word(l.data, 0); const ts = parseInt(l.timeStamp, 16); if (firstTs === null || ts < firstTs) firstTs = ts; }
-  for (const l of wth) { w += word(l.data, 0); }
-  return { deposited: Number(d) / 10 ** dec, withdrawn: Number(w) / 10 ** dec, firstTs };
+  const events = [];
+  for (const l of dep) { d += word(l.data, 0); const ts = parseInt(l.timeStamp, 16); if (firstTs === null || ts < firstTs) firstTs = ts; events.push({ ts, type: "dep", amt: Number(word(l.data, 0)) / 10 ** dec }); }
+  for (const l of wth) { w += word(l.data, 0); events.push({ ts: parseInt(l.timeStamp, 16), type: "wth", amt: Number(word(l.data, 0)) / 10 ** dec }); }
+  return { deposited: Number(d) / 10 ** dec, withdrawn: Number(w) / 10 ** dec, firstTs, events };
+}
+
+// Serie diaria del lending: capital aportado por eventos + interés repartido linealmente
+function buildLendingTimeline(events, gainsUSD, nowSec) {
+  if (!events || !events.length) return [];
+  const sorted = [...events].sort((a, b) => a.ts - b.ts);
+  const firstTs = sorted[0].ts;
+  const span = Math.max(1, nowSec - firstTs);
+  let net = 0;
+  const byDay = new Map();
+  for (const e of sorted) {
+    net += e.type === "dep" ? e.amt : -e.amt;
+    const frac = (e.ts - firstTs) / span;
+    const day = Math.floor((e.ts * 1000) / 86400000) * 86400000;
+    byDay.set(day, { depositedUSD: net, withdrawnUSD: 0, feesUSD: (gainsUSD || 0) * frac });
+  }
+  // punto final "hoy" con el interés total actual
+  const today = Math.floor((nowSec * 1000) / 86400000) * 86400000;
+  const lastNet = byDay.size ? [...byDay.values()].pop().depositedUSD : net;
+  byDay.set(today, { depositedUSD: lastNet, withdrawnUSD: 0, feesUSD: gainsUSD || 0 });
+  return [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
 }
 
 // Devuelve posiciones de lending (una por red con saldo) para un owner
@@ -406,7 +428,7 @@ async function fetchRevertLending(owner) {
       const priceUSD = /usd/i.test(symbol) ? 1 : 1; // USDC/stable ≈ $1 (mejor esfuerzo)
       const currentValueUSD = (Number(assets) / 10 ** dec) * priceUSD;
 
-      let depositedUSD = null, gainsUSD = null, openedAt = null, ageDays = null, apr = null;
+      let depositedUSD = null, gainsUSD = null, openedAt = null, ageDays = null, apr = null, timelineSeries = null;
       if (c.explorerApi) {
         try {
           const h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec);
@@ -416,6 +438,7 @@ async function fetchRevertLending(owner) {
           openedAt = h.firstTs;
           ageDays = openedAt ? Math.max((now - openedAt) / 86400, 1 / 24) : null;
           apr = (depositedUSD > 0 && ageDays) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
+          timelineSeries = buildLendingTimeline(h.events, gainsUSD, now);
         } catch (e) { /* sin histórico: solo valor actual */ }
       }
       return {
@@ -427,6 +450,7 @@ async function fetchRevertLending(owner) {
         pnlUSD: gainsUSD == null ? 0 : gainsUSD,
         hodlUSD: depositedUSD || currentValueUSD,
         closed: false, inRange: true,
+        timelineSeries,
       };
     } catch (e) { return null; }
   }));
@@ -633,13 +657,15 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
 
   let inc0 = 0n, inc1 = 0n, dec0r = 0n, dec1r = 0n, col0 = 0n, col1 = 0n;
   let mintTs = null;
+  const events = []; // {ts, type, a0, a1} para reconstruir la serie temporal
   for (const l of incLogs) {
     inc0 += word(l.data, 1); inc1 += word(l.data, 2);
     const ts = parseInt(l.timeStamp, 16);
     if (mintTs === null || ts < mintTs) mintTs = ts;
+    events.push({ ts, type: "inc", a0: word(l.data, 1), a1: word(l.data, 2) });
   }
-  for (const l of decLogs) { dec0r += word(l.data, 1); dec1r += word(l.data, 2); }
-  for (const l of colLogs) { col0 += word(l.data, 1); col1 += word(l.data, 2); }
+  for (const l of decLogs) { dec0r += word(l.data, 1); dec1r += word(l.data, 2); events.push({ ts: parseInt(l.timeStamp, 16), type: "dec", a0: word(l.data, 1), a1: word(l.data, 2) }); }
+  for (const l of colLogs) { col0 += word(l.data, 1); col1 += word(l.data, 2); events.push({ ts: parseInt(l.timeStamp, 16), type: "col", a0: word(l.data, 1), a1: word(l.data, 2) }); }
 
   const max0 = (a, b) => (a > b ? a - b : 0n);
   return {
@@ -649,8 +675,28 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
     withdrawn1: bigIntToDecimal(dec1r, dec1),
     collectedFees0: bigIntToDecimal(max0(col0, dec0r), dec0),
     collectedFees1: bigIntToDecimal(max0(col1, dec1r), dec1),
-    mintTs,
+    mintTs, events, dec0, dec1,
   };
+}
+
+// Construye serie diaria [{ts(ms), depositedUSD, withdrawnUSD, feesUSD}] desde eventos del PositionManager
+function buildTimelineFromEvents(events, dec0, dec1, p0, p1) {
+  if (!events || !events.length) return [];
+  const sorted = [...events].sort((a, b) => a.ts - b.ts);
+  let dep0 = 0, dep1 = 0, wd0 = 0, wd1 = 0, col0 = 0, col1 = 0;
+  const byDay = new Map();
+  for (const e of sorted) {
+    const a0 = Number(e.a0) / 10 ** dec0, a1 = Number(e.a1) / 10 ** dec1;
+    if (e.type === "inc") { dep0 += a0; dep1 += a1; }
+    else if (e.type === "dec") { wd0 += a0; wd1 += a1; }
+    else if (e.type === "col") { col0 += a0; col1 += a1; }
+    const depositedUSD = dep0 * p0 + dep1 * p1;
+    const withdrawnUSD = wd0 * p0 + wd1 * p1;
+    const feesUSD = Math.max(0, (col0 - wd0)) * p0 + Math.max(0, (col1 - wd1)) * p1; // Collect − principal retirado
+    const day = Math.floor((e.ts * 1000) / 86400000) * 86400000;
+    byDay.set(day, { depositedUSD, withdrawnUSD, feesUSD });
+  }
+  return [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
 }
 
 async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
@@ -828,6 +874,8 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
       openedAt,
       raw: fakeRaw,
       _rpcOnly: true, // marca para el UI
+      // serie temporal (depósitos + fees) reconstruida de eventos para el histórico
+      timelineSeries: hist && hist.events ? buildTimelineFromEvents(hist.events, t0.decimals, t1.decimals, p0, p1) : null,
     });
   }
   return result;
@@ -1793,6 +1841,13 @@ document.addEventListener("DOMContentLoaded", init);
               timeline = buildPortfolioTimeline(bundles);
             }
           } catch (e) { console.warn("timeline build failed:", e); }
+          // añadir series propias de HyperEVM (RPC) y lending (reconstruidas de eventos)
+          for (const p of (state.positions || [])) {
+            if (p.timelineSeries && p.timelineSeries.length) {
+              const label = p._lending ? `Revert Lend ${p.chainName}` : `${p.token0.symbol}/${p.token1.symbol}`;
+              timeline.push({ posId: p.id || p.vault || label, label, points: p.timelineSeries });
+            }
+          }
           const status = (document.getElementById("status-msg") || {}).textContent || "";
           window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline }, "*");
         })
