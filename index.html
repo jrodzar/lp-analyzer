@@ -55,6 +55,24 @@
     </div>
   </div>
 
+  <!-- Modal: progreso de análisis -->
+  <div id="analyzing-modal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-2xl p-6 text-center space-y-4 shadow-2xl">
+      <div class="flex justify-center">
+        <svg class="animate-spin w-10 h-10 text-[#ECE600]" viewBox="0 0 24 24" fill="none">
+          <circle class="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+      </div>
+      <h2 class="text-base font-semibold">Consultando blockchain…</h2>
+      <p id="analyzing-msg" class="text-sm text-slate-300">Analizando direcciones de tu portfolio.</p>
+      <div class="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+        <div id="analyzing-bar" class="h-full bg-[#ECE600] transition-all duration-300" style="width:0%"></div>
+      </div>
+      <p class="text-[11px] text-slate-500">Esto puede tardar unos segundos por dirección (RPC, subgraphs, precios…).</p>
+    </div>
+  </div>
+
   <!-- Modal: contraseña de cifrado (E2E) -->
   <div id="enc-modal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
@@ -264,6 +282,6 @@
 
   </main>
 
-  <script src="shell.js?v=19"></script>
+  <script src="shell.js?v=20"></script>
 </body>
 </html>

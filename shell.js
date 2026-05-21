@@ -29,6 +29,7 @@ const els = {
   pfLabel: $("pf-label"), pfAddress: $("pf-address"), pfAdd: $("pf-add"), pfAddErr: $("pf-add-err"),
   pfList: $("pf-list"), analyzeAll: $("analyze-all"), pfStatus: $("pf-status"),
   addRabby: $("add-rabby"), addPhantom: $("add-phantom"),
+  analyzingModal: $("analyzing-modal"), analyzingMsg: $("analyzing-msg"), analyzingBar: $("analyzing-bar"),
   // portfolio results
   pfSummary: $("pf-summary"), gValue: $("g-value"), gFees: $("g-fees"), gFeesSub: $("g-fees-sub"),
   gPositions: $("g-positions"), gPositionsSub: $("g-positions-sub"), gAddresses: $("g-addresses"),
@@ -563,6 +564,20 @@ function setPfStatus(msg, kind) {
   els.pfStatus.textContent = msg;
 }
 
+// Modal de progreso mientras se consultan las direcciones
+function openAnalyzingModal(msg) {
+  if (msg) els.analyzingMsg.textContent = msg;
+  if (els.analyzingBar) els.analyzingBar.style.width = "0%";
+  els.analyzingModal.classList.remove("hidden");
+}
+function updateAnalyzingModal(msg, doneCount, total) {
+  if (msg) els.analyzingMsg.textContent = msg;
+  if (els.analyzingBar && total > 0) els.analyzingBar.style.width = `${Math.round((doneCount / total) * 100)}%`;
+}
+function closeAnalyzingModal() {
+  els.analyzingModal.classList.add("hidden");
+}
+
 // ============================================================================
 // Portfolio analysis (orquesta los engines en headless, secuencial)
 // ============================================================================
@@ -590,17 +605,27 @@ async function analyzeAll() {
   els.analyzeAll.disabled = true;
   els.analyzeAll.textContent = "Analizando…";
   state.results = [];
-  for (let i = 0; i < state.portfolio.length; i++) {
-    const entry = state.portfolio[i];
-    setPfStatus(`Analizando ${entry.label || shortAddr(entry.address)} (${i + 1}/${state.portfolio.length})…`);
-    const r = await analyzeAddressHeadless(entry.address, entry.type);
-    state.results.push({ entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [] });
-    renderPortfolio();
+  const n = state.portfolio.length;
+  openAnalyzingModal(`Analizando direcciones (0/${n})…`);
+  try {
+    for (let i = 0; i < n; i++) {
+      const entry = state.portfolio[i];
+      const label = entry.label || shortAddr(entry.address);
+      const msg = `Analizando ${label} (${i + 1}/${n})…`;
+      setPfStatus(msg);
+      updateAnalyzingModal(msg, i, n);
+      const r = await analyzeAddressHeadless(entry.address, entry.type);
+      state.results.push({ entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [] });
+      updateAnalyzingModal(msg, i + 1, n);
+      renderPortfolio();
+    }
+    const total = state.results.reduce((acc, r) => acc + r.items.length, 0);
+    setPfStatus(`Listo. ${total} posiciones en ${state.results.length} direcciones.`, "ok");
+  } finally {
+    closeAnalyzingModal();
+    els.analyzeAll.disabled = false;
+    els.analyzeAll.textContent = "Analizar todo";
   }
-  const total = state.results.reduce((n, r) => n + r.items.length, 0);
-  setPfStatus(`Listo. ${total} posiciones en ${state.results.length} direcciones.`, "ok");
-  els.analyzeAll.disabled = false;
-  els.analyzeAll.textContent = "Analizar todo";
 }
 
 // ============================================================================
