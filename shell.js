@@ -820,7 +820,7 @@ function renderHistorico() {
   els.histAportado.textContent = fmtUSD(curves.lastAportado);
   els.histValor.textContent = fmtUSD(curves.lastValor);
   els.histGanado.textContent = fmtUSD(curves.ganado);
-  els.histNote.textContent = "Valor = aportado + fees. EVM/HyperEVM/lending: histórico real; Solana: valor actual (sin histórico). No incluye variación de precio/IL.";
+  els.histNote.textContent = "Valor = aportado + fees, reconstruido de eventos on-chain (EVM/HyperEVM/lending) y transacciones (Solana). No incluye variación de precio/IL.";
 
   const datasets = [
     { label: "Capital aportado", data: curves.aportado, borderColor: "#94a3b8", borderDash: [5, 4], pointRadius: 2, borderWidth: 1.5, tension: 0.2 },

@@ -1354,6 +1354,57 @@ async function trySilentReconnectPhantom() {
 }
 
 // ============================================================================
+// Histórico real de Solana (Orca/Raydium) vía Helius Enhanced Transactions API.
+// Reconstruye, a nivel de wallet, el capital aportado y fees en el tiempo:
+//   tx con source RAYDIUM/ORCA → transfers del owner: envía = depósito, recibe = fee/retiro.
+// ============================================================================
+const SOL_STABLES = new Set([
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
+]);
+async function fetchSolanaHistory(owner) {
+  if (!state.heliusKey || !owner) return [];
+  const priceOf = (mint) => (state.prices[mint] != null ? state.prices[mint] : (SOL_STABLES.has(mint) ? 1 : 0));
+  const txs = [];
+  let before = "";
+  for (let page = 0; page < 10; page++) {
+    const url = `https://api.helius.xyz/v0/addresses/${owner}/transactions?api-key=${state.heliusKey}&limit=100${before ? "&before=" + before : ""}`;
+    let arr;
+    try { const r = await fetch(url); arr = await r.json(); } catch { break; }
+    if (!Array.isArray(arr) || !arr.length) break;
+    txs.push(...arr);
+    before = arr[arr.length - 1].signature;
+    if (arr.length < 100) break;
+  }
+  const SRC = new Set(["RAYDIUM", "ORCA", "WHIRLPOOL"]);
+  const events = [];
+  for (const tx of txs) {
+    if (!SRC.has(tx.source)) continue;
+    let sent = 0, recv = 0;
+    for (const t of (tx.tokenTransfers || [])) {
+      const p = priceOf(t.mint); if (!p) continue;
+      const usd = (t.tokenAmount || 0) * p;
+      if (t.fromUserAccount === owner) sent += usd;
+      else if (t.toUserAccount === owner) recv += usd;
+    }
+    const net = sent - recv;
+    if (Math.abs(net) < 1e-9) continue;
+    events.push({ ts: tx.timestamp || 0, net });
+  }
+  if (!events.length) return [];
+  events.sort((a, b) => a.ts - b.ts);
+  let cumDep = 0, cumFees = 0;
+  const byDay = new Map();
+  for (const e of events) {
+    if (e.net > 0) cumDep += e.net; else cumFees += -e.net; // recibido ≈ fees (posiciones abiertas)
+    const day = Math.floor((e.ts * 1000) / 86400000) * 86400000;
+    byDay.set(day, { depositedUSD: cumDep, withdrawnUSD: 0, feesUSD: cumFees });
+  }
+  const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
+  return [{ posId: "sol-" + owner, label: "Solana (Orca/Raydium)", points }];
+}
+
+// ============================================================================
 // Init
 // ============================================================================
 
@@ -1435,16 +1486,19 @@ document.addEventListener("DOMContentLoaded", init);
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
       Promise.resolve(typeof analyze === "function" ? analyze() : null)
-        .then(() => {
+        .then(async () => {
           const status = (document.getElementById("status-msg") || {}).textContent || "";
-          // Solana no tiene histórico de depósitos (sin eventos fáciles): emitimos una
-          // serie "plana" marcada para que el histórico la muestre como valor constante.
-          const nowMs = Math.floor(Date.now() / 86400000) * 86400000;
-          const timeline = (state.positions || []).filter((p) => !p.closed).map((p) => {
-            const fees = p.feesPendingUSD || 0;
-            const dep = Math.max(0, (p.currentValueUSD || 0) - fees);
-            return { posId: p.mint, label: `${p.token0.symbol}/${p.token1.symbol}`, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: fees }] };
-          });
+          // Histórico real (Helius enhanced txs); si falla, serie "plana" con el valor actual
+          let timeline = [];
+          try { timeline = await fetchSolanaHistory(d.address); } catch (e) { console.warn("sol history:", e); }
+          if (!timeline.length) {
+            const nowMs = Math.floor(Date.now() / 86400000) * 86400000;
+            timeline = (state.positions || []).filter((p) => !p.closed).map((p) => {
+              const fees = p.feesPendingUSD || 0;
+              const dep = Math.max(0, (p.currentValueUSD || 0) - fees);
+              return { posId: p.mint, label: `${p.token0.symbol}/${p.token1.symbol}`, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: fees }] };
+            });
+          }
           window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline }, "*");
         })
         .catch((err) => {
