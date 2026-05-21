@@ -1598,27 +1598,43 @@ function assignColors(list) {
   list.forEach((p, i) => { p.color = distinctColor(i); });
 }
 
-function renderFeesChart(snapshotBundles) {
+// Construye las series de fees acumuladas (igual que el portfolio): snapshots del
+// subgraph para posiciones indexadas + timelineSeries reconstruidas de eventos
+// (HyperEVM por RPC/Blockscout y Revert Lend). Luego las pinta.
+async function updateFeesChart() {
+  let series = [];
+  // 1) Posiciones de subgraph → snapshots (fees cobradas acumuladas)
+  const subgraphPos = (state.positions || []).filter((p) => !p._lending && !p._rpcOnly && p.id && !p.closed);
+  if (subgraphPos.length) {
+    try {
+      const bundles = await fetchSnapshotsForChart(subgraphPos);
+      series = series.concat(buildPortfolioTimeline(bundles.filter((b) => b.snapshots.length)));
+    } catch (e) { console.warn("snapshots fees chart:", e); }
+  }
+  // 2) HyperEVM (RPC) + lending → series ya reconstruidas de eventos on-chain
+  for (const p of (state.positions || [])) {
+    if (p.timelineSeries && p.timelineSeries.length) {
+      const label = p._lending ? `Revert Lend ${p.chainName}` : `${p.token0.symbol}/${p.token1.symbol}`;
+      series.push({ label, points: p.timelineSeries });
+    }
+  }
+  renderFeesChart(series);
+}
+
+// Pinta el gráfico de "Fees acumuladas" a partir de series [{label, points:[{ts,feesUSD}]}]
+function renderFeesChart(series) {
   const panel = document.getElementById("fees-chart-panel");
-  // Sin snapshots (p. ej. HyperEVM, que no tiene subgraph) → ocultar el panel vacío
-  if (!snapshotBundles || !snapshotBundles.length) { if (panel) panel.classList.add("hidden"); setChartsCols(false); return; }
+  if (!series || !series.length) { if (panel) panel.classList.add("hidden"); setChartsCols(false); return; }
   if (panel) panel.classList.remove("hidden");
   setChartsCols(true);
-  const datasets = snapshotBundles.map((b, idx) => {
-    const p = b.position;
-    const points = b.snapshots.map((s) => {
-      const f0 = Number(s.collectedFeesToken0);
-      const f1 = Number(s.collectedFeesToken1);
-      const usd = f0 * p.token0.priceUSD + f1 * p.token1.priceUSD;
-      return { x: Number(s.timestamp) * 1000, y: usd };
-    });
-    const c = p.color || distinctColor(idx);
+  const datasets = series.map((s, idx) => {
+    const c = distinctColor(idx);
     return {
-      label: `${p.token0.symbol}/${p.token1.symbol} #${p.nftId.slice(-4)}`,
-      data: points,
+      label: s.label,
+      data: (s.points || []).map((pt) => ({ x: pt.ts, y: pt.feesUSD || 0 })),
       borderColor: c.line,
       backgroundColor: c.fill,
-      tension: 0.2,
+      tension: 0.3,
       pointRadius: 0,
       borderWidth: 2,
     };
@@ -1702,12 +1718,12 @@ async function analyze() {
 
     renderAll();
 
-    if (positions.length) {
-      // snapshots para el chart de fees (en background)
-      fetchSnapshotsForChart(positions).then((bundles) => {
-        renderFeesChart(bundles.filter((b) => b.snapshots.length));
-      });
+    // Gráfico de fees acumuladas: mismas series que el portfolio (snapshots del
+    // subgraph + timelineSeries reconstruidas de eventos para HyperEVM/lending),
+    // así también aparecen las fees de HyperEVM.
+    updateFeesChart();
 
+    if (positions.length) {
       // Backfill por RPC de fees no cobradas en chains con tickField scalar
       const pendingRPC = positions.filter((p) => p.uncollected === null && !p.closed && state.chains[p.chainKey]?.rpcUrl).length;
       if (pendingRPC > 0) {
