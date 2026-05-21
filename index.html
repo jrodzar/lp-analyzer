@@ -57,6 +57,23 @@
     </div>
   </div>
 
+  <!-- Modal: contraseña de cifrado (E2E) -->
+  <div id="enc-modal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+      <h2 id="enc-title" class="text-lg font-semibold">🔒 Contraseña de cifrado</h2>
+      <p id="enc-desc" class="text-xs text-slate-400"></p>
+      <input id="enc-pass" type="password" placeholder="Contraseña" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm" />
+      <input id="enc-pass2" type="password" placeholder="Repite la contraseña" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm hidden" />
+      <label class="text-xs text-slate-300 flex items-center gap-2">
+        <input id="enc-remember" type="checkbox" class="accent-purple-500 w-4 h-4" />
+        <span>Recordar en este dispositivo</span>
+      </label>
+      <div id="enc-err" class="text-[11px] text-rose-400 hidden"></div>
+      <button id="enc-submit" class="w-full px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-sm font-semibold">Continuar</button>
+      <p class="text-[10px] text-slate-500">Tus direcciones se cifran en tu navegador. Ni el creador de la app ni nadie con acceso a la base de datos puede leerlas sin esta contraseña. <b>No se guarda en ningún sitio: si la olvidas, no se puede recuperar.</b></p>
+    </div>
+  </div>
+
   <main class="max-w-7xl mx-auto w-full px-4 py-6 flex-1">
 
     <!-- ===== TAB PORTFOLIO ===== -->
@@ -227,6 +244,6 @@
 
   </main>
 
-  <script src="shell.js?v=10"></script>
+  <script src="shell.js?v=11"></script>
 </body>
 </html>

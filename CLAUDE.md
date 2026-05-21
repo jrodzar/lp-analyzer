@@ -52,11 +52,18 @@ Abrir `http://localhost:5180`. (En Claude Code: usar el botón de preview; hay
 ## Modelo de datos (Firestore)
 ```
 users/{uid} → {
-  email,
-  portfolio: [{ address, type: "evm"|"sol", label }],
-  prefs:     { chains: [...], protocols: [...] }
+  portfolioEnc: { iv, ct },   // portfolio cifrado E2E (AES-GCM); addresses+labels
+  encSalt,                    // salt PBKDF2 (no secreto)
+  prefs:     { chains: [...], protocols: [...] },   // no sensible, en claro
+  prefsVersion
 }
 ```
+**Cifrado E2E** (shell.js): el portfolio se cifra en el navegador con AES-GCM, clave
+derivada por PBKDF2 de una contraseña que el usuario define y que **nunca** se envía.
+El dueño del proyecto Firebase NO puede leer las direcciones (solo ve `portfolioEnc`).
+Opción "recordar en este dispositivo" guarda la clave derivada en localStorage
+(`lp:enckey:{uid}`). Si se pierde la contraseña, los datos cifrados no se recuperan.
+Nota: Firebase Auth sigue viendo el email del usuario (identidad), pero no las wallets.
 
 ## Detalles técnicos
 

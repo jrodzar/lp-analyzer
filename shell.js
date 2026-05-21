@@ -18,6 +18,10 @@ const els = {
   // firebase setup
   fbSetup: $("fb-setup"), fbInput: $("fb-config-input"), fbErr: $("fb-config-err"), fbSave: $("fb-config-save"),
   openFbSetup: $("open-fb-setup"),
+  // cifrado E2E
+  encModal: $("enc-modal"), encTitle: $("enc-title"), encDesc: $("enc-desc"),
+  encPass: $("enc-pass"), encPass2: $("enc-pass2"), encRemember: $("enc-remember"),
+  encErr: $("enc-err"), encSubmit: $("enc-submit"),
   // login
   loginGate: $("login-gate"), loginBtn: $("login-btn"), portfolioArea: $("portfolio-area"),
   // portfolio crud
@@ -71,6 +75,7 @@ const state = {
 };
 
 const fb = { app: null, auth: null, db: null, authMod: null, fsMod: null };
+const crypto_ = { key: null, salt: null }; // clave AES-GCM de sesión + salt del usuario
 const pendingReqs = new Map(); // reqId -> resolve
 const pendingWalletAdd = { evm: false, sol: false }; // añadir al portfolio tras conectar
 let pfCharts = { addr: null, venue: null, fees: null, timeline: null, timelineTotal: null, projection: null };
@@ -167,6 +172,90 @@ function renderWalletButton() {
 }
 
 // ============================================================================
+// Cifrado E2E (WebCrypto: PBKDF2 -> AES-GCM). La contraseña nunca sale del navegador.
+// ============================================================================
+
+const b64 = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes)));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+async function deriveKey(passphrase, saltBytes) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: saltBytes, iterations: 210000, hash: "SHA-256" },
+    base, { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]
+  );
+}
+async function encryptJSON(obj, key) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(obj)));
+  return { iv: b64(iv), ct: b64(ct) };
+}
+async function decryptJSON(blob, key) {
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(blob.iv) }, key, unb64(blob.ct));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+async function rememberKey(uid, key) {
+  try { const raw = await crypto.subtle.exportKey("raw", key); localStorage.setItem("lp:enckey:" + uid, b64(raw)); } catch (e) {}
+}
+async function loadRememberedKey(uid) {
+  const s = localStorage.getItem("lp:enckey:" + uid);
+  if (!s) return null;
+  try { return await crypto.subtle.importKey("raw", unb64(s), "AES-GCM", true, ["encrypt", "decrypt"]); } catch { return null; }
+}
+function forgetKey(uid) { localStorage.removeItem("lp:enckey:" + uid); }
+
+// Modal de contraseña. mode: "set" (nueva) | "unlock" (existente). Devuelve Promise<key|null>.
+let encResolve = null;
+function openEncModal(mode) {
+  return new Promise((resolve) => {
+    encResolve = resolve;
+    els.encTitle.textContent = mode === "set" ? "🔒 Crea tu contraseña de cifrado" : "🔓 Desbloquea tu portfolio";
+    els.encDesc.textContent = mode === "set"
+      ? "Define una contraseña para cifrar tus direcciones. Será necesaria para acceder a ellas."
+      : "Introduce tu contraseña para descifrar tus direcciones guardadas.";
+    els.encPass2.classList.toggle("hidden", mode !== "set");
+    els.encPass.value = ""; els.encPass2.value = ""; els.encErr.classList.add("hidden");
+    els.encRemember.checked = false;
+    els.encModal.dataset.mode = mode;
+    els.encModal.classList.remove("hidden");
+    setTimeout(() => els.encPass.focus(), 50);
+  });
+}
+function closeEncModal(result) {
+  els.encModal.classList.add("hidden");
+  const r = encResolve; encResolve = null;
+  if (r) r(result);
+}
+async function handleEncSubmit() {
+  const mode = els.encModal.dataset.mode;
+  const pass = els.encPass.value;
+  els.encErr.classList.add("hidden");
+  if (!pass || pass.length < 6) { els.encErr.textContent = "Mínimo 6 caracteres."; els.encErr.classList.remove("hidden"); return; }
+  if (mode === "set" && pass !== els.encPass2.value) { els.encErr.textContent = "Las contraseñas no coinciden."; els.encErr.classList.remove("hidden"); return; }
+  try {
+    const key = await deriveKey(pass, crypto_.salt);
+    if (mode === "unlock") {
+      // verificar contra el dato cifrado existente
+      const ok = await tryDecryptPortfolio(key);
+      if (!ok) { els.encErr.textContent = "Contraseña incorrecta."; els.encErr.classList.remove("hidden"); return; }
+    }
+    crypto_.key = key;
+    if (els.encRemember.checked && state.user) await rememberKey(state.user.uid, key);
+    closeEncModal(key);
+  } catch (e) {
+    els.encErr.textContent = "Error: " + e.message; els.encErr.classList.remove("hidden");
+  }
+}
+
+// intenta descifrar el portfolio guardado con una key; devuelve true/false (y rellena state.portfolio)
+let _pendingEnc = null; // blob cifrado cargado de Firestore pendiente de descifrar
+async function tryDecryptPortfolio(key) {
+  if (!_pendingEnc) { state.portfolio = []; return true; }
+  try { state.portfolio = await decryptJSON(_pendingEnc, key); if (!Array.isArray(state.portfolio)) state.portfolio = []; return true; }
+  catch { return false; }
+}
+
+// ============================================================================
 // Firebase
 // ============================================================================
 
@@ -211,13 +300,16 @@ async function onAuthChange(user) {
     els.portfolioArea.classList.remove("hidden");
     setTab("portfolio"); // al loguear, ir al portfolio
     await loadPortfolio(user.uid);
-    renderPortfolioList();
     renderPrefs();
     pushPrefsToEngines();
+    const unlocked = await ensureUnlocked(user.uid); // pide contraseña si hace falta
+    if (!unlocked) setPfStatus("Introduce tu contraseña de cifrado para ver tu portfolio.", "err");
+    renderPortfolioList();
   } else {
     els.loginGate.classList.remove("hidden");
     els.portfolioArea.classList.add("hidden");
     state.portfolio = [];
+    crypto_.key = null; _pendingEnc = null;
     setTab("quick"); // sin sesión, la app funciona como antes (una dirección)
   }
 }
@@ -243,22 +335,28 @@ function renderAuthArea() {
   }
 }
 
-// ---- Firestore portfolio ----
+// ---- Firestore portfolio (cifrado E2E) ----
+let _legacyPortfolio = null; // datos en texto plano de cuentas antiguas (a migrar)
+
 async function loadPortfolio(uid) {
+  _pendingEnc = null; _legacyPortfolio = null; crypto_.key = null;
   try {
     const ref = fb.fsMod.doc(fb.db, "users", uid);
     const snap = await fb.fsMod.getDoc(ref);
     const data = snap.exists() ? snap.data() : {};
-    state.portfolio = Array.isArray(data.portfolio) ? data.portfolio : [];
     state.prefs = {
       chains: Array.isArray(data.prefs?.chains) ? data.prefs.chains : DEFAULT_PREFS.chains.slice(),
       protocols: Array.isArray(data.prefs?.protocols) ? data.prefs.protocols : DEFAULT_PREFS.protocols.slice(),
     };
-    // Migración v1: HyperEVM activado por defecto (una sola vez para cuentas existentes)
     if (Number(data.prefsVersion || 0) < 1) {
       if (!state.prefs.chains.includes("hyperevm")) state.prefs.chains.push("hyperevm");
       await fb.fsMod.setDoc(ref, { prefs: state.prefs, prefsVersion: 1 }, { merge: true }).catch(() => {});
     }
+    // salt del usuario (no es secreto) y datos cifrados / legados
+    crypto_.salt = data.encSalt ? unb64(data.encSalt) : crypto.getRandomValues(new Uint8Array(16));
+    _pendingEnc = data.portfolioEnc || null;
+    _legacyPortfolio = Array.isArray(data.portfolio) ? data.portfolio : null; // texto plano antiguo
+    state.portfolio = [];
   } catch (e) {
     console.error("loadPortfolio", e);
     setPfStatus(`No se pudo cargar el portfolio: ${e.message}`, "err");
@@ -266,11 +364,40 @@ async function loadPortfolio(uid) {
     state.prefs = structuredClone(DEFAULT_PREFS);
   }
 }
+
+// Asegura que tenemos la clave y el portfolio descifrado (modal si hace falta)
+async function ensureUnlocked(uid) {
+  // 1) clave recordada en este dispositivo
+  const rk = await loadRememberedKey(uid);
+  if (rk && await tryDecryptPortfolio(rk)) { crypto_.key = rk; return true; }
+  if (rk) forgetKey(uid); // recordada pero ya no descifra (cambió la contraseña) → descartar
+
+  if (_pendingEnc) {
+    // datos cifrados existentes → desbloquear
+    const key = await openEncModal("unlock");
+    return !!key; // handleEncSubmit ya descifró state.portfolio
+  }
+  // sin datos cifrados → crear contraseña (cuenta nueva o migración de texto plano)
+  const key = await openEncModal("set");
+  if (!key) return false;
+  state.portfolio = (_legacyPortfolio && _legacyPortfolio.length) ? _legacyPortfolio : [];
+  await savePortfolio(); // cifra y borra el texto plano antiguo
+  return true;
+}
+
 async function savePortfolio() {
-  if (!state.user || !fb.db) return;
+  if (!state.user || !fb.db || !crypto_.key) return;
   try {
     const ref = fb.fsMod.doc(fb.db, "users", state.user.uid);
-    await fb.fsMod.setDoc(ref, { email: state.user.email, portfolio: state.portfolio }, { merge: true });
+    const enc = await encryptJSON(state.portfolio, crypto_.key);
+    await fb.fsMod.setDoc(ref, {
+      portfolioEnc: enc,
+      encSalt: b64(crypto_.salt),
+      portfolio: fb.fsMod.deleteField(), // eliminar texto plano antiguo
+      email: fb.fsMod.deleteField(),     // no almacenar PII redundante
+    }, { merge: true });
+    _pendingEnc = enc;
+    _legacyPortfolio = null;
   } catch (e) {
     console.error("savePortfolio", e);
     setPfStatus(`No se pudo guardar: ${e.message}`, "err");
@@ -860,6 +987,9 @@ els.wallet.onclick = () => postToActive({ type: state.wallet[state.mode] ? "lp-d
 els.loginBtn.onclick = signInWithGoogle;
 els.openFbSetup.onclick = openFbSetup;
 els.fbSave.onclick = saveFbConfig;
+els.encSubmit.onclick = handleEncSubmit;
+els.encPass.addEventListener("keydown", (e) => { if (e.key === "Enter") handleEncSubmit(); });
+els.encPass2.addEventListener("keydown", (e) => { if (e.key === "Enter") handleEncSubmit(); });
 els.pfAdd.onclick = addPortfolioEntry;
 els.pfAddress.addEventListener("keydown", (e) => { if (e.key === "Enter") addPortfolioEntry(); });
 els.analyzeAll.onclick = analyzeAll;
