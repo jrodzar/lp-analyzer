@@ -646,14 +646,18 @@ function portfolioCard(it, color) {
   const el = document.createElement("article");
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-2";
   el.style.borderLeft = `3px solid ${color}`;
-  const rangeChip = it.closed
-    ? `<span class="chip bg-slate-700 text-slate-300">cerrada</span>`
-    : it.inRange
-      ? `<span class="chip bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">en rango</span>`
-      : `<span class="chip bg-amber-500/15 text-amber-300 border border-amber-500/30">fuera</span>`;
-  const feesLine = it.kind === "evm"
-    ? `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesUSD)}<span class="text-[10px] text-amber-300 ml-1">${it.feesPendingUSD == null ? "+pend n/d" : "+" + fmtUSD(it.feesPendingUSD)}</span></div>`
-    : `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesPendingUSD)}</div>`;
+  const rangeChip = it.lending
+    ? `<span class="chip bg-sky-500/15 text-sky-300 border border-sky-500/30">préstamo</span>`
+    : it.closed
+      ? `<span class="chip bg-slate-700 text-slate-300">cerrada</span>`
+      : it.inRange
+        ? `<span class="chip bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">en rango</span>`
+        : `<span class="chip bg-amber-500/15 text-amber-300 border border-amber-500/30">fuera</span>`;
+  const feesLine = it.lending
+    ? `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesUSD)}</div>`
+    : it.kind === "evm"
+      ? `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesUSD)}<span class="text-[10px] text-amber-300 ml-1">${it.feesPendingUSD == null ? "+pend n/d" : "+" + fmtUSD(it.feesPendingUSD)}</span></div>`
+      : `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesPendingUSD)}</div>`;
   const evmExtra = it.kind === "evm"
     ? `<div class="grid grid-cols-2 gap-2 text-xs pt-1">
          <div><div class="text-[10px] uppercase text-slate-500">IL</div><div class="${pnlColor(it.ilUSD)}">${it.ilUSD == null ? "—" : fmtUSD(it.ilUSD)}</div></div>
