@@ -33,6 +33,7 @@
       <div class="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700 shrink-0">
         <button id="tab-btn-portfolio" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📁 Portfolio</button>
         <button id="tab-btn-quick" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">⚡ Quick</button>
+        <button id="tab-btn-projection" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📈 Proyección</button>
       </div>
 
       <div class="flex-1"></div>
@@ -184,13 +185,84 @@
       </div>
       <div id="hint" class="text-[11px] hidden mb-2"></div>
       <div class="relative" style="height: calc(100vh - 220px); min-height: 480px;">
-        <iframe id="frame-evm" src="evm/index.html?v=9" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
-        <iframe id="frame-sol" src="sol/index.html?v=1" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
+        <iframe id="frame-evm" src="evm/index.html?v=10" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
+        <iframe id="frame-sol" src="sol/index.html?v=6" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
+      </div>
+    </section>
+
+    <!-- ===== TAB PROYECCIÓN ===== -->
+    <section id="tab-projection" class="hidden space-y-6">
+      <div class="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-4">
+        <div class="flex items-center justify-between flex-wrap gap-2">
+          <h2 class="text-base font-semibold">Proyección de interés compuesto</h2>
+          <button id="proj-load" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold">↻ Cargar del portfolio</button>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <label class="text-xs text-slate-300 space-y-1">
+            <span>Capital inicial ($)</span>
+            <input id="proj-capital" type="number" min="0" step="any" value="1000" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm" />
+          </label>
+          <label class="text-xs text-slate-300 space-y-1">
+            <span>APR anual (%)</span>
+            <input id="proj-apr" type="number" min="0" step="any" value="10" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm" />
+          </label>
+          <label class="text-xs text-slate-300 space-y-1">
+            <span>Horizonte (años)</span>
+            <input id="proj-years" type="number" min="1" max="40" step="1" value="5" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm" />
+          </label>
+          <label class="text-xs text-slate-300 space-y-1">
+            <span>Aportación periódica ($)</span>
+            <input id="proj-contrib" type="number" min="0" step="any" value="100" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm" />
+          </label>
+          <label class="text-xs text-slate-300 space-y-1">
+            <span>Frecuencia de aportación</span>
+            <select id="proj-freq" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm">
+              <option value="1">Mensual</option>
+              <option value="3">Trimestral</option>
+              <option value="12">Anual</option>
+              <option value="0">Ninguna</option>
+            </select>
+          </label>
+          <label class="text-xs text-slate-300 flex items-end gap-2 pb-2">
+            <input id="proj-reinvest" type="checkbox" checked class="accent-purple-500 w-4 h-4" />
+            <span>Reinvertir rendimientos (compuesto)</span>
+          </label>
+        </div>
+        <div id="proj-note" class="text-[11px] text-slate-500"></div>
+      </div>
+
+      <!-- Resumen -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <div class="text-[11px] uppercase tracking-wide text-slate-400">Valor final</div>
+          <div id="proj-final" class="text-xl font-bold mt-1">—</div>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <div class="text-[11px] uppercase tracking-wide text-slate-400">Total aportado</div>
+          <div id="proj-contributed" class="text-xl font-bold mt-1">—</div>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <div class="text-[11px] uppercase tracking-wide text-slate-400">Rendimiento generado</div>
+          <div id="proj-earnings" class="text-xl font-bold mt-1 text-emerald-400">—</div>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <div class="text-[11px] uppercase tracking-wide text-slate-400">Multiplicador</div>
+          <div id="proj-multiple" class="text-xl font-bold mt-1">—</div>
+        </div>
+      </div>
+
+      <!-- Gráfico -->
+      <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold">Evolución del capital</h3>
+          <span id="proj-hist-note" class="text-[11px] text-slate-400"></span>
+        </div>
+        <div class="relative h-80"><canvas id="chart-projection"></canvas></div>
       </div>
     </section>
 
   </main>
 
-  <script src="shell.js?v=5"></script>
+  <script src="shell.js?v=6"></script>
 </body>
 </html>

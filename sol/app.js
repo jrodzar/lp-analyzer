@@ -1410,6 +1410,7 @@ document.addEventListener("DOMContentLoaded", init);
       feesPendingUSD: p.feesPendingUSD == null ? null : p.feesPendingUSD,
       ilUSD: null,
       pnlUSD: null,
+      apr: typeof p.apr === "number" && isFinite(p.apr) ? p.apr : null,
       inRange: !!p.inRange,
       closed: !!p.closed,
       id: String(p.mint || ""),

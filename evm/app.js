@@ -1733,6 +1733,7 @@ document.addEventListener("DOMContentLoaded", init);
           feesPendingUSD: 0,
           ilUSD: null,
           pnlUSD: p.gainsUSD == null ? null : p.gainsUSD,
+          apr: typeof p.apr === "number" ? p.apr : null,
           inRange: true, closed: false,
           id: p.vault || "",
         };
@@ -1746,6 +1747,7 @@ document.addEventListener("DOMContentLoaded", init);
         feesPendingUSD: p.uncollectedUSD == null ? null : p.uncollectedUSD,
         ilUSD: p.ilUSD == null ? null : p.ilUSD,
         pnlUSD: p.pnlUSD == null ? null : p.pnlUSD,
+        apr: typeof p.apr === "number" && isFinite(p.apr) ? p.apr : null,
         inRange: !!p.inRange,
         closed: !!p.closed,
         id: String(p.nftId || ""),
