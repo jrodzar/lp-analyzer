@@ -128,21 +128,25 @@ export default {
 // Topes diarios por servicio por defecto (sobreescribibles con env DAILY_LIMIT_*)
 const DEFAULT_DAILY = { graph: 5000, helius: 5000, birdeye: 2000 };
 
-// Contador diario en KV, repartido en varias "shards" para no chocar con el
-// límite de 1 escritura/seg por clave. Aproximado pero suficiente como red de
-// seguridad de cuota. Devuelve false si ya se alcanzó el tope.
+// Contador diario en KV. El plan gratuito de KV solo permite ~1000 escrituras/día,
+// así que NO escribimos en cada petición: usamos muestreo (1 escritura cada SAMPLE
+// peticiones, sumando SAMPLE), lo que mantiene el contador aproximado sin agotar la
+// cuota de KV. Además es a prueba de fallos: si KV da error (p. ej. límite diario),
+// devolvemos true (permitir) para NO romper la app.
 async function checkAndIncDaily(kv, service, limit) {
-  const SHARDS = 5;
+  const SAMPLE = 25;
   const date = new Date().toISOString().slice(0, 10);
-  const keys = Array.from({ length: SHARDS }, (_, i) => `q:${service}:${date}:${i}`);
-  const vals = await Promise.all(keys.map((k) => kv.get(k)));
-  const total = vals.reduce((s, v) => s + (parseInt(v || "0", 10) || 0), 0);
-  if (total >= limit) return false;
-  const i = Math.floor(Math.random() * SHARDS);
-  const cur = parseInt(vals[i] || "0", 10) || 0;
-  // expira a los 2 días para autolimpiar contadores viejos
-  await kv.put(keys[i], String(cur + 1), { expirationTtl: 172800 });
-  return true;
+  const key = `q:${service}:${date}`;
+  try {
+    const cur = parseInt((await kv.get(key)) || "0", 10) || 0;
+    if (cur >= limit) return false; // tope alcanzado
+    if (Math.random() < 1 / SAMPLE) {
+      await kv.put(key, String(cur + SAMPLE), { expirationTtl: 172800 });
+    }
+    return true;
+  } catch (e) {
+    return true; // cualquier error de KV → permitir, nunca bloquear por el contador
+  }
 }
 
 function json(obj, status, cors) {
