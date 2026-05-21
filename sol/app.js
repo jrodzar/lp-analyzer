@@ -1328,16 +1328,25 @@ async function analyze() {
     assignColors(state.positions);
 
     // PnL real + IL vs HODL con precios históricos (si hay Birdeye key)
+    let beWarn = "";
     if (all.length && state.birdeyeKey) {
       setStatus("Calculando PnL e IL con históricos de Birdeye…", "info");
       try { await enrichSolanaPnL(addr); } catch (e) { console.warn("enrichSolanaPnL:", e); }
+      const st = state._beStats || {};
+      if (st.ok === 0 && (st.denied > 0)) {
+        beWarn = " ⚠ Tu plan de Birdeye no permite precios históricos (o la key es inválida): PnL/IL no disponible.";
+      } else if (st.ok === 0 && st.rate > 0) {
+        beWarn = " ⚠ Birdeye limitó las peticiones (rate limit): PnL/IL incompleto, reintenta en un momento.";
+      } else if (st.ok === 0 && st.error > 0) {
+        beWarn = " ⚠ No se pudo obtener histórico de Birdeye: PnL/IL no disponible.";
+      }
     }
 
     if (!all.length) {
       setStatus(`Sin posiciones para ${shortAddr(addr)} en los protocolos activos.`, "info");
     } else {
       const enRango = all.filter((p) => !p.closed && p.inRange).length;
-      setStatus(`${all.length} posiciones (${enRango} en rango).`, "ok");
+      setStatus(`${all.length} posiciones (${enRango} en rango).${beWarn}`, beWarn ? "err" : "ok");
     }
     renderAll();
   } catch (e) {
@@ -1469,10 +1478,19 @@ async function birdeyePriceAt(mint, unixSec) {
   try {
     const url = `https://public-api.birdeye.so/defi/historical_price_unix?address=${mint}&unixtime=${unixSec}`;
     const r = await fetch(url, { headers: { "X-API-KEY": state.birdeyeKey, "x-chain": "solana", accept: "application/json" } });
-    const j = await r.json();
-    const v = j && j.data && j.data.value;
-    if (typeof v === "number" && isFinite(v)) price = v;
-  } catch (e) { /* deja price=null */ }
+    if (r.status === 401 || r.status === 403) {
+      // key inválida o plan sin acceso al endpoint histórico
+      state._beStats.denied++;
+    } else if (r.status === 429) {
+      state._beStats.rate++;
+    } else {
+      let j = null; try { j = await r.json(); } catch (e) {}
+      const v = j && j.data && j.data.value;
+      if (typeof v === "number" && isFinite(v)) { price = v; state._beStats.ok++; }
+      else if (j && j.success === false) { state._beStats.denied++; }
+      else { state._beStats.error++; }
+    }
+  } catch (e) { state._beStats.error++; }
   state._bePriceCache.set(dayKey, price);
   return price;
 }
@@ -1480,6 +1498,7 @@ async function birdeyePriceAt(mint, unixSec) {
 // Calcula PnL real + IL vs HODL por posición usando precios históricos (Birdeye).
 // Reconstruye el coste base a partir de las transferencias depósito/retiro/fee.
 async function enrichSolanaPnL(owner) {
+  state._beStats = { ok: 0, denied: 0, rate: 0, error: 0 };
   if (!state.birdeyeKey || !owner || !(state.positions || []).length) return;
   const txs = await fetchEnhancedTxs(owner);
   if (!txs.length) return;
