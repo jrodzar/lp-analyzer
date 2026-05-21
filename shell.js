@@ -22,7 +22,7 @@ const els = {
   encModal: $("enc-modal"), encTitle: $("enc-title"), encDesc: $("enc-desc"),
   encPass: $("enc-pass"), encPass2: $("enc-pass2"), encRemember: $("enc-remember"),
   encWarn: $("enc-warn"), encAck: $("enc-ack"), encErr: $("enc-err"), encSubmit: $("enc-submit"),
-  changePass: $("change-pass"),
+  encCancel: $("enc-cancel"), changePass: $("change-pass"),
   // login
   loginGate: $("login-gate"), loginBtn: $("login-btn"), portfolioArea: $("portfolio-area"),
   // portfolio crud
@@ -220,6 +220,7 @@ function openEncModal(mode) {
     els.encPass.placeholder = mode === "change" ? "Nueva contraseña" : "Contraseña";
     els.encPass2.classList.toggle("hidden", !needsConfirm);
     els.encWarn.classList.toggle("hidden", !needsConfirm);
+    els.encCancel.classList.toggle("hidden", mode !== "change"); // cancelar solo en cambio
     els.encPass.value = ""; els.encPass2.value = ""; els.encErr.classList.add("hidden");
     els.encRemember.checked = false; els.encAck.checked = false;
     els.encModal.dataset.mode = mode;
@@ -1007,6 +1008,7 @@ els.loginBtn.onclick = signInWithGoogle;
 els.openFbSetup.onclick = openFbSetup;
 els.fbSave.onclick = saveFbConfig;
 els.encSubmit.onclick = handleEncSubmit;
+els.encCancel.onclick = () => closeEncModal(null);
 els.encPass.addEventListener("keydown", (e) => { if (e.key === "Enter") handleEncSubmit(); });
 els.encPass2.addEventListener("keydown", (e) => { if (e.key === "Enter") handleEncSubmit(); });
 els.changePass.onclick = () => {
