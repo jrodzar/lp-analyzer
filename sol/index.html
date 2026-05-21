@@ -68,7 +68,7 @@
         <label class="block text-xs font-semibold text-slate-300 mb-1">Birdeye API key <span class="text-slate-500">(opcional, para histórico)</span></label>
         <input id="cfg-birdeye-key" type="password" placeholder="opcional" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm focus:outline-none focus:border-[#ECE600]" />
         <p class="text-[11px] text-slate-400 mt-1">
-          Sin esto, las métricas son a valor actual (sin IL, sin histórico). Birdeye Pro habilita histórico de fees, PnL real, etc. <a href="https://docs.birdeye.so/" target="_blank" class="underline">docs</a>
+          Sin esto, las fichas solo muestran valor actual y fees pendientes. Con la key se calcula <strong>PnL neto e IL vs HODL reales</strong> usando precios históricos de Birdeye en cada depósito/retiro. <a href="https://docs.birdeye.so/" target="_blank" class="underline">docs</a>
         </p>
       </div>
 
@@ -170,6 +170,6 @@
     Las fees pendientes muestran <em>feeOwedA/B</em> del programa (ya settled). Las fees aún no settled requerirían recalcular feeGrowthInside con los tick arrays — pendiente para Phase 2. Precios USD vía Jupiter API.
   </footer>
 
-  <script src="app.js?v=12"></script>
+  <script src="app.js?v=13"></script>
 </body>
 </html>

@@ -971,6 +971,17 @@ function shortAddr(addr) {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
 }
 
+function pnlColor(n) {
+  if (n === null || n === undefined || !isFinite(n)) return "text-slate-300";
+  return n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "text-slate-300";
+}
+
+function fmtPct(n) {
+  if (n === null || n === undefined || !isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(2)}%`;
+}
+
 // ============================================================================
 // Settings UI
 // ============================================================================
@@ -1209,6 +1220,17 @@ function positionCard(p) {
         <div class="text-[10px] text-slate-400 mt-0.5">${fmtToken(p.feesA, p.token0.symbol)}</div>
         <div class="text-[10px] text-slate-400">${fmtToken(p.feesB, p.token1.symbol)}</div>
       </div>
+      ${p.pnlBasis === "birdeye" ? `
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL</div>
+        <div class="font-semibold ${pnlColor(p.ilUSD)}">${fmtUSD(p.ilUSD)}</div>
+        <div class="text-[10px] ${pnlColor(p.ilUSD)} mt-0.5">${fmtPct(p.ilPct)}</div>
+      </div>
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto</div>
+        <div class="font-semibold ${pnlColor(p.pnlUSD)}">${fmtUSD(p.pnlUSD)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">depo ${fmtUSD(p.depositedUSD)}</div>
+      </div>` : ""}
     </div>
 
     <details class="text-xs">
@@ -1218,6 +1240,11 @@ function positionCard(p) {
         <div>Whirlpool: <a href="https://solscan.io/account/${p.whirlpool}" target="_blank" class="font-mono text-slate-300 hover:text-purple-300">${shortAddr(p.whirlpool)}</a></div>
         <div>Rango ticks: ${p.tickLower} → ${p.tickUpper} (actual: ${p.tick})</div>
         <div>Liquidez: <span class="font-mono">${p.liquidity.toString()}</span></div>
+        ${p.pnlBasis === "birdeye" ? `
+        <div class="pt-1 mt-1 border-t border-slate-800">Depositado (coste): ${fmtUSD(p.depositedUSD)}</div>
+        <div>Retirado: ${fmtUSD(p.withdrawnUSD)} · Fees cobradas: ${fmtUSD(p.feesCollectedUSD)}</div>
+        <div>Valor HODL hoy: ${fmtUSD(p.hodlUSD)}</div>
+        <div class="text-[10px] text-slate-500">PnL/IL con precios históricos de Birdeye (estimación; fees vs retiros por heurística).</div>` : ""}
       </div>
     </details>
   `;
@@ -1271,6 +1298,7 @@ async function analyze() {
 
   state.address = addr;
   state.positions = [];
+  state._txCache = null; // invalida cache de transacciones de la corrida anterior
   setLoading(true);
   setStatus("Analizando…", "info");
 
@@ -1298,6 +1326,12 @@ async function analyze() {
 
     state.positions = all;
     assignColors(state.positions);
+
+    // PnL real + IL vs HODL con precios históricos (si hay Birdeye key)
+    if (all.length && state.birdeyeKey) {
+      setStatus("Calculando PnL e IL con históricos de Birdeye…", "info");
+      try { await enrichSolanaPnL(addr); } catch (e) { console.warn("enrichSolanaPnL:", e); }
+    }
 
     if (!all.length) {
       setStatus(`Sin posiciones para ${shortAddr(addr)} en los protocolos activos.`, "info");
@@ -1404,9 +1438,10 @@ const SOL_STABLES = new Set([
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
   "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
 ]);
-async function fetchSolanaHistory(owner) {
+// Descarga (y cachea) las transacciones enriquecidas de Helius para un owner.
+async function fetchEnhancedTxs(owner) {
   if (!state.heliusKey || !owner) return [];
-  const priceOf = (mint) => (state.prices[mint] != null ? state.prices[mint] : (SOL_STABLES.has(mint) ? 1 : 0));
+  if (state._txCache && state._txCache.owner === owner) return state._txCache.txs;
   const txs = [];
   let before = "";
   for (let page = 0; page < 10; page++) {
@@ -1418,6 +1453,108 @@ async function fetchSolanaHistory(owner) {
     before = arr[arr.length - 1].signature;
     if (arr.length < 100) break;
   }
+  state._txCache = { owner, txs };
+  return txs;
+}
+
+// Precio USD histórico de un token en un instante (unix segundos) vía Birdeye.
+// Cachea por (mint, día) para minimizar llamadas. Stables → 1.
+async function birdeyePriceAt(mint, unixSec) {
+  if (SOL_STABLES.has(mint)) return 1;
+  if (!state.birdeyeKey || !mint || !unixSec) return null;
+  if (!state._bePriceCache) state._bePriceCache = new Map();
+  const dayKey = mint + ":" + Math.floor(unixSec / 86400);
+  if (state._bePriceCache.has(dayKey)) return state._bePriceCache.get(dayKey);
+  let price = null;
+  try {
+    const url = `https://public-api.birdeye.so/defi/historical_price_unix?address=${mint}&unixtime=${unixSec}`;
+    const r = await fetch(url, { headers: { "X-API-KEY": state.birdeyeKey, "x-chain": "solana", accept: "application/json" } });
+    const j = await r.json();
+    const v = j && j.data && j.data.value;
+    if (typeof v === "number" && isFinite(v)) price = v;
+  } catch (e) { /* deja price=null */ }
+  state._bePriceCache.set(dayKey, price);
+  return price;
+}
+
+// Calcula PnL real + IL vs HODL por posición usando precios históricos (Birdeye).
+// Reconstruye el coste base a partir de las transferencias depósito/retiro/fee.
+async function enrichSolanaPnL(owner) {
+  if (!state.birdeyeKey || !owner || !(state.positions || []).length) return;
+  const txs = await fetchEnhancedTxs(owner);
+  if (!txs.length) return;
+
+  // mapa vault -> posición
+  const vaultToPos = new Map();
+  for (const p of state.positions) for (const v of (p.vaults || [])) if (v) vaultToPos.set(v, p.mint);
+  if (!vaultToPos.size) return; // sin atribución por pool no podemos calcular fiable
+
+  const SRC = new Set(["RAYDIUM", "ORCA", "WHIRLPOOL"]);
+  // eventos por posición: { ts, mint, amount(ui), dir: 'in'|'out' }
+  const perPos = new Map();
+  for (const tx of txs) {
+    if (!SRC.has(tx.source)) continue;
+    const ts = tx.timestamp || 0;
+    for (const t of (tx.tokenTransfers || [])) {
+      let counterparty = null, dir = null;
+      if (t.fromUserAccount === owner) { counterparty = t.toTokenAccount; dir = "out"; }   // a pool = depósito
+      else if (t.toUserAccount === owner) { counterparty = t.fromTokenAccount; dir = "in"; } // del pool = retiro/fee
+      else continue;
+      const posId = counterparty && vaultToPos.get(counterparty);
+      if (!posId) continue;
+      if (!perPos.has(posId)) perPos.set(posId, []);
+      perPos.get(posId).push({ ts, mint: t.mint, amount: t.tokenAmount || 0, dir });
+    }
+  }
+
+  const curPrice = (mint) => (state.prices[mint] != null ? state.prices[mint] : (SOL_STABLES.has(mint) ? 1 : 0));
+
+  for (const p of state.positions) {
+    const evs = perPos.get(p.mint);
+    if (!evs || !evs.length) continue;
+    evs.sort((a, b) => a.ts - b.ts);
+    let costBasisUSD = 0, withdrawnUSD = 0, feesCollectedUSD = 0;
+    let cumDep = 0, cumWd = 0;
+    const netAmt = new Map(); // mint -> cantidad neta de principal (depósito - retiro)
+    for (const e of evs) {
+      const hp = await birdeyePriceAt(e.mint, e.ts);
+      if (hp == null) continue; // sin precio histórico no contamos este evento
+      const usd = e.amount * hp;
+      if (e.dir === "out") {
+        costBasisUSD += usd; cumDep += usd;
+        netAmt.set(e.mint, (netAmt.get(e.mint) || 0) + e.amount);
+      } else {
+        // heurística: importe grande respecto al principal vivo = retiro; pequeño = fee
+        if (usd > 0.05 * Math.max(cumDep - cumWd, 1)) {
+          withdrawnUSD += usd; cumWd += usd;
+          netAmt.set(e.mint, (netAmt.get(e.mint) || 0) - e.amount);
+        } else {
+          feesCollectedUSD += usd;
+        }
+      }
+    }
+    if (costBasisUSD <= 0) continue; // no pudimos reconstruir nada útil
+
+    // HODL: lo que valdrían hoy los tokens netos depositados
+    let hodlUSD = 0;
+    for (const [mint, amt] of netAmt) hodlUSD += Math.max(0, amt) * curPrice(mint);
+
+    const pendFees = p.feesPendingUSD || 0;
+    p.depositedUSD = costBasisUSD;
+    p.withdrawnUSD = withdrawnUSD;
+    p.feesCollectedUSD = feesCollectedUSD;
+    p.hodlUSD = hodlUSD;
+    p.ilUSD = (p.currentValueUSD || 0) - hodlUSD;
+    p.ilPct = hodlUSD > 0 ? (p.ilUSD / hodlUSD) * 100 : null;
+    p.pnlUSD = (p.currentValueUSD || 0) + withdrawnUSD + feesCollectedUSD + pendFees - costBasisUSD;
+    p.pnlBasis = "birdeye";
+  }
+}
+
+async function fetchSolanaHistory(owner) {
+  if (!state.heliusKey || !owner) return [];
+  const priceOf = (mint) => (state.prices[mint] != null ? state.prices[mint] : (SOL_STABLES.has(mint) ? 1 : 0));
+  const txs = await fetchEnhancedTxs(owner);
   // mapa vault (cuenta de token del pool) -> posición, para atribuir cada transferencia
   const vaultToPos = new Map();
   for (const p of (state.positions || [])) {
@@ -1533,10 +1670,10 @@ document.addEventListener("DOMContentLoaded", init);
       venue: (PROTOCOLS[p.protocol] && PROTOCOLS[p.protocol].name) || p.protocol,
       pair: `${p.token0.symbol}/${p.token1.symbol}`,
       valueUSD: p.currentValueUSD || 0,
-      feesUSD: 0,
+      feesUSD: p.feesCollectedUSD || 0,
       feesPendingUSD: p.feesPendingUSD == null ? null : p.feesPendingUSD,
-      ilUSD: null,
-      pnlUSD: null,
+      ilUSD: p.ilUSD == null ? null : p.ilUSD,
+      pnlUSD: p.pnlUSD == null ? null : p.pnlUSD,
       apr: typeof p.apr === "number" && isFinite(p.apr) ? p.apr : null,
       inRange: !!p.inRange,
       closed: !!p.closed,

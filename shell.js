@@ -850,10 +850,11 @@ function portfolioCard(it, color) {
         : `<span class="chip bg-amber-500/15 text-amber-300 border border-amber-500/30">fuera</span>`;
   const feesLine = it.lending
     ? `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesUSD)}</div>`
-    : it.kind === "evm"
+    : (it.kind === "evm" || (it.kind === "sol" && it.pnlUSD != null))
       ? `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesUSD)}<span class="text-[10px] text-amber-300 ml-1">${it.feesPendingUSD == null ? "+pend n/d" : "+" + fmtUSD(it.feesPendingUSD)}</span></div>`
       : `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesPendingUSD)}</div>`;
-  const evmExtra = it.kind === "evm"
+  const showPnl = !it.lending && (it.kind === "evm" || (it.kind === "sol" && it.pnlUSD != null));
+  const evmExtra = showPnl
     ? `<div class="grid grid-cols-2 gap-2 text-xs pt-1">
          <div><div class="text-[10px] uppercase text-slate-500">IL</div><div class="${pnlColor(it.ilUSD)}">${it.ilUSD == null ? "—" : fmtUSD(it.ilUSD)}</div></div>
          <div><div class="text-[10px] uppercase text-slate-500">PnL</div><div class="${pnlColor(it.pnlUSD)}">${it.pnlUSD == null ? "—" : fmtUSD(it.pnlUSD)}</div></div>
