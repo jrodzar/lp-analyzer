@@ -1421,12 +1421,20 @@ async function fetchSolanaHistory(owner) {
   const series = [];
   for (const [posId, rec] of perPos) {
     rec.events.sort((a, b) => a.ts - b.ts);
-    let cumDep = 0, cumFees = 0;
+    let cumDep = 0, cumWd = 0, cumFees = 0;
     const byDay = new Map();
     for (const e of rec.events) {
-      if (e.net > 0) cumDep += e.net; else cumFees += -e.net; // recibido ≈ fees (posiciones abiertas)
+      if (e.net > 0) {
+        cumDep += e.net; // depósito
+      } else {
+        const r = -e.net; // importe recibido del pool
+        // heurística: recibir un importe grande vs lo depositado = retiro de principal;
+        // un importe pequeño = cobro de fees (las posiciones abiertas cobran fees sueltas)
+        if (r > 0.05 * Math.max(cumDep - cumWd, 1)) cumWd += r; // retiro de principal
+        else cumFees += r;                                      // fee cobrada
+      }
       const day = Math.floor((e.ts * 1000) / 86400000) * 86400000;
-      byDay.set(day, { depositedUSD: cumDep, withdrawnUSD: 0, feesUSD: cumFees });
+      byDay.set(day, { depositedUSD: Math.max(0, cumDep - cumWd), withdrawnUSD: cumWd, feesUSD: cumFees });
     }
     const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
     if (points.length) series.push({ posId, label: rec.label, points });
