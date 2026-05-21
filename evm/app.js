@@ -1526,13 +1526,42 @@ function positionCard(p) {
 // Charts
 // ============================================================================
 
+function setChartsCols(twoCols) {
+  const sec = document.getElementById("charts-section");
+  if (sec) sec.classList.toggle("lg:grid-cols-2", twoCols);
+}
+
 function renderCharts() {
   const section = document.getElementById("charts-section");
   if (!state.positions.length) { section.classList.add("hidden"); return; }
   section.classList.remove("hidden");
+  setChartsCols(false); // por defecto solo "Valor por posición" a ancho completo; fees se añade si hay datos
   renderValueChart();
   // fees chart se renderiza tras cargar snapshots
 }
+
+// Plugin inline: imprime el valor encima de cada barra.
+const barValueLabels = {
+  id: "barValueLabels",
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    chart.data.datasets.forEach((ds, di) => {
+      const meta = chart.getDatasetMeta(di);
+      if (meta.hidden) return;
+      meta.data.forEach((bar, i) => {
+        const val = ds.data[i];
+        if (val == null) return;
+        ctx.save();
+        ctx.fillStyle = "#e2e8f0";
+        ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(fmtUSD(val), bar.x, bar.y - 4);
+        ctx.restore();
+      });
+    });
+  },
+};
 
 function renderValueChart() {
   const top = [...state.positions]
@@ -1542,6 +1571,10 @@ function renderValueChart() {
   const data = top.map((p) => p.currentValueUSD);
   const bg = top.map((p) => (p.color ? p.color.line : (state.chains[p.chainKey] ? state.chains[p.chainKey].color : "#34d399")));
 
+  const opts = chartBaseOptions();
+  opts.plugins.legend.display = false;          // sin leyenda
+  opts.layout = { padding: { top: 20 } };        // hueco para la etiqueta de la barra más alta
+
   if (charts.value) charts.value.destroy();
   charts.value = new Chart(document.getElementById("chart-value"), {
     type: "bar",
@@ -1549,7 +1582,8 @@ function renderValueChart() {
       labels,
       datasets: [{ label: "Valor (USD)", data, backgroundColor: bg, borderRadius: 6 }],
     },
-    options: chartBaseOptions(),
+    options: opts,
+    plugins: [barValueLabels],
   });
 }
 
@@ -1565,6 +1599,11 @@ function assignColors(list) {
 }
 
 function renderFeesChart(snapshotBundles) {
+  const panel = document.getElementById("fees-chart-panel");
+  // Sin snapshots (p. ej. HyperEVM, que no tiene subgraph) → ocultar el panel vacío
+  if (!snapshotBundles || !snapshotBundles.length) { if (panel) panel.classList.add("hidden"); setChartsCols(false); return; }
+  if (panel) panel.classList.remove("hidden");
+  setChartsCols(true);
   const datasets = snapshotBundles.map((b, idx) => {
     const p = b.position;
     const points = b.snapshots.map((s) => {

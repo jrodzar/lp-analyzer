@@ -1263,6 +1263,29 @@ function renderCharts() {
   renderValueChart();
 }
 
+// Plugin inline: imprime el valor encima de cada barra.
+const barValueLabels = {
+  id: "barValueLabels",
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    chart.data.datasets.forEach((ds, di) => {
+      const meta = chart.getDatasetMeta(di);
+      if (meta.hidden) return;
+      meta.data.forEach((bar, i) => {
+        const val = ds.data[i];
+        if (val == null) return;
+        ctx.save();
+        ctx.fillStyle = "#e2e8f0";
+        ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(fmtUSD(val), bar.x, bar.y - 4);
+        ctx.restore();
+      });
+    });
+  },
+};
+
 function renderValueChart() {
   const top = [...state.positions]
     .sort((a, b) => b.currentValueUSD - a.currentValueUSD)
@@ -1278,8 +1301,9 @@ function renderValueChart() {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      layout: { padding: { top: 20 } },
       plugins: {
-        legend: { labels: { color: "#cbd5e1", font: { size: 10 } } },
+        legend: { display: false },
         tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${fmtUSD(ctx.parsed.y)}` } },
       },
       scales: {
@@ -1287,6 +1311,7 @@ function renderValueChart() {
         y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSD(v) }, grid: { color: "#1e293b" } },
       },
     },
+    plugins: [barValueLabels],
   });
 }
 
