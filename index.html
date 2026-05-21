@@ -73,6 +73,23 @@
     </div>
   </div>
 
+  <!-- Modal: gestión de accesos (solo admin) -->
+  <div id="access-modal" class="hidden fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-slate-900 border border-slate-700 rounded-xl p-5 space-y-4">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-semibold">Accesos autorizados</h2>
+        <button id="access-close" class="text-slate-400 hover:text-slate-100">✕</button>
+      </div>
+      <p class="text-[11px] text-slate-400">Solo los emails de esta lista (y el administrador) pueden registrarse y usar el portfolio. La barrera real la imponen las reglas de Firestore; esta lista las alimenta.</p>
+      <div class="flex gap-2">
+        <input id="access-email" type="email" placeholder="email@dominio.com" class="flex-1 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm" />
+        <button id="access-add" class="px-3 py-2 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-sm font-semibold">Añadir</button>
+      </div>
+      <div id="access-err" class="text-[11px] text-rose-400 hidden"></div>
+      <div id="access-list" class="space-y-1.5 max-h-72 overflow-y-auto scrollbar text-sm"></div>
+    </div>
+  </div>
+
   <!-- Modal: contraseña de cifrado (E2E) -->
   <div id="enc-modal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
@@ -112,6 +129,7 @@
           Sign in with Google
         </button>
         <p class="text-[11px] text-slate-500 mt-4">¿Aún no conectaste Firebase? <button id="open-fb-setup" class="underline text-yellow-400">Configúralo aquí</button>.</p>
+        <p id="gate-msg" class="hidden text-sm text-rose-400 mt-4 max-w-md mx-auto"></p>
       </div>
 
       <!-- Portfolio (logueado) -->
@@ -121,6 +139,7 @@
           <div class="flex items-center justify-between gap-2 flex-wrap">
             <h2 class="text-base font-semibold">Mi portfolio</h2>
             <div class="flex items-center gap-2">
+              <button id="manage-access" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Gestionar accesos (admin)">👥 Accesos</button>
               <button id="change-pass" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Cambiar contraseña de cifrado">🔑 Contraseña</button>
               <button id="analyze-all" class="px-3 py-1.5 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-xs font-semibold">Analizar todo</button>
             </div>
@@ -292,6 +311,6 @@
 
   </main>
 
-  <script src="shell.js?v=23"></script>
+  <script src="shell.js?v=24"></script>
 </body>
 </html>

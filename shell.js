@@ -24,7 +24,10 @@ const els = {
   encWarn: $("enc-warn"), encAck: $("enc-ack"), encErr: $("enc-err"), encSubmit: $("enc-submit"),
   encCancel: $("enc-cancel"), changePass: $("change-pass"),
   // login
-  loginGate: $("login-gate"), loginBtn: $("login-btn"), portfolioArea: $("portfolio-area"),
+  loginGate: $("login-gate"), loginBtn: $("login-btn"), portfolioArea: $("portfolio-area"), gateMsg: $("gate-msg"),
+  // gestión de accesos (admin)
+  manageAccess: $("manage-access"), accessModal: $("access-modal"), accessClose: $("access-close"),
+  accessEmail: $("access-email"), accessAdd: $("access-add"), accessErr: $("access-err"), accessList: $("access-list"),
   // portfolio crud
   pfLabel: $("pf-label"), pfAddress: $("pf-address"), pfAdd: $("pf-add"), pfAddErr: $("pf-add-err"),
   pfList: $("pf-list"), analyzeAll: $("analyze-all"), pfStatus: $("pf-status"),
@@ -302,6 +305,7 @@ async function initFirebase(config) {
 
 async function signInWithGoogle() {
   if (!fb.auth) { openFbSetup(); return; }
+  if (els.gateMsg) els.gateMsg.classList.add("hidden");
   try {
     const provider = new fb.authMod.GoogleAuthProvider();
     await fb.authMod.signInWithPopup(fb.auth, provider);
@@ -311,14 +315,116 @@ async function signInWithGoogle() {
   }
 }
 
+// ---- Gestión de la allowlist (solo admin) ----
+async function openAccessModal() {
+  if (!isAdminUser()) return;
+  els.accessErr.classList.add("hidden");
+  els.accessEmail.value = "";
+  els.accessModal.classList.remove("hidden");
+  await renderAllowlist();
+}
+function closeAccessModal() { els.accessModal.classList.add("hidden"); }
+
+async function renderAllowlist() {
+  els.accessList.innerHTML = `<div class="text-xs text-slate-500">Cargando…</div>`;
+  let rows = [];
+  try {
+    const col = fb.fsMod.collection(fb.db, "allowlist");
+    const snap = await fb.fsMod.getDocs(col);
+    rows = snap.docs.map((d) => ({ email: d.id, ...(d.data() || {}) }));
+  } catch (e) {
+    els.accessList.innerHTML = `<div class="text-xs text-rose-400">No se pudo leer la lista: ${e.message}</div>`;
+    return;
+  }
+  rows.sort((a, b) => a.email.localeCompare(b.email));
+  els.accessList.innerHTML = "";
+  // admin (fijo, no borrable)
+  const adminRow = document.createElement("div");
+  adminRow.className = "flex items-center justify-between gap-2 bg-slate-950/40 rounded-lg px-3 py-2";
+  adminRow.innerHTML = `<span class="font-mono text-xs truncate">${ADMIN_EMAIL}</span><span class="chip bg-[#ECE600]/20 text-yellow-300">admin</span>`;
+  els.accessList.appendChild(adminRow);
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "text-xs text-slate-500";
+    empty.textContent = "Aún no hay emails autorizados (además del admin).";
+    els.accessList.appendChild(empty);
+  }
+  for (const r of rows) {
+    if (r.email === ADMIN_EMAIL.toLowerCase()) continue;
+    const row = document.createElement("div");
+    row.className = "flex items-center justify-between gap-2 bg-slate-950/40 rounded-lg px-3 py-2";
+    row.innerHTML = `<span class="font-mono text-xs truncate">${r.email}</span>`;
+    const btn = document.createElement("button");
+    btn.className = "text-xs text-rose-400 hover:text-rose-300 shrink-0";
+    btn.textContent = "Quitar";
+    btn.onclick = () => removeAllowEmail(r.email);
+    row.appendChild(btn);
+    els.accessList.appendChild(row);
+  }
+}
+
+async function addAllowEmail() {
+  els.accessErr.classList.add("hidden");
+  const email = (els.accessEmail.value || "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    els.accessErr.textContent = "Email no válido."; els.accessErr.classList.remove("hidden"); return;
+  }
+  try {
+    await fb.fsMod.setDoc(fb.fsMod.doc(fb.db, "allowlist", email), { addedAt: Date.now(), addedBy: state.user.email });
+    els.accessEmail.value = "";
+    await renderAllowlist();
+  } catch (e) {
+    els.accessErr.textContent = `No se pudo añadir: ${e.message}`; els.accessErr.classList.remove("hidden");
+  }
+}
+
+async function removeAllowEmail(email) {
+  try {
+    await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.db, "allowlist", email));
+    await renderAllowlist();
+  } catch (e) {
+    els.accessErr.textContent = `No se pudo quitar: ${e.message}`; els.accessErr.classList.remove("hidden");
+  }
+}
+
 async function signOutUser() {
   if (fb.auth) await fb.authMod.signOut(fb.auth);
+}
+
+function isAdminUser() {
+  return !!state.user && (state.user.email || "").toLowerCase() === ADMIN_EMAIL.toLowerCase();
+}
+
+// ¿El email del usuario está autorizado? (admin siempre; resto, en la allowlist de Firestore)
+async function checkAllowed(user) {
+  if (!user || !user.email) return false;
+  if (user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) return true;
+  try {
+    const ref = fb.fsMod.doc(fb.db, "allowlist", user.email.toLowerCase());
+    const snap = await fb.fsMod.getDoc(ref);
+    return snap.exists();
+  } catch (e) {
+    console.error("checkAllowed", e);
+    return false; // ante error, denegar (seguro)
+  }
 }
 
 async function onAuthChange(user) {
   state.user = user || null;
   renderAuthArea();
   if (user) {
+    // Control de acceso: solo emails autorizados pueden entrar
+    const allowed = await checkAllowed(user);
+    if (!allowed) {
+      els.gateMsg.textContent = `El email ${user.email} no está autorizado. Pide acceso al administrador (${ADMIN_EMAIL}).`;
+      els.gateMsg.classList.remove("hidden");
+      els.loginGate.classList.remove("hidden");
+      els.portfolioArea.classList.add("hidden");
+      await signOutUser(); // dispara onAuthChange(null); el mensaje permanece
+      return;
+    }
+    els.gateMsg.classList.add("hidden");
+    els.manageAccess.classList.toggle("hidden", !isAdminUser());
     els.loginGate.classList.add("hidden");
     els.portfolioArea.classList.remove("hidden");
     setTab("portfolio"); // al loguear, ir al portfolio
@@ -331,6 +437,7 @@ async function onAuthChange(user) {
   } else {
     els.loginGate.classList.remove("hidden");
     els.portfolioArea.classList.add("hidden");
+    els.manageAccess.classList.add("hidden");
     state.portfolio = [];
     crypto_.key = null; _pendingEnc = null;
     setTab("quick"); // sin sesión, la app funciona como antes (una dirección)
@@ -1130,6 +1237,11 @@ els.changePass.onclick = () => {
   if (!crypto_.key) { setPfStatus("Desbloquea tu portfolio primero.", "err"); return; }
   openEncModal("change");
 };
+els.manageAccess.onclick = openAccessModal;
+els.accessClose.onclick = closeAccessModal;
+els.accessAdd.onclick = addAllowEmail;
+els.accessEmail.addEventListener("keydown", (e) => { if (e.key === "Enter") addAllowEmail(); });
+els.accessModal.addEventListener("click", (e) => { if (e.target === els.accessModal) closeAccessModal(); });
 els.pfAdd.onclick = addPortfolioEntry;
 els.pfAddress.addEventListener("keydown", (e) => { if (e.key === "Enter") addPortfolioEntry(); });
 els.analyzeAll.onclick = analyzeAll;
