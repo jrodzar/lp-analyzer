@@ -14,7 +14,7 @@ const els = {
   // tabs
   tabBtnPortfolio: $("tab-btn-portfolio"), tabBtnQuick: $("tab-btn-quick"), tabBtnProjection: $("tab-btn-projection"),
   tabPortfolio: $("tab-portfolio"), tabQuick: $("tab-quick"), tabProjection: $("tab-projection"),
-  autoRefresh: $("auto-refresh"), refreshNow: $("refresh-now"),
+  autoRefresh: $("auto-refresh"), refreshNow: $("refresh-now"), lastUpdated: $("last-updated"),
   authArea: $("auth-area"),
   // firebase setup
   fbSetup: $("fb-setup"), fbInput: $("fb-config-input"), fbErr: $("fb-config-err"), fbSave: $("fb-config-save"),
@@ -31,7 +31,7 @@ const els = {
   accessEmail: $("access-email"), accessAdd: $("access-add"), accessErr: $("access-err"), accessList: $("access-list"),
   // portfolio crud
   pfLabel: $("pf-label"), pfAddress: $("pf-address"), pfAdd: $("pf-add"), pfAddErr: $("pf-add-err"),
-  pfList: $("pf-list"), analyzeAll: $("analyze-all"), pfStatus: $("pf-status"),
+  pfList: $("pf-list"), analyzeAll: $("analyze-all"), pfStatus: $("pf-status"), pfCsv: $("pf-csv"),
   addRabby: $("add-rabby"), addPhantom: $("add-phantom"),
   analyzingModal: $("analyzing-modal"), analyzingMsg: $("analyzing-msg"), analyzingBar: $("analyzing-bar"),
   // portfolio results
@@ -766,6 +766,50 @@ async function pushTokenToEngines() {
   } catch (e) { console.warn("pushTokenToEngines", e); }
 }
 
+// Sello de "última actualización" en la cabecera
+function setLastUpdated() {
+  if (!els.lastUpdated) return;
+  const t = new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  els.lastUpdated.textContent = `act. ${t}`;
+  els.lastUpdated.classList.remove("hidden", "sm:inline");
+  els.lastUpdated.classList.add("sm:inline");
+}
+
+// Exporta a CSV las posiciones del portfolio (todas las direcciones analizadas)
+function exportPortfolioCSV() {
+  const rows = [];
+  for (const r of state.results) {
+    const label = r.entry.label || shortAddr(r.entry.address);
+    for (const it of (r.items || [])) {
+      rows.push({
+        Direccion: label,
+        Wallet: r.entry.address,
+        Tipo: it.lending ? "lending" : (it.kind === "evm" ? "EVM" : "SOL"),
+        Red_Protocolo: it.venue || "",
+        Par: it.pair || "",
+        Valor_USD: (it.valueUSD || 0).toFixed(2),
+        Fees_cobradas_USD: (it.feesUSD || 0).toFixed(4),
+        Fees_pendientes_USD: it.feesPendingUSD == null ? "" : it.feesPendingUSD.toFixed(4),
+        IL_USD: it.ilUSD == null ? "" : it.ilUSD.toFixed(2),
+        PnL_USD: it.pnlUSD == null ? "" : it.pnlUSD.toFixed(2),
+        Estado: it.lending ? "préstamo" : it.closed ? "cerrada" : it.inRange ? "en rango" : "fuera",
+        ID: it.id || "",
+      });
+    }
+  }
+  if (!rows.length) { setPfStatus("No hay posiciones que exportar. Pulsa 'Analizar todo' primero.", "err"); return; }
+  const cols = Object.keys(rows[0]);
+  const esc = (v) => { const s = String(v ?? ""); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const csv = [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\r\n");
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" }); // BOM para Excel
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `booster-crypto-portfolio-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 async function savePrefs() {
   if (!state.user || !fb.db) return;
   try {
@@ -844,6 +888,7 @@ async function analyzeAll(opts = {}) {
     state.results = results;
     renderPortfolio();
     if (state.tab === "projection") renderHistorico(); // mantener Histórico sincronizado
+    setLastUpdated();
     setPfStatus(null); // sin mensaje de "Listo…"; el resultado ya se ve en el resumen
   } finally {
     if (!silent) closeAnalyzingModal();
@@ -1228,6 +1273,7 @@ window.addEventListener("message", (e) => {
     closeAnalyzingModal();
     _autoBusy = false; // liberar el guard de auto-actualización
     spinRefresh(false);
+    setLastUpdated();
   }
 });
 
@@ -1370,6 +1416,7 @@ els.accessModal.addEventListener("click", (e) => { if (e.target === els.accessMo
 els.pfAdd.onclick = addPortfolioEntry;
 els.pfAddress.addEventListener("keydown", (e) => { if (e.key === "Enter") addPortfolioEntry(); });
 els.analyzeAll.onclick = () => analyzeAll();
+els.pfCsv.onclick = exportPortfolioCSV;
 els.addRabby.onclick = () => addConnectedWallet("evm");
 els.addPhantom.onclick = () => addConnectedWallet("sol");
 els.autoRefresh.onchange = applyAutoRefresh;

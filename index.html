@@ -37,6 +37,9 @@
 
       <div class="flex-1"></div>
 
+      <!-- Última actualización -->
+      <span id="last-updated" class="shrink-0 text-[11px] text-slate-900/70 hidden sm:inline" title="Hora de la última actualización"></span>
+
       <!-- Auto-actualizar la pestaña activa -->
       <button id="refresh-now" title="Actualizar ahora (en segundo plano)" aria-label="Actualizar ahora" class="shrink-0 text-slate-900 flex items-center hover:opacity-60 active:scale-95 transition">
         <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
@@ -153,6 +156,7 @@
             <div class="flex items-center gap-2">
               <button id="manage-access" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Gestionar accesos (admin)">👥 Accesos</button>
               <button id="change-pass" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Cambiar contraseña de cifrado">🔑 Contraseña</button>
+              <button id="pf-csv" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Descargar posiciones en CSV">⬇ CSV</button>
               <button id="analyze-all" class="px-3 py-1.5 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-xs font-semibold">Analizar todo</button>
             </div>
           </div>
@@ -326,6 +330,6 @@
 
   </main>
 
-  <script src="shell.js?v=39"></script>
+  <script src="shell.js?v=40"></script>
 </body>
 </html>
