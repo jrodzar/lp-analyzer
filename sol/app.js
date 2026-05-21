@@ -1001,6 +1001,17 @@ function fmtPct(n) {
   return `${sign}${n.toFixed(2)}%`;
 }
 
+// Traduce un error técnico a una causa legible para el usuario.
+function classifyError(msg) {
+  const m = String(msg || "");
+  if (/\b401\b|Inicia sesión|Sesión inválida|autenticaci/i.test(m)) return "Para analizar, inicia sesión o configura tu Helius API key en Settings.";
+  if (/\b403\b|no está autorizada|no autorizado/i.test(m)) return "Tu cuenta no está autorizada.";
+  if (/\b429\b|Demasiadas|rate.?limit|Límite/i.test(m)) return "Límite de peticiones alcanzado. Reintenta en un momento.";
+  if (/Falta Helius|proxy/i.test(m)) return "Falta Helius API key o proxy configurado (abre Settings).";
+  if (/Failed to fetch|NetworkError|timeout|502|503|504/i.test(m)) return "Error de red o servicio no disponible. Reintenta en un momento.";
+  return `Error: ${m.slice(0, 100)}`;
+}
+
 // ============================================================================
 // Settings UI
 // ============================================================================
@@ -1400,7 +1411,7 @@ async function analyze() {
     renderAll();
   } catch (e) {
     console.error(e);
-    setStatus(`Error: ${e.message}`, "err");
+    setStatus(classifyError(e && e.message), "err");
   } finally {
     setLoading(false);
   }

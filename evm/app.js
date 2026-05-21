@@ -1099,6 +1099,17 @@ function fmtPct(n) {
   return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
+// Traduce un error técnico a una causa legible para el usuario.
+function classifyError(msg) {
+  const m = String(msg || "");
+  if (/\b401\b|Inicia sesión|Sesión inválida|autenticaci/i.test(m)) return { cat: "auth", text: "requiere iniciar sesión o tu propia API key" };
+  if (/\b403\b|no está autorizada|no autorizado/i.test(m)) return { cat: "forbidden", text: "tu cuenta no está autorizada" };
+  if (/\b429\b|Demasiadas|rate.?limit|Límite/i.test(m)) return { cat: "rate", text: "límite de peticiones alcanzado, reintenta en un momento" };
+  if (/Falta API key|proxy/i.test(m)) return { cat: "config", text: "falta API key o proxy configurado" };
+  if (/Failed to fetch|NetworkError|timeout|ECONN|502|503|504/i.test(m)) return { cat: "network", text: "error de red o servicio no disponible" };
+  return { cat: "other", text: m.slice(0, 80) };
+}
+
 function fmtToken(n, sym) {
   if (!isFinite(n)) return `— ${sym}`;
   const abs = Math.abs(n);
@@ -1722,13 +1733,27 @@ async function analyze() {
     assignColors(state.positions);
 
     const skippedNote = skipped.length ? ` (saltadas: ${skipped.map((s) => state.chains[s.chainKey].name).join(", ")})` : "";
+    const lendN = state.positions.filter((p) => p._lending).length;
+    const lpN = positions.length;
     if (errors.length) {
-      setStatus(`Algunas redes fallaron: ${errors.map((e) => `${state.chains[e.chainKey].name}`).join(", ")}.${skippedNote} Revisa la consola para detalle.`, "err");
+      // Clasificar errores por causa y nombrar las redes afectadas
+      const byCat = new Map();
+      for (const e of errors) {
+        const c = classifyError(e.__error);
+        if (!byCat.has(c.text)) byCat.set(c.text, { cat: c.cat, chains: [] });
+        byCat.get(c.text).chains.push(state.chains[e.chainKey].name);
+      }
+      const detail = [...byCat.entries()].map(([text, v]) => `${v.chains.join(", ")} (${text})`).join(" · ");
+      const allAuth = [...byCat.values()].every((v) => v.cat === "auth");
+      const lead = lpN > 0
+        ? `${lpN} posiciones${lendN ? ` + ${lendN} lending` : ""}, pero no se pudo consultar: `
+        : allAuth
+          ? "Para analizar, inicia sesión o configura tu API key en Settings. Sin consultar: "
+          : "No se pudo consultar: ";
+      setStatus(`${lead}${detail}.${skippedNote}`, allAuth && lpN === 0 ? "info" : "err");
     } else if (state.positions.length === 0) {
-      setStatus(`Sin posiciones de Uniswap V3 para ${shortAddr(addr)} en las redes seleccionadas.${skippedNote}`, "info");
+      setStatus(`Sin posiciones para ${shortAddr(addr)} en las redes seleccionadas (todo consultado correctamente).${skippedNote}`, "info");
     } else {
-      const lendN = state.positions.filter((p) => p._lending).length;
-      const lpN = positions.length;
       const lendNote = lendN ? ` + ${lendN} en Revert Lend` : "";
       setStatus(`${lpN} posiciones de LP${lendNote}.${skippedNote}`, "ok");
     }

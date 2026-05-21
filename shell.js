@@ -929,8 +929,10 @@ function renderPortfolio() {
 
     if (!items.length) {
       const empty = document.createElement("div");
-      empty.className = "text-xs text-slate-500 mb-4";
-      empty.textContent = r.status && r.status !== "ok" ? `Sin posiciones abiertas (${r.status}).` : "Sin posiciones abiertas.";
+      // ¿el estado del engine indica un problema (auth/red/límite)? → resaltar en ámbar
+      const isErr = r.status && /no se pudo|inicia sesión|no está autoriz|límite|error de red|servicio no disponible|api key/i.test(r.status);
+      empty.className = `text-xs mb-4 ${isErr ? "text-amber-400" : "text-slate-500"}`;
+      empty.textContent = r.status && r.status.trim() ? r.status : "Sin posiciones abiertas.";
       section.appendChild(empty);
     } else {
       const grid = document.createElement("div");
