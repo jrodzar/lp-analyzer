@@ -64,13 +64,19 @@
       <p id="enc-desc" class="text-xs text-slate-400"></p>
       <input id="enc-pass" type="password" placeholder="Contraseña" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm" />
       <input id="enc-pass2" type="password" placeholder="Repite la contraseña" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm hidden" />
+      <div id="enc-warn" class="hidden rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-[11px] text-amber-200 space-y-2">
+        <div>⚠️ <b>Importante:</b> esta contraseña cifra tus direcciones en tu navegador y <b>no se guarda en ningún sitio</b>. Ni el creador de la app puede verla ni recuperarla. <b>Si la olvidas, perderás el acceso a tus direcciones para siempre.</b> Guárdala en un lugar seguro.</div>
+        <label class="flex items-center gap-2 text-amber-100">
+          <input id="enc-ack" type="checkbox" class="accent-amber-500 w-4 h-4" />
+          <span>Lo entiendo y guardaré mi contraseña.</span>
+        </label>
+      </div>
       <label class="text-xs text-slate-300 flex items-center gap-2">
         <input id="enc-remember" type="checkbox" class="accent-purple-500 w-4 h-4" />
         <span>Recordar en este dispositivo</span>
       </label>
       <div id="enc-err" class="text-[11px] text-rose-400 hidden"></div>
       <button id="enc-submit" class="w-full px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-sm font-semibold">Continuar</button>
-      <p class="text-[10px] text-slate-500">Tus direcciones se cifran en tu navegador. Ni el creador de la app ni nadie con acceso a la base de datos puede leerlas sin esta contraseña. <b>No se guarda en ningún sitio: si la olvidas, no se puede recuperar.</b></p>
     </div>
   </div>
 
@@ -93,9 +99,12 @@
       <div id="portfolio-area" class="hidden space-y-6">
         <!-- Gestor de direcciones -->
         <div class="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-2 flex-wrap">
             <h2 class="text-base font-semibold">Mi portfolio</h2>
-            <button id="analyze-all" class="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-xs font-semibold">Analizar todo</button>
+            <div class="flex items-center gap-2">
+              <button id="change-pass" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Cambiar contraseña de cifrado">🔑 Contraseña</button>
+              <button id="analyze-all" class="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-xs font-semibold">Analizar todo</button>
+            </div>
           </div>
           <div class="flex flex-col sm:flex-row gap-2">
             <input id="pf-label" type="text" placeholder="Etiqueta (opcional)" class="sm:w-40 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm" />
@@ -244,6 +253,6 @@
 
   </main>
 
-  <script src="shell.js?v=11"></script>
+  <script src="shell.js?v=12"></script>
 </body>
 </html>

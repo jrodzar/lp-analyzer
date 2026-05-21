@@ -21,7 +21,8 @@ const els = {
   // cifrado E2E
   encModal: $("enc-modal"), encTitle: $("enc-title"), encDesc: $("enc-desc"),
   encPass: $("enc-pass"), encPass2: $("enc-pass2"), encRemember: $("enc-remember"),
-  encErr: $("enc-err"), encSubmit: $("enc-submit"),
+  encWarn: $("enc-warn"), encAck: $("enc-ack"), encErr: $("enc-err"), encSubmit: $("enc-submit"),
+  changePass: $("change-pass"),
   // login
   loginGate: $("login-gate"), loginBtn: $("login-btn"), portfolioArea: $("portfolio-area"),
   // portfolio crud
@@ -209,13 +210,18 @@ let encResolve = null;
 function openEncModal(mode) {
   return new Promise((resolve) => {
     encResolve = resolve;
-    els.encTitle.textContent = mode === "set" ? "🔒 Crea tu contraseña de cifrado" : "🔓 Desbloquea tu portfolio";
+    const needsConfirm = mode === "set" || mode === "change";
+    els.encTitle.textContent = mode === "set" ? "🔒 Crea tu contraseña de cifrado"
+      : mode === "change" ? "🔑 Cambiar contraseña de cifrado" : "🔓 Desbloquea tu portfolio";
     els.encDesc.textContent = mode === "set"
       ? "Define una contraseña para cifrar tus direcciones. Será necesaria para acceder a ellas."
+      : mode === "change" ? "Elige una nueva contraseña. Tus direcciones se volverán a cifrar con ella."
       : "Introduce tu contraseña para descifrar tus direcciones guardadas.";
-    els.encPass2.classList.toggle("hidden", mode !== "set");
+    els.encPass.placeholder = mode === "change" ? "Nueva contraseña" : "Contraseña";
+    els.encPass2.classList.toggle("hidden", !needsConfirm);
+    els.encWarn.classList.toggle("hidden", !needsConfirm);
     els.encPass.value = ""; els.encPass2.value = ""; els.encErr.classList.add("hidden");
-    els.encRemember.checked = false;
+    els.encRemember.checked = false; els.encAck.checked = false;
     els.encModal.dataset.mode = mode;
     els.encModal.classList.remove("hidden");
     setTimeout(() => els.encPass.focus(), 50);
@@ -229,21 +235,34 @@ function closeEncModal(result) {
 async function handleEncSubmit() {
   const mode = els.encModal.dataset.mode;
   const pass = els.encPass.value;
+  const needsConfirm = mode === "set" || mode === "change";
   els.encErr.classList.add("hidden");
-  if (!pass || pass.length < 6) { els.encErr.textContent = "Mínimo 6 caracteres."; els.encErr.classList.remove("hidden"); return; }
-  if (mode === "set" && pass !== els.encPass2.value) { els.encErr.textContent = "Las contraseñas no coinciden."; els.encErr.classList.remove("hidden"); return; }
+  const err = (m) => { els.encErr.textContent = m; els.encErr.classList.remove("hidden"); };
+  if (!pass || pass.length < 6) return err("Mínimo 6 caracteres.");
+  if (needsConfirm && pass !== els.encPass2.value) return err("Las contraseñas no coinciden.");
+  if (needsConfirm && !els.encAck.checked) return err("Marca la casilla de confirmación.");
   try {
+    if (mode === "change") {
+      // re-cifrar con nueva contraseña + nuevo salt (el portfolio ya está descifrado en memoria)
+      const newSalt = crypto.getRandomValues(new Uint8Array(16));
+      const key = await deriveKey(pass, newSalt);
+      crypto_.salt = newSalt; crypto_.key = key;
+      await savePortfolio(); // guarda con el nuevo salt/clave
+      if (state.user) { if (els.encRemember.checked) await rememberKey(state.user.uid, key); else forgetKey(state.user.uid); }
+      closeEncModal(key);
+      setPfStatus("Contraseña actualizada.", "ok");
+      return;
+    }
     const key = await deriveKey(pass, crypto_.salt);
     if (mode === "unlock") {
-      // verificar contra el dato cifrado existente
       const ok = await tryDecryptPortfolio(key);
-      if (!ok) { els.encErr.textContent = "Contraseña incorrecta."; els.encErr.classList.remove("hidden"); return; }
+      if (!ok) return err("Contraseña incorrecta.");
     }
     crypto_.key = key;
     if (els.encRemember.checked && state.user) await rememberKey(state.user.uid, key);
     closeEncModal(key);
   } catch (e) {
-    els.encErr.textContent = "Error: " + e.message; els.encErr.classList.remove("hidden");
+    err("Error: " + e.message);
   }
 }
 
@@ -990,6 +1009,10 @@ els.fbSave.onclick = saveFbConfig;
 els.encSubmit.onclick = handleEncSubmit;
 els.encPass.addEventListener("keydown", (e) => { if (e.key === "Enter") handleEncSubmit(); });
 els.encPass2.addEventListener("keydown", (e) => { if (e.key === "Enter") handleEncSubmit(); });
+els.changePass.onclick = () => {
+  if (!crypto_.key) { setPfStatus("Desbloquea tu portfolio primero.", "err"); return; }
+  openEncModal("change");
+};
 els.pfAdd.onclick = addPortfolioEntry;
 els.pfAddress.addEventListener("keydown", (e) => { if (e.key === "Enter") addPortfolioEntry(); });
 els.analyzeAll.onclick = analyzeAll;
