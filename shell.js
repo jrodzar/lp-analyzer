@@ -14,7 +14,7 @@ const els = {
   // tabs
   tabBtnPortfolio: $("tab-btn-portfolio"), tabBtnQuick: $("tab-btn-quick"), tabBtnProjection: $("tab-btn-projection"),
   tabPortfolio: $("tab-portfolio"), tabQuick: $("tab-quick"), tabProjection: $("tab-projection"),
-  autoRefresh: $("auto-refresh"),
+  autoRefresh: $("auto-refresh"), refreshNow: $("refresh-now"),
   authArea: $("auth-area"),
   // firebase setup
   fbSetup: $("fb-setup"), fbInput: $("fb-config-input"), fbErr: $("fb-config-err"), fbSave: $("fb-config-save"),
@@ -159,14 +159,25 @@ function applyAutoRefresh() {
 }
 
 function autoRefreshTick() {
-  if (_autoBusy || document.hidden) return; // no refrescar si pestaña del navegador oculta o ya ocupado
+  if (document.hidden) return; // no refrescar si la pestaña del navegador está oculta
+  refreshActiveTab();
+}
+
+function spinRefresh(on) { if (els.refreshNow) els.refreshNow.firstElementChild.classList.toggle("animate-spin", !!on); }
+
+// Refresca los datos de la pestaña activa en segundo plano (sin recargar la página).
+// Lo usan tanto la auto-actualización como el botón de refresco manual.
+function refreshActiveTab() {
+  if (_autoBusy) return;
   if (state.tab === "quick") {
-    if (els.addr.value.trim()) { _autoBusy = true; quickAnalyze({ silent: true }); } // _autoBusy se libera en lp-analyze-done
+    const a = els.addr.value.trim();
+    if (!a || !detectType(a)) return; // sin dirección válida no refrescamos
+    _autoBusy = true; spinRefresh(true);
+    quickAnalyze({ silent: true }); // _autoBusy y el spin se liberan en lp-analyze-done
   } else if (state.tab === "portfolio" || state.tab === "projection") {
-    if (state.portfolio.length && crypto_.key && !els.analyzeAll.disabled) {
-      _autoBusy = true;
-      Promise.resolve(analyzeAll({ silent: true })).finally(() => { _autoBusy = false; });
-    }
+    if (!state.portfolio.length || !crypto_.key || els.analyzeAll.disabled) return;
+    _autoBusy = true; spinRefresh(true);
+    Promise.resolve(analyzeAll({ silent: true })).finally(() => { _autoBusy = false; spinRefresh(false); });
   }
 }
 
@@ -1160,6 +1171,7 @@ window.addEventListener("message", (e) => {
     clearTimeout(_quickModalTimer);
     closeAnalyzingModal();
     _autoBusy = false; // liberar el guard de auto-actualización
+    spinRefresh(false);
   }
 });
 
@@ -1305,6 +1317,7 @@ els.analyzeAll.onclick = () => analyzeAll();
 els.addRabby.onclick = () => addConnectedWallet("evm");
 els.addPhantom.onclick = () => addConnectedWallet("sol");
 els.autoRefresh.onchange = applyAutoRefresh;
+els.refreshNow.onclick = refreshActiveTab;
 
 // ============================================================================
 // Init
