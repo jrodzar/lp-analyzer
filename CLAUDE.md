@@ -44,7 +44,8 @@ Abrir `http://localhost:5180`. (En Claude Code: usar el botón de preview; hay
 
 1. **Firebase**: Portfolio → "Configúralo aquí" → pegar `firebaseConfig`.
    - Firebase Console: habilitar **Authentication → Google**, crear **Firestore**.
-   - Reglas Firestore: `users/{uid}` solo lectura/escritura si `request.auth.uid == uid`.
+   - **Reglas Firestore** (obligatorias, son la barrera real de acceso): ver sección
+     "Control de acceso (whitelist de emails)" más abajo. No basta el check en JS.
 2. **API keys** (se guardan en localStorage, por origen):
    - The Graph (Quick → EVM → ⚙) para Uniswap V3.
    - Helius (Quick → SOL → ⚙) para Solana RPC/DAS.
@@ -57,6 +58,7 @@ users/{uid} → {
   prefs:     { chains: [...], protocols: [...] },   // no sensible, en claro
   prefsVersion
 }
+allowlist/{emailEnMinusculas} → { addedAt, addedBy }   // whitelist de acceso
 ```
 **Cifrado E2E** (shell.js): el portfolio se cifra en el navegador con AES-GCM, clave
 derivada por PBKDF2 de una contraseña que el usuario define y que **nunca** se envía.
@@ -64,6 +66,47 @@ El dueño del proyecto Firebase NO puede leer las direcciones (solo ve `portfoli
 Opción "recordar en este dispositivo" guarda la clave derivada en localStorage
 (`lp:enckey:{uid}`). Si se pierde la contraseña, los datos cifrados no se recuperan.
 Nota: Firebase Auth sigue viendo el email del usuario (identidad), pero no las wallets.
+
+## Control de acceso (whitelist de emails)
+
+Solo pueden registrarse/usar el portfolio: el **admin** (`ADMIN_EMAIL` en `shell.js`,
+hoy `jrodzar@gmail.com`) y los emails de la colección **`allowlist`** de Firestore.
+
+- **Cliente** (`shell.js`): al loguear, `checkAllowed()` mira si el email es admin o
+  existe `allowlist/{email}`. Si no, **cierra sesión** y muestra aviso en el gate.
+  El admin ve un botón **"👥 Accesos"** (modal) para añadir/quitar emails.
+- **Servidor** (reglas Firestore): es la barrera REAL — el check en JS es burlable.
+
+> Si cambias el admin, hazlo en **dos sitios**: `ADMIN_EMAIL` (shell.js) y `isAdmin()`
+> en las reglas. La allowlist guarda solo emails (no rompe la privacidad E2E de wallets).
+
+### Reglas Firestore a publicar (Firebase Console → Firestore → Reglas)
+```
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.email.lower() == 'jrodzar@gmail.com';
+    }
+    function allowed() {
+      return request.auth != null && (
+        isAdmin() ||
+        exists(/databases/$(database)/documents/allowlist/$(request.auth.token.email.lower()))
+      );
+    }
+    match /users/{uid} {
+      allow read, write: if request.auth != null
+        && request.auth.uid == uid && allowed();
+    }
+    match /allowlist/{email} {
+      allow read:  if request.auth != null;   // el cliente comprueba su acceso
+      allow write: if isAdmin();               // solo el admin edita la lista
+    }
+  }
+}
+```
+Bootstrap: el admin entra (siempre autorizado) → "👥 Accesos" → añade emails.
 
 ## Detalles técnicos
 
@@ -87,6 +130,10 @@ Nota: Firebase Auth sigue viendo el email del usuario (identidad), pero no las w
 - No hay secretos en el repo: claves y config viven en el navegador (localStorage).
 
 ## Estado / pendientes
-- Hecho: EVM (6 redes), Orca, Raydium, portfolios, login, prefs, gráficos, fees acumuladas.
+- Hecho: EVM (incl. HyperEVM RPC + Revert Lend), Orca, Raydium, portfolios, login,
+  prefs, gráficos, fees (cobradas/pendientes), pestaña Histórico, barra de rango en
+  fichas, PnL+IL real en Solana vía Birdeye histórico, control de acceso por whitelist,
+  modal de progreso al analizar.
 - Pendiente opcional: Meteora DLMM, pools clásicos Solana, fee tier de Raydium,
-  histórico/IL real en Solana (requiere indexer de pago, p.ej. Birdeye — campo ya previsto).
+  histórico para tokens RWA que Birdeye no cubre (necesitaría otra fuente de precios),
+  códigos de invitación (autoservicio).
