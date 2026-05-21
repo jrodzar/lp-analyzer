@@ -36,12 +36,10 @@ const els = {
   modeEvm: $("mode-evm"), modeSol: $("mode-sol"), addr: $("addr"), go: $("go"),
   wallet: $("wallet"), settings: $("settings"), hint: $("hint"),
   frameEvm: $("frame-evm"), frameSol: $("frame-sol"),
-  // projection
-  projCapital: $("proj-capital"), projApr: $("proj-apr"), projYears: $("proj-years"),
-  projContrib: $("proj-contrib"), projFreq: $("proj-freq"), projReinvest: $("proj-reinvest"),
-  projLoad: $("proj-load"), projNote: $("proj-note"),
-  projFinal: $("proj-final"), projContributed: $("proj-contributed"), projEarnings: $("proj-earnings"), projMultiple: $("proj-multiple"),
-  projHistNote: $("proj-hist-note"), chartProjection: $("chart-projection"),
+  // histórico
+  histEmpty: $("hist-empty"), histContent: $("hist-content"),
+  histAportado: $("hist-aportado"), histValor: $("hist-valor"), histGanado: $("hist-ganado"),
+  histNote: $("hist-note"), chartProjection: $("chart-projection"),
 };
 
 const EVM_CHAINS = [
@@ -118,7 +116,7 @@ function setTab(tab) {
   els.tabPortfolio.classList.toggle("hidden", tab !== "portfolio");
   els.tabQuick.classList.toggle("hidden", tab !== "quick");
   els.tabProjection.classList.toggle("hidden", tab !== "projection");
-  if (tab === "projection") renderProjection();
+  if (tab === "projection") renderHistorico();
 }
 
 // ============================================================================
@@ -759,98 +757,62 @@ window.addEventListener("message", (e) => {
 });
 
 // ============================================================================
-// Proyección de interés compuesto (histórico real + futuro)
+// Histórico real: capital aportado vs valor acumulado en el tiempo
 // ============================================================================
 
-// Curva real de fees/intereses acumulados (de los timelines del portfolio)
-function historicalCumulative() {
+// Construye dos curvas diarias agregadas a partir de los timelines de las posiciones.
+// timeline por posición: [{ posId, points: [{ ts(ms), feesUSD, depositedUSD, withdrawnUSD }] }]
+function buildHistoricalCurves() {
   const allSeries = state.results.flatMap((r) => r.timeline || []);
-  if (!allSeries.length) return [];
-  const events = allSeries.flatMap((s) => s.points.map((pt) => ({ ts: pt.ts, posId: s.posId, feesUSD: pt.feesUSD })));
-  events.sort((a, b) => a.ts - b.ts);
-  const current = new Map();
-  const byDay = new Map();
-  for (const ev of events) {
-    current.set(ev.posId, ev.feesUSD);
-    const total = [...current.values()].reduce((s, v) => s + v, 0);
-    const day = Math.floor(ev.ts / 86400) * 86400;
-    byDay.set(day, total);
-  }
-  return [...byDay.entries()].map(([ts, y]) => ({ x: ts * 1000, y }));
-}
-
-// Defaults desde el portfolio analizado (valor total + APR ponderado)
-function projectionDefaults() {
-  const all = state.results.flatMap((r) => r.items || []);
-  if (!all.length) return null;
-  const totalValue = all.reduce((s, it) => s + (it.valueUSD || 0), 0);
-  let wsum = 0, wval = 0;
-  for (const it of all) {
-    if (typeof it.apr === "number" && isFinite(it.apr) && it.valueUSD > 0) { wsum += it.apr * it.valueUSD; wval += it.valueUSD; }
-  }
-  const apr = wval > 0 ? wsum / wval : null;
-  return { totalValue, apr };
-}
-
-function loadProjectionFromPortfolio() {
-  const d = projectionDefaults();
-  if (!d) { els.projNote.textContent = "Analiza tu portfolio primero (pestaña Portfolio → Analizar todo) para autorrellenar."; return; }
-  els.projCapital.value = d.totalValue.toFixed(2);
-  if (d.apr != null) els.projApr.value = d.apr.toFixed(1);
-  els.projNote.textContent = `Cargado del portfolio: capital $${d.totalValue.toFixed(2)}${d.apr != null ? ` · APR ponderado ${d.apr.toFixed(1)}%` : ""}.`;
-  renderProjection();
-}
-
-function computeProjection() {
-  const capital = Math.max(0, parseFloat(els.projCapital.value) || 0);
-  const apr = Math.max(0, parseFloat(els.projApr.value) || 0) / 100;
-  const years = Math.min(40, Math.max(1, parseInt(els.projYears.value) || 1));
-  const contrib = Math.max(0, parseFloat(els.projContrib.value) || 0);
-  const freq = parseInt(els.projFreq.value); // cada cuántos meses se aporta (0 = nunca)
-  const reinvest = els.projReinvest.checked;
-  const months = years * 12;
-  const rM = apr / 12;
-
-  const now = Date.now();
-  const valuePts = [{ x: now, y: capital }];
-  const contribPts = [{ x: now, y: capital }];
-  let value = capital, contributed = capital, simpleEarn = 0;
-  for (let m = 1; m <= months; m++) {
-    if (reinvest) {
-      value = value * (1 + rM);
-    } else {
-      simpleEarn += value * rM; // interés no reinvertido (sobre el capital aportado)
+  if (!allSeries.length) return null;
+  // eventos ordenados; mantenemos el último estado conocido por posición
+  const events = [];
+  for (const s of allSeries) {
+    for (const pt of s.points) {
+      events.push({ ts: pt.ts, posId: s.posId, fees: pt.feesUSD || 0, dep: pt.depositedUSD || 0, wd: pt.withdrawnUSD || 0 });
     }
-    if (freq > 0 && contrib > 0 && m % freq === 0) { value += contrib; contributed += contrib; }
-    const x = now + m * 30.44 * 86400 * 1000;
-    valuePts.push({ x, y: reinvest ? value : contributed + simpleEarn });
-    contribPts.push({ x, y: contributed });
   }
-  const finalVal = reinvest ? value : contributed + simpleEarn;
-  return { valuePts, contribPts, finalVal, contributed, earnings: finalVal - contributed, reinvest };
+  if (!events.length) return null;
+  events.sort((a, b) => a.ts - b.ts);
+  const lastFees = new Map(), lastDep = new Map();
+  const aportadoByDay = new Map(), valorByDay = new Map();
+  for (const ev of events) {
+    lastFees.set(ev.posId, ev.fees);
+    lastDep.set(ev.posId, ev.dep); // depositado bruto acumulado de la posición
+    const aportado = [...lastDep.values()].reduce((s, v) => s + v, 0);
+    const fees = [...lastFees.values()].reduce((s, v) => s + v, 0);
+    const day = Math.floor(ev.ts / 86400000) * 86400000;
+    aportadoByDay.set(day, aportado);
+    valorByDay.set(day, aportado + fees); // valor acumulado = aportado + fees ganadas
+  }
+  const days = [...new Set([...aportadoByDay.keys(), ...valorByDay.keys()])].sort((a, b) => a - b);
+  const aportado = days.map((d) => ({ x: d, y: aportadoByDay.get(d) }));
+  const valor = days.map((d) => ({ x: d, y: valorByDay.get(d) }));
+  const lastAportado = aportado[aportado.length - 1]?.y || 0;
+  const lastValor = valor[valor.length - 1]?.y || 0;
+  return { aportado, valor, lastAportado, lastValor, ganado: lastValor - lastAportado };
 }
 
-function renderProjection() {
+function renderHistorico() {
   if (typeof Chart === "undefined" || !els.chartProjection) return;
-  const p = computeProjection();
-  els.projFinal.textContent = fmtUSD(p.finalVal);
-  els.projContributed.textContent = fmtUSD(p.contributed);
-  els.projEarnings.textContent = fmtUSD(p.earnings);
-  els.projMultiple.textContent = p.contributed > 0 ? (p.finalVal / p.contributed).toFixed(2) + "×" : "—";
-
-  const hist = historicalCumulative();
-  els.projHistNote.textContent = hist.length
-    ? "Línea punteada = fees/interés reales acumulados hasta hoy"
-    : "Sin histórico (analiza el portfolio para verlo). Mostrando solo proyección.";
+  const curves = buildHistoricalCurves();
+  if (!curves) {
+    els.histEmpty.classList.remove("hidden");
+    els.histContent.classList.add("hidden");
+    if (pfCharts.projection) { pfCharts.projection.destroy(); pfCharts.projection = null; }
+    return;
+  }
+  els.histEmpty.classList.add("hidden");
+  els.histContent.classList.remove("hidden");
+  els.histAportado.textContent = fmtUSD(curves.lastAportado);
+  els.histValor.textContent = fmtUSD(curves.lastValor);
+  els.histGanado.textContent = fmtUSD(curves.ganado);
+  els.histNote.textContent = "Valor acumulado = capital aportado + fees ganadas (snapshots del subgraph; no incluye variación de precio/IL)";
 
   const datasets = [
-    { label: "Capital aportado", data: p.contribPts, borderColor: "#64748b", borderDash: [4, 4], pointRadius: 0, borderWidth: 1.5, tension: 0.1 },
-    { label: p.reinvest ? "Valor proyectado (compuesto)" : "Valor proyectado (simple)", data: p.valuePts, borderColor: "#a855f7", backgroundColor: "rgba(168,85,247,0.12)", pointRadius: 0, borderWidth: 2.5, fill: true, tension: 0.2 },
+    { label: "Capital aportado", data: curves.aportado, borderColor: "#94a3b8", borderDash: [5, 4], pointRadius: 2, borderWidth: 1.5, tension: 0.2 },
+    { label: "Valor acumulado", data: curves.valor, borderColor: "#34d399", backgroundColor: "rgba(52,211,153,0.12)", pointRadius: 2, borderWidth: 2.5, fill: true, tension: 0.2 },
   ];
-  if (hist.length) {
-    datasets.push({ label: "Fees reales acumuladas (histórico)", data: hist, borderColor: "#34d399", borderDash: [2, 3], pointRadius: 0, borderWidth: 2, tension: 0.2 });
-  }
-
   if (pfCharts.projection) { pfCharts.projection.destroy(); pfCharts.projection = null; }
   pfCharts.projection = new Chart(els.chartProjection, {
     type: "line",
@@ -873,11 +835,6 @@ function renderProjection() {
 els.tabBtnPortfolio.onclick = () => setTab("portfolio");
 els.tabBtnQuick.onclick = () => setTab("quick");
 els.tabBtnProjection.onclick = () => setTab("projection");
-els.projLoad.onclick = loadProjectionFromPortfolio;
-["projCapital", "projApr", "projYears", "projContrib", "projFreq", "projReinvest"].forEach((k) => {
-  els[k].addEventListener("input", renderProjection);
-  els[k].addEventListener("change", renderProjection);
-});
 
 els.go.onclick = quickAnalyze;
 els.addr.addEventListener("keydown", (e) => { if (e.key === "Enter") quickAnalyze(); });

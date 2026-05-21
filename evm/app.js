@@ -997,11 +997,13 @@ function buildPortfolioTimeline(bundles) {
     if (!b.snapshots?.length) continue;
     const byDay = new Map();
     for (const s of b.snapshots) {
-      const usd = Number(s.collectedFeesToken0) * p.token0.priceUSD + Number(s.collectedFeesToken1) * p.token1.priceUSD;
+      const feesUSD = Number(s.collectedFeesToken0) * p.token0.priceUSD + Number(s.collectedFeesToken1) * p.token1.priceUSD;
+      const dep = Number(s.depositedToken0) * p.token0.priceUSD + Number(s.depositedToken1) * p.token1.priceUSD;
+      const wd = Number(s.withdrawnToken0 || 0) * p.token0.priceUSD + Number(s.withdrawnToken1 || 0) * p.token1.priceUSD;
       const day = Math.floor(Number(s.timestamp) * 1000 / 86400000) * 86400000;
-      byDay.set(day, usd); // los snapshots son acumulados, basta con el último del día
+      byDay.set(day, { feesUSD, depositedUSD: dep, withdrawnUSD: wd }); // snapshots acumulados: último del día
     }
-    const points = [...byDay.entries()].map(([ts, feesUSD]) => ({ ts, feesUSD })).sort((a, b) => a.ts - b.ts);
+    const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
     if (points.length) result.push({ posId: p.id, label: `${p.token0.symbol}/${p.token1.symbol}`, points });
   }
   return result;
