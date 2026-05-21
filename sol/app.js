@@ -1476,23 +1476,30 @@ async function birdeyePriceAt(mint, unixSec) {
   if (!state._bePriceCache) state._bePriceCache = new Map();
   const dayKey = mint + ":" + Math.floor(unixSec / 86400);
   if (state._bePriceCache.has(dayKey)) return state._bePriceCache.get(dayKey);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const url = `https://public-api.birdeye.so/defi/historical_price_unix?address=${mint}&unixtime=${unixSec}`;
+  const headers = { "X-API-KEY": state.birdeyeKey, "x-chain": "solana", accept: "application/json" };
   let price = null;
-  try {
-    const url = `https://public-api.birdeye.so/defi/historical_price_unix?address=${mint}&unixtime=${unixSec}`;
-    const r = await fetch(url, { headers: { "X-API-KEY": state.birdeyeKey, "x-chain": "solana", accept: "application/json" } });
-    if (r.status === 401 || r.status === 403) {
-      // key inválida o plan sin acceso al endpoint histórico
-      state._beStats.denied++;
-    } else if (r.status === 429) {
-      state._beStats.rate++;
-    } else {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const r = await fetch(url, { headers });
+      if (r.status === 429) {
+        // rate limit: espera (backoff) y reintenta antes de rendirse
+        if (attempt < 3) { await sleep(700 * (attempt + 1)); continue; }
+        state._beStats.rate++; break;
+      }
+      if (r.status === 401 || r.status === 403) { state._beStats.denied++; break; } // key inválida o plan sin histórico
       let j = null; try { j = await r.json(); } catch (e) {}
       const v = j && j.data && j.data.value;
       if (typeof v === "number" && isFinite(v)) { price = v; state._beStats.ok++; }
       else if (j && j.success === false) { state._beStats.denied++; }
       else { state._beStats.error++; }
+      break;
+    } catch (e) {
+      if (attempt < 3) { await sleep(500); continue; }
+      state._beStats.error++;
     }
-  } catch (e) { state._beStats.error++; }
+  }
   state._bePriceCache.set(dayKey, price);
   return price;
 }
