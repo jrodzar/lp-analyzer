@@ -1139,8 +1139,8 @@ function portfolioCard(it, color) {
   const showPnl = !it.lending && (it.kind === "evm" || (it.kind === "sol" && it.pnlUSD != null));
   const evmExtra = showPnl
     ? `<div class="grid grid-cols-2 gap-2 text-xs pt-1">
-         <div><div class="text-[10px] uppercase text-slate-500">IL</div><div class="${pnlColor(it.ilUSD)}">${it.ilUSD == null ? "—" : fmtUSD(it.ilUSD)}</div></div>
-         <div><div class="text-[10px] uppercase text-slate-500">PnL</div><div class="${pnlColor(it.pnlUSD)}">${it.pnlUSD == null ? "—" : fmtUSD(it.pnlUSD)}</div></div>
+         <div><div class="text-[10px] uppercase text-slate-500">IL <span class="cursor-help" title="IL vs HODL: valor del LP frente a mantener los tokens depositados. Estimación; no incluye gas.">ⓘ</span></div><div class="${pnlColor(it.ilUSD)}">${it.ilUSD == null ? "—" : fmtUSD(it.ilUSD)}</div></div>
+         <div><div class="text-[10px] uppercase text-slate-500">PnL <span class="cursor-help" title="PnL neto = valor actual + retirado + fees − depositado. Estimación; NO incluye gas. En Solana, fees/retiros por heurística.">ⓘ</span></div><div class="${pnlColor(it.pnlUSD)}">${it.pnlUSD == null ? "—" : fmtUSD(it.pnlUSD)}</div></div>
        </div>`
     : "";
   el.innerHTML = `

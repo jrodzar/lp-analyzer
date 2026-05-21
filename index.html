@@ -201,12 +201,12 @@
               <div id="g-fees-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
             </div>
             <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <div class="text-[11px] uppercase tracking-wide text-slate-400">IL vs HODL</div>
+              <div class="text-[11px] uppercase tracking-wide text-slate-400">IL vs HODL <span class="cursor-help text-slate-500" title="Pérdida impermanente: valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Es una estimación y no incluye gas.">ⓘ</span></div>
               <div id="g-il" class="text-xl font-bold mt-1">—</div>
               <div id="g-il-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
             </div>
             <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <div class="text-[11px] uppercase tracking-wide text-slate-400">PnL neto</div>
+              <div class="text-[11px] uppercase tracking-wide text-slate-400">PnL neto <span class="cursor-help text-slate-500" title="PnL neto = valor actual + retirado + fees − depositado. Es una estimación y NO incluye el coste de gas. En Solana, fees y retiros se separan por heurística y los tokens sin histórico (p. ej. RWA) se omiten.">ⓘ</span></div>
               <div id="g-pnl" class="text-xl font-bold mt-1">—</div>
               <div id="g-pnl-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
             </div>
@@ -274,8 +274,8 @@
       </div>
       <div id="hint" class="text-[11px] hidden mb-2"></div>
       <div class="relative" style="height: calc(100vh - 220px); min-height: 480px;">
-        <iframe id="frame-evm" src="evm/index.html?v=26" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
-        <iframe id="frame-sol" src="sol/index.html?v=25" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
+        <iframe id="frame-evm" src="evm/index.html?v=27" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
+        <iframe id="frame-sol" src="sol/index.html?v=26" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
       </div>
     </section>
 
@@ -302,12 +302,12 @@
             <div id="hist-ganado" class="text-xl font-bold mt-1 text-emerald-400">—</div>
           </div>
           <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <div class="text-[11px] uppercase tracking-wide text-slate-400">PnL neto</div>
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">PnL neto <span class="cursor-help text-slate-500" title="PnL neto = valor actual + retirado + fees − depositado. Es una estimación y NO incluye el coste de gas. En Solana, fees y retiros se separan por heurística y los tokens sin histórico (p. ej. RWA) se omiten.">ⓘ</span></div>
             <div id="hist-pnl" class="text-xl font-bold mt-1">—</div>
             <div id="hist-pnl-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
           </div>
           <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <div class="text-[11px] uppercase tracking-wide text-slate-400">IL vs HODL</div>
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">IL vs HODL <span class="cursor-help text-slate-500" title="Pérdida impermanente: valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Es una estimación y no incluye gas.">ⓘ</span></div>
             <div id="hist-il" class="text-xl font-bold mt-1">—</div>
             <div id="hist-il-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
           </div>
@@ -326,6 +326,6 @@
 
   </main>
 
-  <script src="shell.js?v=38"></script>
+  <script src="shell.js?v=39"></script>
 </body>
 </html>

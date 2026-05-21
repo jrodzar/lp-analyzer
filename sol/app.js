@@ -1255,12 +1255,12 @@ function positionCard(p) {
       </div>
       ${p.pnlBasis === "birdeye" ? `
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL</div>
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL <span class="cursor-help" title="Valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Estimación con precios históricos de Birdeye; no incluye gas.">ⓘ</span></div>
         <div class="font-semibold ${pnlColor(p.ilUSD)}">${fmtUSD(p.ilUSD)}</div>
         <div class="text-[10px] ${pnlColor(p.ilUSD)} mt-0.5">${fmtPct(p.ilPct)}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto</div>
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto <span class="cursor-help" title="Valor actual + retirado + fees − depositado, con precios históricos de Birdeye. Estimación: fees y retiros se separan por heurística y NO incluye gas.">ⓘ</span></div>
         <div class="font-semibold ${pnlColor(p.pnlUSD)}">${fmtUSD(p.pnlUSD)}</div>
         <div class="text-[10px] text-slate-400 mt-0.5">depo ${fmtUSD(p.depositedUSD)}</div>
       </div>` : ""}
