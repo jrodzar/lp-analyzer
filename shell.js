@@ -465,13 +465,18 @@ function renderPortfolio() {
   const totalCollected = all.reduce((s, it) => s + (it.feesUSD || 0), 0);
   const totalPending = all.reduce((s, it) => s + (it.feesPendingUSD || 0), 0);
   const totalFees = totalCollected + totalPending;
-  const open = all.filter((it) => !it.closed).length;
-  const inRange = all.filter((it) => !it.closed && it.inRange).length;
+  // separar LP de préstamos para clasificar bien (un préstamo no tiene "rango")
+  const lp = all.filter((it) => !it.lending);
+  const lending = all.filter((it) => it.lending);
+  const open = lp.filter((it) => !it.closed).length;
+  const inRange = lp.filter((it) => !it.closed && it.inRange).length;
   els.gValue.textContent = fmtUSD(totalValue);
   els.gFees.textContent = fmtUSD(totalFees);
   els.gFeesSub.textContent = `${fmtUSD(totalPending)} pendientes · ${fmtUSD(totalCollected)} cobradas`;
   els.gPositions.textContent = all.length;
-  els.gPositionsSub.textContent = `${inRange} en rango · ${open - inRange} fuera · ${all.length - open} cerradas`;
+  els.gPositionsSub.textContent =
+    `${inRange} en rango · ${open - inRange} fuera · ${lp.length - open} cerradas` +
+    (lending.length ? ` · ${lending.length} préstamo${lending.length > 1 ? "s" : ""}` : "");
   els.gAddresses.textContent = state.results.length;
 
   renderPortfolioCharts();
