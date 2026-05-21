@@ -608,11 +608,13 @@ async function analyzeAll() {
 // ============================================================================
 
 function renderPortfolio() {
-  const all = state.results.flatMap((r) => r.items);
+  // ocultamos las posiciones cerradas en toda la vista de portfolio
+  const visItems = (r) => (r.items || []).filter((it) => !it.closed);
+  const all = state.results.flatMap(visItems);
   // colores globales estables por posición
   let colorIdx = 0;
   const colorOf = new Map();
-  for (const r of state.results) for (const it of r.items) colorOf.set(it, distinctColor(colorIdx++));
+  for (const r of state.results) for (const it of visItems(r)) colorOf.set(it, distinctColor(colorIdx++));
 
   // resumen global
   els.pfSummary.classList.toggle("hidden", all.length === 0 && state.results.length === 0);
@@ -623,14 +625,13 @@ function renderPortfolio() {
   // separar LP de préstamos para clasificar bien (un préstamo no tiene "rango")
   const lp = all.filter((it) => !it.lending);
   const lending = all.filter((it) => it.lending);
-  const open = lp.filter((it) => !it.closed).length;
-  const inRange = lp.filter((it) => !it.closed && it.inRange).length;
+  const inRange = lp.filter((it) => it.inRange).length;
   els.gValue.textContent = fmtUSD(totalValue);
   els.gFees.textContent = fmtUSD(totalFees);
   els.gFeesSub.textContent = `${fmtUSD(totalPending)} pendientes · ${fmtUSD(totalCollected)} cobradas`;
   els.gPositions.textContent = all.length;
   els.gPositionsSub.textContent =
-    `${inRange} en rango · ${open - inRange} fuera · ${lp.length - open} cerradas` +
+    `${inRange} en rango · ${lp.length - inRange} fuera` +
     (lending.length ? ` · ${lending.length} préstamo${lending.length > 1 ? "s" : ""}` : "");
   els.gAddresses.textContent = state.results.length;
 
@@ -639,9 +640,10 @@ function renderPortfolio() {
   // secciones por dirección
   els.pfSections.innerHTML = "";
   for (const r of state.results) {
+    const items = visItems(r);
     const section = document.createElement("section");
-    const subVal = r.items.reduce((s, it) => s + (it.valueUSD || 0), 0);
-    const subFees = r.items.reduce((s, it) => s + (it.feesPendingUSD || 0) + (it.feesUSD || 0), 0);
+    const subVal = items.reduce((s, it) => s + (it.valueUSD || 0), 0);
+    const subFees = items.reduce((s, it) => s + (it.feesPendingUSD || 0) + (it.feesUSD || 0), 0);
     const badge = r.entry.type === "evm"
       ? `<span class="chip bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30">EVM</span>`
       : `<span class="chip bg-purple-500/15 text-purple-300 border border-purple-500/30">SOL</span>`;
@@ -652,18 +654,18 @@ function renderPortfolio() {
       <span class="font-semibold">${r.entry.label || shortAddr(r.entry.address)}</span>
       <span class="font-mono text-[11px] text-slate-500">${shortAddr(r.entry.address)}</span>
       <span class="flex-1"></span>
-      <span class="text-xs text-slate-400">${r.items.length} pos · ${fmtUSD(subVal)} · fees ${fmtUSD(subFees)}</span>`;
+      <span class="text-xs text-slate-400">${items.length} pos · ${fmtUSD(subVal)} · fees ${fmtUSD(subFees)}</span>`;
     section.appendChild(head);
 
-    if (!r.items.length) {
+    if (!items.length) {
       const empty = document.createElement("div");
       empty.className = "text-xs text-slate-500 mb-4";
-      empty.textContent = r.status && r.status !== "ok" ? `Sin posiciones (${r.status}).` : "Sin posiciones.";
+      empty.textContent = r.status && r.status !== "ok" ? `Sin posiciones abiertas (${r.status}).` : "Sin posiciones abiertas.";
       section.appendChild(empty);
     } else {
       const grid = document.createElement("div");
       grid.className = "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-4";
-      for (const it of r.items) grid.appendChild(portfolioCard(it, colorOf.get(it)));
+      for (const it of items) grid.appendChild(portfolioCard(it, colorOf.get(it)));
       section.appendChild(grid);
     }
     els.pfSections.appendChild(section);
@@ -671,17 +673,18 @@ function renderPortfolio() {
 }
 
 function renderPortfolioCharts() {
+  const open = (r) => (r.items || []).filter((it) => !it.closed); // sin cerradas
   // valor por dirección
   const byAddr = state.results
-    .map((r) => ({ label: r.entry.label || shortAddr(r.entry.address), value: r.items.reduce((s, it) => s + (it.valueUSD || 0), 0) }))
+    .map((r) => ({ label: r.entry.label || shortAddr(r.entry.address), value: open(r).reduce((s, it) => s + (it.valueUSD || 0), 0) }))
     .filter((x) => x.value > 0);
   // valor por red/protocolo
   const venueMap = new Map();
-  for (const r of state.results) for (const it of r.items) venueMap.set(it.venue, (venueMap.get(it.venue) || 0) + (it.valueUSD || 0));
+  for (const r of state.results) for (const it of open(r)) venueMap.set(it.venue, (venueMap.get(it.venue) || 0) + (it.valueUSD || 0));
   const byVenue = [...venueMap.entries()].map(([label, value]) => ({ label, value })).filter((x) => x.value > 0);
   // fees (cobradas + pendientes) por dirección
   const byFees = state.results
-    .map((r) => ({ label: r.entry.label || shortAddr(r.entry.address), value: r.items.reduce((s, it) => s + (it.feesUSD || 0) + (it.feesPendingUSD || 0), 0) }))
+    .map((r) => ({ label: r.entry.label || shortAddr(r.entry.address), value: open(r).reduce((s, it) => s + (it.feesUSD || 0) + (it.feesPendingUSD || 0), 0) }))
     .filter((x) => x.value > 0);
 
   els.pfCharts.classList.toggle("hidden", byAddr.length === 0);
@@ -1009,7 +1012,7 @@ function renderHistorico() {
 
   // PnL e IL agregados a partir de las posiciones analizadas (incluye variación de precio).
   // Solo cuentan las posiciones que aportan el dato (EVM siempre; Solana solo con Birdeye key).
-  const items = state.results.flatMap((r) => r.items || []).filter((it) => !it.lending);
+  const items = state.results.flatMap((r) => r.items || []).filter((it) => !it.lending && !it.closed);
   let pnlSum = 0, pnlN = 0, ilSum = 0, ilN = 0;
   for (const it of items) {
     if (it.pnlUSD != null && isFinite(it.pnlUSD)) { pnlSum += it.pnlUSD; pnlN++; }
