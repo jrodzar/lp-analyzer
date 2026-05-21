@@ -947,7 +947,18 @@ async function enrichOrcaPositions(rawPositions) {
 // Formatting helpers
 // ============================================================================
 
+// Formato normal con separador de miles: $8,300.00 (tarjetas, resúmenes…)
 function fmtUSD(n) {
+  if (n === null || n === undefined || !isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  const sign = n < 0 ? "-" : "";
+  if (abs === 0) return "$0";
+  if (abs >= 1) return `${sign}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (abs >= 0.01) return `${sign}$${abs.toFixed(4)}`;
+  return `${sign}$${abs.toExponential(2)}`;
+}
+// Formato compacto: $8.30k / $1.20M (solo ejes y etiquetas de gráficos)
+function fmtUSDc(n) {
   if (n === null || n === undefined || !isFinite(n)) return "—";
   const abs = Math.abs(n);
   const sign = n < 0 ? "-" : "";
@@ -1281,7 +1292,7 @@ const barValueLabels = {
         ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
-        ctx.fillText(fmtUSD(val), bar.x, bar.y - 4);
+        ctx.fillText(fmtUSDc(val), bar.x, bar.y - 4);
         ctx.restore();
       });
     });
@@ -1310,7 +1321,7 @@ function renderValueChart() {
       },
       scales: {
         x: { ticks: { color: "#94a3b8" }, grid: { color: "#1e293b" } },
-        y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSD(v) }, grid: { color: "#1e293b" } },
+        y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSDc(v) }, grid: { color: "#1e293b" } },
       },
     },
     plugins: [barValueLabels],

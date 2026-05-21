@@ -114,7 +114,17 @@ function shortAddr(a) {
   if (!a) return "";
   return a.startsWith("0x") ? `${a.slice(0, 6)}…${a.slice(-4)}` : `${a.slice(0, 4)}…${a.slice(-4)}`;
 }
+// Formato normal con separador de miles: $8,300.00 (para tarjetas, resúmenes, etc.)
 function fmtUSD(n) {
+  if (n == null || !isFinite(n)) return "—";
+  const abs = Math.abs(n), s = n < 0 ? "-" : "";
+  if (abs === 0) return "$0";
+  if (abs >= 1) return `${s}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (abs >= 0.01) return `${s}$${abs.toFixed(4)}`;
+  return `${s}$${abs.toExponential(2)}`;
+}
+// Formato compacto: $8.30k / $1.20M (solo para ejes y etiquetas de gráficos)
+function fmtUSDc(n) {
   if (n == null || !isFinite(n)) return "—";
   const abs = Math.abs(n), s = n < 0 ? "-" : "";
   if (abs >= 1e9) return `${s}$${(abs / 1e9).toFixed(2)}B`;
@@ -974,7 +984,7 @@ function renderFeesTimelineChart() {
           ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: (v) => new Date(v).toLocaleDateString("es-ES", { day: "numeric", month: "short" }) },
           grid: { color: "#1e293b" },
         },
-        y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSD(v) }, grid: { color: "#1e293b" } },
+        y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSDc(v) }, grid: { color: "#1e293b" } },
       },
     },
   });
@@ -1043,7 +1053,7 @@ function drawDoughnut(key, canvas, data) {
           font: { size: 10, weight: "bold" },
           formatter: (value) => {
             const pct = total > 0 ? (value / total * 100) : 0;
-            return pct < 4 ? "" : fmtUSD(value);   // ocultar etiqueta si el segmento es muy pequeño
+            return pct < 4 ? "" : fmtUSDc(value);   // ocultar etiqueta si el segmento es muy pequeño
           },
           textShadowColor: "rgba(0,0,0,0.6)",
           textShadowBlur: 4,
@@ -1304,7 +1314,7 @@ function renderHistorico() {
       plugins: { legend: { labels: { color: "#cbd5e1", font: { size: 10 } } }, tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}` } } },
       scales: {
         x: { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: (v) => new Date(v).toLocaleDateString("es-ES", { month: "short", year: "2-digit" }) }, grid: { color: "#1e293b" } },
-        y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSD(v) }, grid: { color: "#1e293b" } },
+        y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSDc(v) }, grid: { color: "#1e293b" } },
       },
     },
   });
