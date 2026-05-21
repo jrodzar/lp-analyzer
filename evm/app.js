@@ -63,6 +63,7 @@ const DEFAULT_CHAINS = {
     subgraphId: "", // no hay subgraph público — usamos modo RPC-directo
     explorer: "https://hyperevmscan.io",
     rpcUrl: "https://rpc.hyperliquid.xyz/evm",
+    rpcUrls: ["https://rpc.hyperliquid.xyz/evm", "https://hyperliquid.drpc.org", "https://rpc.hypurrscan.io"],
     tickField: "scalar",
     // Contratos HyperSwap V3 en HyperEVM mainnet
     nftManagerAddress: "0x6eda206207c09e5428f281761ddc0d300851fbc8",
@@ -342,21 +343,34 @@ function encodeInt24Padded(n) {
   return unsigned.toString(16).padStart(64, "0");
 }
 
-async function rpcEthCall(rpcUrl, to, data) {
-  const res = await fetch(rpcUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      method: "eth_call",
-      params: [{ to, data }, "latest"],
-      id: 1,
-    }),
-  });
-  if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
-  const json = await res.json();
-  if (json.error) throw new Error(`RPC ${json.error.code}: ${json.error.message}`);
-  return json.result;
+// eth_call resiliente: acepta un RPC (string) o una lista (rota entre ellos) y
+// reintenta con backoff ante fallos transitorios (429 / 5xx / red).
+async function rpcEthCall(rpcOrList, to, data) {
+  const rpcs = Array.isArray(rpcOrList) ? rpcOrList.filter(Boolean) : [rpcOrList];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const body = JSON.stringify({ jsonrpc: "2.0", method: "eth_call", params: [{ to, data }, "latest"], id: 1 });
+  let lastErr;
+  for (const rpc of rpcs) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(rpc, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+        if (res.status === 429 || res.status >= 500) {
+          lastErr = new Error(`RPC HTTP ${res.status}`);
+          if (attempt === 0) { await sleep(400 * (attempt + 1)); continue; } // reintento corto
+          break; // agotado este endpoint → siguiente
+        }
+        if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
+        const json = await res.json();
+        if (json.error) throw new Error(`RPC ${json.error.code}: ${json.error.message}`);
+        return json.result;
+      } catch (e) {
+        lastErr = e;
+        if (attempt === 0 && /Failed to fetch|NetworkError|timeout|aborted/i.test(String(e.message))) { await sleep(400); continue; }
+        break; // error no transitorio o ya reintentado → siguiente endpoint
+      }
+    }
+  }
+  throw lastErr || new Error("todos los RPC fallaron");
 }
 
 // ============================================================================
@@ -711,7 +725,7 @@ function buildTimelineFromEvents(events, dec0, dec1, p0, p1) {
 
 async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
   const chain  = state.chains[chainKey];
-  const rpc    = chain.rpcUrl;
+  const rpc    = chain.rpcUrls || [chain.rpcUrl]; // lista para rotar entre endpoints
   const nftMgr = chain.nftManagerAddress;
   const factory = chain.factoryAddress;
 
