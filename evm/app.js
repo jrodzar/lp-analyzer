@@ -82,6 +82,9 @@ let proxyToken = ""; // ID token de Firebase, lo envía el shell (lp-set-token);
 function proxyAuth(url) {
   return (PROXY_BASE && url.startsWith(PROXY_BASE) && proxyToken) ? { Authorization: `Bearer ${proxyToken}` } : {};
 }
+// Cache del histórico (eventos on-chain): apenas cambia → no se re-pide en cada auto-refresco
+const _histCache = new Map(); // clave -> { data, ts }
+const HIST_CACHE_TTL = 10 * 60 * 1000; // 10 min
 const DEFAULTS_VERSION = 8; // bump cuando cambien IDs por defecto para forzar refresh
 
 // ============================================================================
@@ -399,6 +402,9 @@ const EV_4626_WITHDRAW = "0xfbde797d201c681b91056529119e0b02407c7bb96a4a2c75c01f
 
 // Histórico de un lender: depositado/retirado (assets) + timestamp del primer depósito
 async function fetchLendingHistory(apiBase, vault, owner, dec) {
+  const cacheKey = `${apiBase}:lend:${vault}:${owner.toLowerCase()}`;
+  const cached = _histCache.get(cacheKey);
+  if (cached && (Date.now() - cached.ts) < HIST_CACHE_TTL) return cached.data;
   const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
   const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
   const get = async (qs) => {
@@ -413,7 +419,9 @@ async function fetchLendingHistory(apiBase, vault, owner, dec) {
   const events = [];
   for (const l of dep) { d += word(l.data, 0); const ts = parseInt(l.timeStamp, 16); if (firstTs === null || ts < firstTs) firstTs = ts; events.push({ ts, type: "dep", amt: Number(word(l.data, 0)) / 10 ** dec }); }
   for (const l of wth) { w += word(l.data, 0); events.push({ ts: parseInt(l.timeStamp, 16), type: "wth", amt: Number(word(l.data, 0)) / 10 ** dec }); }
-  return { deposited: Number(d) / 10 ** dec, withdrawn: Number(w) / 10 ** dec, firstTs, events };
+  const data = { deposited: Number(d) / 10 ** dec, withdrawn: Number(w) / 10 ** dec, firstTs, events };
+  _histCache.set(cacheKey, { data, ts: Date.now() });
+  return data;
 }
 
 // Serie diaria del lending: capital aportado por eventos + interés repartido linealmente
@@ -669,6 +677,9 @@ const EV_COLLECT  = "0x40d0efd1a53d60ecbf40971b9daf7dc90178c3aadc7aab1765632738f
  *   collectedFees = Σ Collect − Σ DecreaseLiquidity  (Collect incluye principal + fees)
  */
 async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
+  const cacheKey = `${apiBase}:${tokenId}`;
+  const cached = _histCache.get(cacheKey);
+  if (cached && (Date.now() - cached.ts) < HIST_CACHE_TTL) return cached.data;
   const topic1 = "0x" + BigInt(tokenId).toString(16).padStart(64, "0");
   const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
   const getLogs = async (topic0) => {
@@ -692,7 +703,7 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
   for (const l of colLogs) { col0 += word(l.data, 1); col1 += word(l.data, 2); events.push({ ts: parseInt(l.timeStamp, 16), type: "col", a0: word(l.data, 1), a1: word(l.data, 2) }); }
 
   const max0 = (a, b) => (a > b ? a - b : 0n);
-  return {
+  const data = {
     deposited0: bigIntToDecimal(inc0, dec0),
     deposited1: bigIntToDecimal(inc1, dec1),
     withdrawn0: bigIntToDecimal(dec0r, dec0),
@@ -701,6 +712,8 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
     collectedFees1: bigIntToDecimal(max0(col1, dec1r), dec1),
     mintTs, events, dec0, dec1,
   };
+  _histCache.set(cacheKey, { data, ts: Date.now() });
+  return data;
 }
 
 // Construye serie diaria [{ts(ms), depositedUSD, withdrawnUSD, feesUSD}] desde eventos del PositionManager

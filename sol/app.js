@@ -1356,7 +1356,7 @@ async function analyze() {
 
   state.address = addr;
   state.positions = [];
-  state._txCache = null; // invalida cache de transacciones de la corrida anterior
+  // el cache de transacciones (histórico) se reutiliza por TTL; no se invalida aquí
   setLoading(true);
   setStatus("Analizando…", "info");
 
@@ -1508,9 +1508,11 @@ const SOL_STABLES = new Set([
   "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
 ]);
 // Descarga (y cachea) las transacciones enriquecidas de Helius para un owner.
+const TX_CACHE_TTL = 10 * 60 * 1000; // el histórico de transacciones casi no cambia → cache 10 min
 async function fetchEnhancedTxs(owner) {
   if ((!state.heliusKey && !PROXY_BASE) || !owner) return [];
-  if (state._txCache && state._txCache.owner === owner) return state._txCache.txs;
+  // Reutiliza el histórico reciente (no se re-pide en cada auto-refresco)
+  if (state._txCache && state._txCache.owner === owner && (Date.now() - state._txCache.ts) < TX_CACHE_TTL) return state._txCache.txs;
   const txs = [];
   let before = "";
   for (let page = 0; page < 10; page++) {
@@ -1525,7 +1527,7 @@ async function fetchEnhancedTxs(owner) {
     before = arr[arr.length - 1].signature;
     if (arr.length < 100) break;
   }
-  state._txCache = { owner, txs };
+  state._txCache = { owner, txs, ts: Date.now() };
   return txs;
 }
 
