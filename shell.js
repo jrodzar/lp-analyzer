@@ -769,9 +769,8 @@ async function analyzeAll(opts = {}) {
     for (let i = 0; i < n; i++) {
       const entry = state.portfolio[i];
       const label = entry.label || shortAddr(entry.address);
-      const msg = `${silent ? "Actualizando" : "Analizando"} ${label} (${i + 1}/${n})…`;
-      setPfStatus(msg);
-      if (!silent) updateAnalyzingModal(msg, i, n);
+      const msg = `Analizando ${label} (${i + 1}/${n})…`;
+      if (!silent) { setPfStatus(msg); updateAnalyzingModal(msg, i, n); }
       const r = await analyzeAddressHeadless(entry.address, entry.type);
       results.push({ entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [] });
       if (!silent) updateAnalyzingModal(msg, i + 1, n);
@@ -781,9 +780,7 @@ async function analyzeAll(opts = {}) {
     state.results = results;
     renderPortfolio();
     if (state.tab === "projection") renderHistorico(); // mantener Histórico sincronizado
-    const total = state.results.reduce((acc, r) => acc + r.items.length, 0);
-    const stamp = new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
-    setPfStatus(`${silent ? "Actualizado" : "Listo"} a las ${stamp}. ${total} posiciones en ${state.results.length} direcciones.`, "ok");
+    setPfStatus(null); // sin mensaje de "Listo…"; el resultado ya se ve en el resumen
   } finally {
     if (!silent) closeAnalyzingModal();
     els.analyzeAll.disabled = false;
