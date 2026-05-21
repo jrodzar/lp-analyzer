@@ -653,7 +653,7 @@ function renderPortfolio() {
   const inRange = lp.filter((it) => it.inRange).length;
   els.gValue.textContent = fmtUSD(totalValue);
   els.gFees.textContent = fmtUSD(totalFees);
-  els.gFeesSub.textContent = `${fmtUSD(totalPending)} pendientes · ${fmtUSD(totalCollected)} cobradas`;
+  els.gFeesSub.innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(totalPending)}</span> pendientes · <span class="text-emerald-400 font-semibold">${fmtUSD(totalCollected)}</span> cobradas`;
   els.gPositions.textContent = all.length;
   els.gPositionsSub.textContent =
     `${inRange} en rango · ${lp.length - inRange} fuera` +
@@ -883,11 +883,18 @@ function portfolioCard(it, color) {
       : it.inRange
         ? `<span class="chip bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">en rango</span>`
         : `<span class="chip bg-amber-500/15 text-amber-300 border border-amber-500/30">fuera</span>`;
-  const feesLine = it.lending
-    ? `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesUSD)}</div>`
-    : (it.kind === "evm" || (it.kind === "sol" && it.pnlUSD != null))
-      ? `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesUSD)}<span class="text-[10px] text-amber-300 ml-1">${it.feesPendingUSD == null ? "+pend n/d" : "+" + fmtUSD(it.feesPendingUSD)}</span></div>`
-      : `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesPendingUSD)}</div>`;
+  let feesLine;
+  if (it.lending) {
+    feesLine = `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesUSD)} <span class="text-[10px] font-normal text-slate-400">ganado</span></div>`;
+  } else {
+    const hasCollected = (it.kind === "evm" || (it.kind === "sol" && it.pnlUSD != null));
+    const pendStr = it.feesPendingUSD == null ? "n/d" : fmtUSD(it.feesPendingUSD);
+    const collectedLine = hasCollected
+      ? `<div class="text-emerald-400 font-semibold leading-tight">${fmtUSD(it.feesUSD || 0)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>`
+      : "";
+    const pendingLine = `<div class="text-amber-300 font-semibold leading-tight">${pendStr} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>`;
+    feesLine = collectedLine + pendingLine;
+  }
   const showPnl = !it.lending && (it.kind === "evm" || (it.kind === "sol" && it.pnlUSD != null));
   const evmExtra = showPnl
     ? `<div class="grid grid-cols-2 gap-2 text-xs pt-1">

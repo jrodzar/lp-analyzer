@@ -1215,8 +1215,9 @@ function positionCard(p) {
         <div class="text-[10px] text-slate-400">${fmtToken(p.amounts.amount1, p.token1.symbol)}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees pendientes</div>
-        <div class="font-semibold text-emerald-400">${fmtUSD(p.feesPendingUSD)}</div>
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees</div>
+        ${p.pnlBasis === "birdeye" ? `<div class="font-semibold text-emerald-400 leading-tight">${fmtUSD(p.feesCollectedUSD || 0)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>` : ""}
+        <div class="font-semibold text-amber-300 leading-tight">${fmtUSD(p.feesPendingUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>
         <div class="text-[10px] text-slate-400 mt-0.5">${fmtToken(p.feesA, p.token0.symbol)}</div>
         <div class="text-[10px] text-slate-400">${fmtToken(p.feesB, p.token1.symbol)}</div>
       </div>
