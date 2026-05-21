@@ -342,8 +342,8 @@ function renderAuthArea() {
     const wrap = document.createElement("div");
     wrap.className = "flex items-center gap-2";
     wrap.innerHTML = `
-      <span class="text-xs text-slate-300 hidden sm:inline">${state.user.email || "cuenta"}</span>
-      <button id="signout-btn" class="px-2.5 py-1.5 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">Salir</button>`;
+      <span class="text-xs font-semibold text-slate-900 hidden sm:inline">${state.user.email || "cuenta"}</span>
+      <button id="signout-btn" class="px-2.5 py-1.5 text-xs rounded-lg bg-slate-900 hover:bg-slate-800 text-white">Salir</button>`;
     els.authArea.appendChild(wrap);
     $("signout-btn").onclick = signOutUser;
   } else {
