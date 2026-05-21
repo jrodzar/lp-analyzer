@@ -14,6 +14,7 @@ const els = {
   // tabs
   tabBtnPortfolio: $("tab-btn-portfolio"), tabBtnQuick: $("tab-btn-quick"), tabBtnProjection: $("tab-btn-projection"),
   tabPortfolio: $("tab-portfolio"), tabQuick: $("tab-quick"), tabProjection: $("tab-projection"),
+  autoRefresh: $("auto-refresh"),
   authArea: $("auth-area"),
   // firebase setup
   fbSetup: $("fb-setup"), fbInput: $("fb-config-input"), fbErr: $("fb-config-err"), fbSave: $("fb-config-save"),
@@ -145,6 +146,31 @@ function setTab(tab) {
 }
 
 // ============================================================================
+// Auto-actualización de la pestaña activa
+// ============================================================================
+let _autoTimer = null;
+let _autoBusy = false;
+
+function applyAutoRefresh() {
+  const ms = Number(els.autoRefresh.value || 0);
+  localStorage.setItem("lp:autoRefresh", String(ms));
+  if (_autoTimer) { clearInterval(_autoTimer); _autoTimer = null; }
+  if (ms > 0) _autoTimer = setInterval(autoRefreshTick, ms);
+}
+
+function autoRefreshTick() {
+  if (_autoBusy || document.hidden) return; // no refrescar si pestaña del navegador oculta o ya ocupado
+  if (state.tab === "quick") {
+    if (els.addr.value.trim()) { _autoBusy = true; quickAnalyze({ silent: true }); } // _autoBusy se libera en lp-analyze-done
+  } else if (state.tab === "portfolio" || state.tab === "projection") {
+    if (state.portfolio.length && crypto_.key && !els.analyzeAll.disabled) {
+      _autoBusy = true;
+      Promise.resolve(analyzeAll({ silent: true })).finally(() => { _autoBusy = false; });
+    }
+  }
+}
+
+// ============================================================================
 // Quick mode (single address -> iframe visible)
 // ============================================================================
 
@@ -170,19 +196,21 @@ function showHint(msg, kind) {
 function activeFrame() { return state.mode === "evm" ? els.frameEvm : els.frameSol; }
 function postToActive(m) { const f = activeFrame(); if (f && f.contentWindow) f.contentWindow.postMessage(m, "*"); }
 
-function quickAnalyze() {
+function quickAnalyze(opts = {}) {
+  const silent = opts && opts.silent;
   const addr = els.addr.value.trim();
-  if (!addr) { showHint("Pega una dirección primero.", "err"); return; }
+  if (!addr) { if (!silent) showHint("Pega una dirección primero.", "err"); _autoBusy = false; return; }
   const t = detectType(addr);
-  if (!t) { showHint("Formato no reconocido (EVM 0x… o Solana base58).", "err"); return; }
+  if (!t) { if (!silent) showHint("Formato no reconocido (EVM 0x… o Solana base58).", "err"); _autoBusy = false; return; }
   if (t !== state.mode) setMode(t);
-  showHint(`Detectado: ${t === "evm" ? "EVM" : "Solana"}. Analizando…`);
-  openAnalyzingModal(`Analizando la dirección en ${t === "evm" ? "EVM" : "Solana"}…`, false);
+  showHint(`Detectado: ${t === "evm" ? "EVM" : "Solana"}.${silent ? " Actualizando…" : " Analizando…"}`);
+  if (!silent) {
+    openAnalyzingModal(`Analizando la dirección en ${t === "evm" ? "EVM" : "Solana"}…`, false);
+    clearTimeout(_quickModalTimer);
+    _quickModalTimer = setTimeout(closeAnalyzingModal, 90000);
+  }
   const send = () => postToActive({ type: "lp-analyze", address: addr });
   if (state.ready[state.mode]) send(); else setTimeout(send, 800);
-  // seguridad: cerrar el modal si el engine no avisa de que terminó (90 s)
-  clearTimeout(_quickModalTimer);
-  _quickModalTimer = setTimeout(closeAnalyzingModal, 90000);
 }
 let _quickModalTimer = null;
 
@@ -729,29 +757,35 @@ function analyzeAddressHeadless(address, type) {
   });
 }
 
-async function analyzeAll() {
-  if (!state.portfolio.length) { setPfStatus("Añade alguna dirección primero.", "err"); return; }
+async function analyzeAll(opts = {}) {
+  const silent = opts && opts.silent; // auto-actualización: sin modal bloqueante
+  if (!state.portfolio.length) { if (!silent) setPfStatus("Añade alguna dirección primero.", "err"); return; }
   els.analyzeAll.disabled = true;
-  els.analyzeAll.textContent = "Analizando…";
-  state.results = [];
+  els.analyzeAll.textContent = silent ? "Actualizando…" : "Analizando…";
+  const results = [];
   const n = state.portfolio.length;
-  openAnalyzingModal(`Analizando direcciones (0/${n})…`);
+  if (!silent) openAnalyzingModal(`Analizando direcciones (0/${n})…`);
   try {
     for (let i = 0; i < n; i++) {
       const entry = state.portfolio[i];
       const label = entry.label || shortAddr(entry.address);
-      const msg = `Analizando ${label} (${i + 1}/${n})…`;
+      const msg = `${silent ? "Actualizando" : "Analizando"} ${label} (${i + 1}/${n})…`;
       setPfStatus(msg);
-      updateAnalyzingModal(msg, i, n);
+      if (!silent) updateAnalyzingModal(msg, i, n);
       const r = await analyzeAddressHeadless(entry.address, entry.type);
-      state.results.push({ entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [] });
-      updateAnalyzingModal(msg, i + 1, n);
-      renderPortfolio();
+      results.push({ entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [] });
+      if (!silent) updateAnalyzingModal(msg, i + 1, n);
+      // en silencio no re-renderizamos hasta el final para no parpadear
+      if (!silent) { state.results = results.slice(); renderPortfolio(); }
     }
+    state.results = results;
+    renderPortfolio();
+    if (state.tab === "projection") renderHistorico(); // mantener Histórico sincronizado
     const total = state.results.reduce((acc, r) => acc + r.items.length, 0);
-    setPfStatus(`Listo. ${total} posiciones en ${state.results.length} direcciones.`, "ok");
+    const stamp = new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+    setPfStatus(`${silent ? "Actualizado" : "Listo"} a las ${stamp}. ${total} posiciones en ${state.results.length} direcciones.`, "ok");
   } finally {
-    closeAnalyzingModal();
+    if (!silent) closeAnalyzingModal();
     els.analyzeAll.disabled = false;
     els.analyzeAll.textContent = "Analizar todo";
   }
@@ -1128,6 +1162,7 @@ window.addEventListener("message", (e) => {
     // el engine terminó el análisis de Quick → cerrar el modal de progreso
     clearTimeout(_quickModalTimer);
     closeAnalyzingModal();
+    _autoBusy = false; // liberar el guard de auto-actualización
   }
 });
 
@@ -1269,9 +1304,10 @@ els.accessEmail.addEventListener("keydown", (e) => { if (e.key === "Enter") addA
 els.accessModal.addEventListener("click", (e) => { if (e.target === els.accessModal) closeAccessModal(); });
 els.pfAdd.onclick = addPortfolioEntry;
 els.pfAddress.addEventListener("keydown", (e) => { if (e.key === "Enter") addPortfolioEntry(); });
-els.analyzeAll.onclick = analyzeAll;
+els.analyzeAll.onclick = () => analyzeAll();
 els.addRabby.onclick = () => addConnectedWallet("evm");
 els.addPhantom.onclick = () => addConnectedWallet("sol");
+els.autoRefresh.onchange = applyAutoRefresh;
 
 // ============================================================================
 // Init
@@ -1283,6 +1319,10 @@ els.addPhantom.onclick = () => addConnectedWallet("sol");
   renderAuthArea();
   renderPortfolioList();
   renderPrefs();
+
+  // restaurar intervalo de auto-actualización guardado
+  els.autoRefresh.value = localStorage.getItem("lp:autoRefresh") || "0";
+  applyAutoRefresh();
 
   // Config guardada por el usuario (override avanzado) o la embebida por defecto.
   const cfg = getStoredFbConfig() || DEFAULT_FB_CONFIG;

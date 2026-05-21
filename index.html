@@ -36,6 +36,14 @@
 
       <div class="flex-1"></div>
 
+      <!-- Auto-actualizar la pestaña activa -->
+      <select id="auto-refresh" title="Auto-actualizar la pestaña activa" class="shrink-0 text-xs px-2 py-1.5 rounded-lg bg-slate-800 text-slate-100 border border-slate-700">
+        <option value="0">⟳ Auto: off</option>
+        <option value="60000">⟳ 1 min</option>
+        <option value="300000">⟳ 5 min</option>
+        <option value="900000">⟳ 15 min</option>
+      </select>
+
       <!-- Auth -->
       <div id="auth-area" class="shrink-0 flex items-center gap-2"></div>
     </div>
@@ -314,6 +322,6 @@
 
   </main>
 
-  <script src="shell.js?v=26"></script>
+  <script src="shell.js?v=27"></script>
 </body>
 </html>
