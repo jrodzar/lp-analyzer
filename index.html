@@ -159,7 +159,7 @@
         <!-- Resumen global -->
         <section id="pf-summary" class="hidden">
           <h2 class="text-lg font-semibold mb-3">Resumen global</h2>
-          <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="grid grid-cols-2 lg:grid-cols-3 gap-3">
             <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
               <div class="text-[11px] uppercase tracking-wide text-slate-400">Valor total LP</div>
               <div id="g-value" class="text-xl font-bold mt-1">—</div>
@@ -168,6 +168,16 @@
               <div class="text-[11px] uppercase tracking-wide text-slate-400">Fees acumuladas</div>
               <div id="g-fees" class="text-xl font-bold mt-1 text-emerald-400">—</div>
               <div id="g-fees-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
+            </div>
+            <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <div class="text-[11px] uppercase tracking-wide text-slate-400">IL vs HODL</div>
+              <div id="g-il" class="text-xl font-bold mt-1">—</div>
+              <div id="g-il-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
+            </div>
+            <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <div class="text-[11px] uppercase tracking-wide text-slate-400">PnL neto</div>
+              <div id="g-pnl" class="text-xl font-bold mt-1">—</div>
+              <div id="g-pnl-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
             </div>
             <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
               <div class="text-[11px] uppercase tracking-wide text-slate-400">Posiciones</div>
@@ -282,6 +292,6 @@
 
   </main>
 
-  <script src="shell.js?v=22"></script>
+  <script src="shell.js?v=23"></script>
 </body>
 </html>

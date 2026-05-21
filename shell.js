@@ -32,6 +32,7 @@ const els = {
   analyzingModal: $("analyzing-modal"), analyzingMsg: $("analyzing-msg"), analyzingBar: $("analyzing-bar"),
   // portfolio results
   pfSummary: $("pf-summary"), gValue: $("g-value"), gFees: $("g-fees"), gFeesSub: $("g-fees-sub"),
+  gIl: $("g-il"), gIlSub: $("g-il-sub"), gPnl: $("g-pnl"), gPnlSub: $("g-pnl-sub"),
   gPositions: $("g-positions"), gPositionsSub: $("g-positions-sub"), gAddresses: $("g-addresses"),
   pfSections: $("pf-sections"),
   pfCharts: $("pf-charts"), chartByAddress: $("chart-by-address"), chartByVenue: $("chart-by-venue"), chartByFees: $("chart-by-fees"),
@@ -654,6 +655,21 @@ function renderPortfolio() {
   els.gValue.textContent = fmtUSD(totalValue);
   els.gFees.textContent = fmtUSD(totalFees);
   els.gFeesSub.innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(totalPending)}</span> pendientes · <span class="text-emerald-400 font-semibold">${fmtUSD(totalCollected)}</span> cobradas`;
+
+  // IL vs HODL y PnL neto agregados (solo posiciones que aportan el dato; % sobre el valor LP)
+  let ilSum = 0, ilN = 0, pnlSum = 0, pnlN = 0;
+  for (const it of lp) {
+    if (it.ilUSD != null && isFinite(it.ilUSD)) { ilSum += it.ilUSD; ilN++; }
+    if (it.pnlUSD != null && isFinite(it.pnlUSD)) { pnlSum += it.pnlUSD; pnlN++; }
+  }
+  const pctOfValue = (x) => (totalValue > 0 ? ` (${x >= 0 ? "+" : ""}${((x / totalValue) * 100).toFixed(2)}%)` : "");
+  els.gIl.textContent = ilN ? fmtUSD(ilSum) + pctOfValue(ilSum) : "—";
+  els.gIl.className = "text-xl font-bold mt-1 " + (ilN ? pnlColor(ilSum) : "");
+  els.gIlSub.textContent = ilN ? `${ilN}/${lp.length} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
+  els.gPnl.textContent = pnlN ? fmtUSD(pnlSum) + pctOfValue(pnlSum) : "—";
+  els.gPnl.className = "text-xl font-bold mt-1 " + (pnlN ? pnlColor(pnlSum) : "");
+  els.gPnlSub.textContent = pnlN ? `${pnlN}/${lp.length} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
+
   els.gPositions.textContent = all.length;
   els.gPositionsSub.textContent =
     `${inRange} en rango · ${lp.length - inRange} fuera` +
@@ -1051,16 +1067,18 @@ function renderHistorico() {
   // PnL e IL agregados a partir de las posiciones analizadas (incluye variación de precio).
   // Solo cuentan las posiciones que aportan el dato (EVM siempre; Solana solo con Birdeye key).
   const items = state.results.flatMap((r) => r.items || []).filter((it) => !it.lending && !it.closed);
-  let pnlSum = 0, pnlN = 0, ilSum = 0, ilN = 0;
+  let pnlSum = 0, pnlN = 0, ilSum = 0, ilN = 0, valSum = 0;
   for (const it of items) {
+    valSum += it.valueUSD || 0;
     if (it.pnlUSD != null && isFinite(it.pnlUSD)) { pnlSum += it.pnlUSD; pnlN++; }
     if (it.ilUSD != null && isFinite(it.ilUSD)) { ilSum += it.ilUSD; ilN++; }
   }
   const totalLP = items.length;
-  els.histPnl.textContent = pnlN ? fmtUSD(pnlSum) : "—";
+  const pctOf = (x) => (valSum > 0 ? ` (${x >= 0 ? "+" : ""}${((x / valSum) * 100).toFixed(2)}%)` : "");
+  els.histPnl.textContent = pnlN ? fmtUSD(pnlSum) + pctOf(pnlSum) : "—";
   els.histPnl.className = "text-xl font-bold mt-1 " + (pnlN ? pnlColor(pnlSum) : "");
   els.histPnlSub.textContent = pnlN ? `${pnlN}/${totalLP} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
-  els.histIl.textContent = ilN ? fmtUSD(ilSum) : "—";
+  els.histIl.textContent = ilN ? fmtUSD(ilSum) + pctOf(ilSum) : "—";
   els.histIl.className = "text-xl font-bold mt-1 " + (ilN ? pnlColor(ilSum) : "");
   els.histIlSub.textContent = ilN ? `${ilN}/${totalLP} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
 
