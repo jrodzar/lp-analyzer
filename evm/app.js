@@ -1406,6 +1406,46 @@ function lendingCard(p) {
   return el;
 }
 
+// Barra gráfica de rango: precio min/max + marcador del precio actual.
+// price(tick) = 1.0001^tick * 10^(dec0-dec1)  (token1 por token0)
+function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed) {
+  if (tickLower == null || tickUpper == null || !isFinite(tickLower) || !isFinite(tickUpper)) return "";
+  const decAdj = Math.pow(10, (Number(dec0) || 0) - (Number(dec1) || 0));
+  const priceAt = (t) => Math.pow(1.0001, Number(t)) * decAdj;
+  const pLow = priceAt(tickLower), pHigh = priceAt(tickUpper);
+  const pCur = (tickCur != null && isFinite(tickCur)) ? priceAt(tickCur) : null;
+  if (!isFinite(pLow) || !isFinite(pHigh) || pHigh <= pLow) return "";
+
+  // Ventana visible: rango ±50%, incluyendo siempre el precio actual.
+  const span = pHigh - pLow;
+  let vMin = pLow - span * 0.5;
+  let vMax = pHigh + span * 0.5;
+  if (pCur != null) { vMin = Math.min(vMin, pCur); vMax = Math.max(vMax, pCur); }
+  const W = vMax - vMin || 1;
+  const pct = (v) => Math.max(0, Math.min(100, ((v - vMin) / W) * 100));
+  const left = pct(pLow), right = pct(pHigh);
+  const bandColor = closed ? "rgba(100,116,139,0.35)" : inRange ? "rgba(16,185,129,0.30)" : "rgba(245,158,11,0.28)";
+  const borderC = closed ? "rgba(100,116,139,0.5)" : inRange ? "rgba(16,185,129,0.6)" : "rgba(245,158,11,0.6)";
+  const fmtP = (v) => v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 })
+                    : v >= 1 ? v.toFixed(3) : v.toPrecision(3);
+  const marker = pCur != null
+    ? `<div class="absolute top-0 bottom-0 w-0.5 bg-slate-100" style="left:${pct(pCur)}%"></div>
+       <div class="absolute -top-1 w-2 h-2 rounded-full bg-slate-100" style="left:${pct(pCur)}%;transform:translateX(-50%)"></div>`
+    : "";
+  return `
+    <div class="pt-0.5">
+      <div class="relative h-6 rounded-md bg-slate-950/60 border border-slate-800 overflow-hidden">
+        <div class="absolute top-0 bottom-0 rounded-sm" style="left:${left}%;width:${Math.max(1, right - left)}%;background:${bandColor};border-left:2px solid ${borderC};border-right:2px solid ${borderC}"></div>
+        ${marker}
+      </div>
+      <div class="flex justify-between text-[9px] text-slate-500 mt-0.5">
+        <span>${fmtP(pLow)}</span>
+        ${pCur != null ? `<span class="text-slate-300 font-semibold">${fmtP(pCur)}</span>` : ""}
+        <span>${fmtP(pHigh)}</span>
+      </div>
+    </div>`;
+}
+
 function positionCard(p) {
   if (p._lending) return lendingCard(p);
   const chain = state.chains[p.chainKey];
@@ -1434,6 +1474,8 @@ function positionCard(p) {
       </div>
       ${rangeChip}
     </div>
+
+    ${rangeBarHTML(p.tickLower, p.tickUpper, p.tick, p.token0.decimals, p.token1.decimals, p.inRange, p.closed)}
 
     <div class="grid grid-cols-2 gap-2 text-xs">
       <div class="bg-slate-950/40 rounded-lg p-2">
@@ -1800,6 +1842,8 @@ document.addEventListener("DOMContentLoaded", init);
         apr: typeof p.apr === "number" && isFinite(p.apr) ? p.apr : null,
         inRange: !!p.inRange,
         closed: !!p.closed,
+        tickLower: p.tickLower, tickUpper: p.tickUpper, tick: p.tick,
+        dec0: p.token0.decimals, dec1: p.token1.decimals,
         id: String(p.nftId || ""),
       };
     });
