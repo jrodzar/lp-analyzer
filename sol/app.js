@@ -48,6 +48,9 @@ const PROTOCOLS = {
 //   - price v3:  precios USD para mints arbitrarios
 const JUPITER_TOKEN_LIST = "https://lite-api.jup.ag/tokens/v2/tag?query=verified";
 const JUPITER_PRICE = "https://lite-api.jup.ag/price/v3";
+// Proxy de Cloudflare (las API keys viven dentro del Worker, no aquí). Si está
+// puesto, los usuarios no necesitan sus propias keys de Helius/Birdeye.
+const PROXY_BASE = (localStorage.getItem("lp:proxyBase") || "https://lp-proxy.jrodzar.workers.dev").replace(/\/$/, "");
 
 // ============================================================================
 // State
@@ -142,8 +145,9 @@ function findProgramAddress(seeds, programIdBytes) {
 // ============================================================================
 
 function rpcUrl() {
-  if (!state.heliusKey) throw new Error("Falta Helius API key (Settings).");
-  return `https://mainnet.helius-rpc.com/?api-key=${state.heliusKey}`;
+  if (state.heliusKey) return `https://mainnet.helius-rpc.com/?api-key=${state.heliusKey}`; // key propia
+  if (PROXY_BASE) return `${PROXY_BASE}/helius-rpc`;                                          // proxy compartido
+  throw new Error("Falta Helius API key (Settings) o proxy configurado.");
 }
 
 async function rpc(method, params) {
@@ -1294,7 +1298,7 @@ async function analyze() {
   await ensureNoble();
   const addr = document.getElementById("addr-input").value.trim();
   if (!isValidSolanaAddress(addr)) { setStatus("Dirección Solana no válida (base58, 32-44 chars).", "err"); return; }
-  if (!state.heliusKey) { setStatus("Falta Helius API key. Abre Settings.", "err"); openSettings(); return; }
+  if (!state.heliusKey && !PROXY_BASE) { setStatus("Falta Helius API key. Abre Settings.", "err"); openSettings(); return; }
   if (!state.selectedProtocols.length) { setStatus("Selecciona al menos un protocolo.", "err"); return; }
 
   state.address = addr;
@@ -1328,9 +1332,9 @@ async function analyze() {
     state.positions = all;
     assignColors(state.positions);
 
-    // PnL real + IL vs HODL con precios históricos (si hay Birdeye key)
+    // PnL real + IL vs HODL con precios históricos (Birdeye, vía key propia o proxy)
     let beWarn = "";
-    if (all.length && state.birdeyeKey) {
+    if (all.length && (state.birdeyeKey || PROXY_BASE)) {
       setStatus("Calculando PnL e IL con históricos de Birdeye…", "info");
       try { await enrichSolanaPnL(addr); } catch (e) { console.warn("enrichSolanaPnL:", e); }
       const st = state._beStats || {};
@@ -1452,12 +1456,15 @@ const SOL_STABLES = new Set([
 ]);
 // Descarga (y cachea) las transacciones enriquecidas de Helius para un owner.
 async function fetchEnhancedTxs(owner) {
-  if (!state.heliusKey || !owner) return [];
+  if ((!state.heliusKey && !PROXY_BASE) || !owner) return [];
   if (state._txCache && state._txCache.owner === owner) return state._txCache.txs;
   const txs = [];
   let before = "";
   for (let page = 0; page < 10; page++) {
-    const url = `https://api.helius.xyz/v0/addresses/${owner}/transactions?api-key=${state.heliusKey}&limit=100${before ? "&before=" + before : ""}`;
+    const bef = before ? "&before=" + before : "";
+    const url = state.heliusKey
+      ? `https://api.helius.xyz/v0/addresses/${owner}/transactions?api-key=${state.heliusKey}&limit=100${bef}`
+      : `${PROXY_BASE}/helius-tx/${owner}?limit=100${bef}`;
     let arr;
     try { const r = await fetch(url); arr = await r.json(); } catch { break; }
     if (!Array.isArray(arr) || !arr.length) break;
@@ -1473,13 +1480,18 @@ async function fetchEnhancedTxs(owner) {
 // Cachea por (mint, día) para minimizar llamadas. Stables → 1.
 async function birdeyePriceAt(mint, unixSec) {
   if (SOL_STABLES.has(mint)) return 1;
-  if (!state.birdeyeKey || !mint || !unixSec) return null;
+  if ((!state.birdeyeKey && !PROXY_BASE) || !mint || !unixSec) return null;
   if (!state._bePriceCache) state._bePriceCache = new Map();
   const dayKey = mint + ":" + Math.floor(unixSec / 86400);
   if (state._bePriceCache.has(dayKey)) return state._bePriceCache.get(dayKey);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const url = `https://public-api.birdeye.so/defi/historical_price_unix?address=${mint}&unixtime=${unixSec}`;
-  const headers = { "X-API-KEY": state.birdeyeKey, "x-chain": "solana", accept: "application/json" };
+  const qs = `address=${mint}&unixtime=${unixSec}`;
+  const url = state.birdeyeKey
+    ? `https://public-api.birdeye.so/defi/historical_price_unix?${qs}`              // key propia
+    : `${PROXY_BASE}/birdeye/defi/historical_price_unix?${qs}`;                     // proxy (añade X-API-KEY)
+  const headers = state.birdeyeKey
+    ? { "X-API-KEY": state.birdeyeKey, "x-chain": "solana", accept: "application/json" }
+    : { accept: "application/json" };
   let price = null;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
@@ -1509,7 +1521,7 @@ async function birdeyePriceAt(mint, unixSec) {
 // Reconstruye el coste base a partir de las transferencias depósito/retiro/fee.
 async function enrichSolanaPnL(owner) {
   state._beStats = { ok: 0, denied: 0, rate: 0, error: 0, partial: 0 };
-  if (!state.birdeyeKey || !owner || !(state.positions || []).length) return;
+  if ((!state.birdeyeKey && !PROXY_BASE) || !owner || !(state.positions || []).length) return;
   const txs = await fetchEnhancedTxs(owner);
   if (!txs.length) return;
 
@@ -1678,7 +1690,7 @@ async function init() {
 
   await ensureNoble();
 
-  if (!state.heliusKey) {
+  if (!state.heliusKey && !PROXY_BASE) {
     setStatus("Configura tu Helius API key en Settings antes de analizar.", "info");
   } else {
     setStatus("Listo. Pega una dirección Solana y pulsa Analizar.", "info");

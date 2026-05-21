@@ -49,10 +49,10 @@
       </div>
 
       <div>
-        <label class="block text-xs font-semibold text-slate-300 mb-1">The Graph API key</label>
-        <input id="cfg-api-key" type="password" placeholder="pega tu key aquí" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm focus:outline-none focus:border-[#ECE600]" />
+        <label class="block text-xs font-semibold text-slate-300 mb-1">The Graph API key <span class="text-slate-500">(opcional)</span></label>
+        <input id="cfg-api-key" type="password" placeholder="opcional: déjalo vacío para usar el proxy" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm focus:outline-none focus:border-[#ECE600]" />
         <p class="text-[11px] text-slate-400 mt-1">
-          Crea una key gratis en <a href="https://thegraph.com/studio/apikeys/" target="_blank" rel="noopener" class="underline text-fuchsia-400">The Graph Studio</a>. Se guarda solo en tu navegador (localStorage).
+          Por defecto se usa el <strong>proxy compartido</strong> y no necesitas key. Solo si prefieres tu propia cuota, crea una gratis en <a href="https://thegraph.com/studio/apikeys/" target="_blank" rel="noopener" class="underline text-fuchsia-400">The Graph Studio</a> (se guarda solo en tu navegador).
         </p>
       </div>
 
@@ -169,6 +169,6 @@
     Las métricas son estimaciones basadas en datos del subgraph. Precios USD usan los snapshots actuales (no históricos de cada deposit/withdraw). El coste de gas no se incluye en el PnL.
   </footer>
 
-  <script src="app.js?v=16"></script>
+  <script src="app.js?v=17"></script>
 </body>
 </html>

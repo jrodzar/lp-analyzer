@@ -46,9 +46,26 @@ Abrir `http://localhost:5180`. (En Claude Code: usar el botón de preview; hay
    - Firebase Console: habilitar **Authentication → Google**, crear **Firestore**.
    - **Reglas Firestore** (obligatorias, son la barrera real de acceso): ver sección
      "Control de acceso (whitelist de emails)" más abajo. No basta el check en JS.
-2. **API keys** (se guardan en localStorage, por origen):
+2. **API keys**: por defecto **NO hacen falta** — la app usa el proxy de Cloudflare
+   (ver sección "Proxy de API keys"). Cada usuario puede, opcionalmente, poner su
+   propia key en Settings (se guarda en localStorage) para usar su cuota:
    - The Graph (Quick → EVM → ⚙) para Uniswap V3.
-   - Helius (Quick → SOL → ⚙) para Solana RPC/DAS.
+   - Helius (Quick → SOL → ⚙) para Solana RPC/DAS. Birdeye (opcional) para histórico.
+
+## Proxy de API keys (Cloudflare Workers)
+
+Para que los usuarios no necesiten keys, las peticiones a The Graph, Helius y Birdeye
+pasan por un **Worker de Cloudflare** (`cloudflare-worker.js`) que guarda las keys como
+variables de entorno y las inyecta server-side. Así las keys nunca están en el navegador.
+
+- **Worker**: `cloudflare-worker.js` (instrucciones de despliegue dentro del archivo).
+  Variables a definir en el Worker: `GRAPH_KEY`, `HELIUS_KEY`, `BIRDEYE_KEY`,
+  y opcional `ALLOWED_ORIGINS`. Rutas: `/graph/{id}`, `/helius-rpc`,
+  `/helius-tx/{owner}`, `/birdeye/{path}`.
+- **Cliente**: constante `PROXY_BASE` en `evm/app.js` y `sol/app.js` (override por
+  `localStorage["lp:proxyBase"]`). Lógica: si el usuario tiene su key → llamada directa;
+  si no y hay `PROXY_BASE` → vía proxy; si no hay ninguno → error pidiendo configurar.
+- Tras desplegar el Worker hay que poner su URL en `PROXY_BASE` de **ambos** engines.
 
 ## Modelo de datos (Firestore)
 ```

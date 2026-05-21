@@ -74,6 +74,9 @@ const DEFAULT_CHAINS = {
 };
 
 const GATEWAY = "https://gateway.thegraph.com/api";
+// Proxy de Cloudflare (las API keys viven dentro del Worker, no aquí). Si está
+// puesto, los usuarios no necesitan su propia key. Override por localStorage.
+const PROXY_BASE = (localStorage.getItem("lp:proxyBase") || "https://lp-proxy.jrodzar.workers.dev").replace(/\/$/, "");
 const DEFAULTS_VERSION = 8; // bump cuando cambien IDs por defecto para forzar refresh
 
 // ============================================================================
@@ -194,8 +197,11 @@ async function gql(chainKey, query, variables) {
   const chain = state.chains[chainKey];
   if (!chain) throw new Error(`Red desconocida: ${chainKey}`);
   const isDirectUrl = chain.subgraphId?.startsWith("http");
-  if (!isDirectUrl && !state.apiKey) throw new Error("Falta API key de The Graph (Settings).");
-  const url = isDirectUrl ? chain.subgraphId : `${GATEWAY}/${state.apiKey}/subgraphs/id/${chain.subgraphId}`;
+  let url;
+  if (isDirectUrl) url = chain.subgraphId;
+  else if (state.apiKey) url = `${GATEWAY}/${state.apiKey}/subgraphs/id/${chain.subgraphId}`;   // key propia
+  else if (PROXY_BASE) url = `${PROXY_BASE}/graph/${chain.subgraphId}`;                          // proxy compartido
+  else throw new Error("Falta API key de The Graph (Settings) o proxy configurado.");
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1621,7 +1627,7 @@ async function analyze() {
   if (!state.selectedChains.length) { setStatus("Selecciona al menos una red.", "err"); return; }
   // Solo exigimos API key si alguna red seleccionada usa subgraph (no RPC-only)
   const needsApiKey = state.selectedChains.some(k => state.chains[k]?.subgraphId && !state.chains[k]?.nftManagerAddress);
-  if (needsApiKey && !state.apiKey) { setStatus("Falta API key de The Graph. Abre Settings.", "err"); openSettings(); return; }
+  if (needsApiKey && !state.apiKey && !PROXY_BASE) { setStatus("Falta API key de The Graph. Abre Settings.", "err"); openSettings(); return; }
 
   state.address = addr;
   state.positions = [];
@@ -1792,7 +1798,7 @@ function init() {
 
   trySilentReconnect();
 
-  if (!state.apiKey) {
+  if (!state.apiKey && !PROXY_BASE) {
     setStatus("Configura tu API key de The Graph en Settings antes de analizar.", "info");
   }
 }
