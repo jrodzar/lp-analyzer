@@ -177,9 +177,14 @@ function quickAnalyze() {
   if (!t) { showHint("Formato no reconocido (EVM 0x… o Solana base58).", "err"); return; }
   if (t !== state.mode) setMode(t);
   showHint(`Detectado: ${t === "evm" ? "EVM" : "Solana"}. Analizando…`);
+  openAnalyzingModal(`Analizando la dirección en ${t === "evm" ? "EVM" : "Solana"}…`, false);
   const send = () => postToActive({ type: "lp-analyze", address: addr });
   if (state.ready[state.mode]) send(); else setTimeout(send, 800);
+  // seguridad: cerrar el modal si el engine no avisa de que terminó (90 s)
+  clearTimeout(_quickModalTimer);
+  _quickModalTimer = setTimeout(closeAnalyzingModal, 90000);
 }
+let _quickModalTimer = null;
 
 function renderWalletButton() {
   const connected = state.wallet[state.mode];
@@ -686,9 +691,12 @@ function setPfStatus(msg, kind) {
 }
 
 // Modal de progreso mientras se consultan las direcciones
-function openAnalyzingModal(msg) {
+function openAnalyzingModal(msg, showBar = true) {
   if (msg) els.analyzingMsg.textContent = msg;
-  if (els.analyzingBar) els.analyzingBar.style.width = "0%";
+  if (els.analyzingBar) {
+    els.analyzingBar.style.width = "0%";
+    if (els.analyzingBar.parentElement) els.analyzingBar.parentElement.classList.toggle("hidden", !showBar);
+  }
   els.analyzingModal.classList.remove("hidden");
 }
 function updateAnalyzingModal(msg, doneCount, total) {
@@ -1116,6 +1124,10 @@ window.addEventListener("message", (e) => {
     const resolve = pendingReqs.get(d.reqId);
     pendingReqs.delete(d.reqId);
     resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [] });
+  } else if (d.type === "lp-analyze-done") {
+    // el engine terminó el análisis de Quick → cerrar el modal de progreso
+    clearTimeout(_quickModalTimer);
+    closeAnalyzingModal();
   }
 });
 

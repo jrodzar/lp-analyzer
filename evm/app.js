@@ -1858,7 +1858,9 @@ document.addEventListener("DOMContentLoaded", init);
     const d = e.data || {};
     if (d.type === "lp-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
-      if (input) { input.value = d.address; if (typeof analyze === "function") analyze(); }
+      if (input) input.value = d.address;
+      Promise.resolve(typeof analyze === "function" ? analyze() : null)
+        .finally(() => { try { window.parent.postMessage({ type: "lp-analyze-done", app: "evm" }, "*"); } catch (e) {} });
     } else if (d.type === "lp-open-settings") {
       if (typeof openSettings === "function") openSettings();
     } else if (d.type === "lp-connect-wallet") {

@@ -245,22 +245,25 @@
 
     <!-- ===== TAB QUICK ===== -->
     <section id="tab-quick" class="hidden">
-      <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4 mb-4 flex flex-col lg:flex-row lg:items-center gap-3">
-        <div class="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700 shrink-0">
+      <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4 mb-4 flex flex-wrap items-center gap-2">
+        <div class="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700 shrink-0 order-1">
           <button id="mode-evm" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">⬡ EVM</button>
           <button id="mode-sol" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">◎ Solana</button>
         </div>
-        <div class="flex-1 flex gap-2 min-w-0">
-          <input id="addr" type="text" placeholder="Pega una dirección EVM (0x…) o Solana (base58)…" class="flex-1 min-w-0 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono focus:outline-none focus:border-[#ECE600]" />
+        <!-- empuja wallet/settings a la derecha solo en móvil -->
+        <span class="flex-1 order-2 lg:hidden"></span>
+        <button id="wallet" class="hidden px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs shrink-0 order-3 lg:order-4">🔗 Conectar</button>
+        <button id="settings" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm shrink-0 order-3 lg:order-5" title="Settings del panel activo">⚙</button>
+        <!-- dirección + analizar: fila completa en móvil, en línea en escritorio -->
+        <div class="flex gap-2 min-w-0 order-4 basis-full lg:order-3 lg:basis-0 lg:flex-1">
+          <input id="addr" type="text" placeholder="Dirección EVM (0x…) o Solana…" class="flex-1 min-w-0 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono focus:outline-none focus:border-[#ECE600]" />
           <button id="go" class="px-4 py-2 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-sm font-semibold shrink-0">Analizar</button>
-          <button id="wallet" class="hidden px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs shrink-0">🔗 Conectar</button>
-          <button id="settings" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm shrink-0" title="Settings del panel activo">⚙</button>
         </div>
       </div>
       <div id="hint" class="text-[11px] hidden mb-2"></div>
       <div class="relative" style="height: calc(100vh - 220px); min-height: 480px;">
-        <iframe id="frame-evm" src="evm/index.html?v=17" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
-        <iframe id="frame-sol" src="sol/index.html?v=19" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
+        <iframe id="frame-evm" src="evm/index.html?v=18" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
+        <iframe id="frame-sol" src="sol/index.html?v=20" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
       </div>
     </section>
 
@@ -311,6 +314,6 @@
 
   </main>
 
-  <script src="shell.js?v=25"></script>
+  <script src="shell.js?v=26"></script>
 </body>
 </html>
