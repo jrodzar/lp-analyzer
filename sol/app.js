@@ -51,6 +51,10 @@ const JUPITER_PRICE = "https://lite-api.jup.ag/price/v3";
 // Proxy de Cloudflare (las API keys viven dentro del Worker, no aquí). Si está
 // puesto, los usuarios no necesitan sus propias keys de Helius/Birdeye.
 const PROXY_BASE = (localStorage.getItem("lp:proxyBase") || "https://lp-proxy.jrodzar.workers.dev").replace(/\/$/, "");
+let proxyToken = ""; // ID token de Firebase, lo envía el shell (lp-set-token); requerido por el proxy
+function proxyAuth(url) {
+  return (PROXY_BASE && url.startsWith(PROXY_BASE) && proxyToken) ? { Authorization: `Bearer ${proxyToken}` } : {};
+}
 
 // ============================================================================
 // State
@@ -154,7 +158,7 @@ async function rpc(method, params) {
   const url = rpcUrl();
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...proxyAuth(url) },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
   if (!res.ok) {
@@ -1504,7 +1508,7 @@ async function fetchEnhancedTxs(owner) {
       ? `https://api.helius.xyz/v0/addresses/${owner}/transactions?api-key=${state.heliusKey}&limit=100${bef}`
       : `${PROXY_BASE}/helius-tx/${owner}?limit=100${bef}`;
     let arr;
-    try { const r = await fetch(url); arr = await r.json(); } catch { break; }
+    try { const r = await fetch(url, { headers: { ...proxyAuth(url) } }); arr = await r.json(); } catch { break; }
     if (!Array.isArray(arr) || !arr.length) break;
     txs.push(...arr);
     before = arr[arr.length - 1].signature;
@@ -1529,7 +1533,7 @@ async function birdeyePriceAt(mint, unixSec) {
     : `${PROXY_BASE}/birdeye/defi/historical_price_unix?${qs}`;                     // proxy (añade X-API-KEY)
   const headers = state.birdeyeKey
     ? { "X-API-KEY": state.birdeyeKey, "x-chain": "solana", accept: "application/json" }
-    : { accept: "application/json" };
+    : { accept: "application/json", ...proxyAuth(url) };
   let price = null;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
@@ -1771,7 +1775,9 @@ document.addEventListener("DOMContentLoaded", init);
   }
   window.addEventListener("message", (e) => {
     const d = e.data || {};
-    if (d.type === "lp-analyze" && typeof d.address === "string") {
+    if (d.type === "lp-set-token") {
+      proxyToken = d.token || "";
+    } else if (d.type === "lp-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
       Promise.resolve(typeof analyze === "function" ? analyze() : null)

@@ -50,7 +50,7 @@ export default {
     const cors = {
       "Access-Control-Allow-Origin": corsOrigin,
       "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
       "Access-Control-Max-Age": "86400",
       "Vary": "Origin",
     };
@@ -60,6 +60,18 @@ export default {
     // Defensa básica anti-abuso: solo orígenes permitidos (si mandan Origin)
     if (origin && !allowed.includes(origin)) {
       return new Response("Origin not allowed", { status: 403, headers: cors });
+    }
+
+    // ── Identidad: solo usuarios autenticados y autorizados (Firebase + allowlist) ──
+    const PROJECT_ID = env.FIREBASE_PROJECT_ID || "lp-analyzer-jrodzar";
+    const ADMIN_EMAIL = (env.ADMIN_EMAIL || "jrodzar@gmail.com").toLowerCase();
+    const authz = request.headers.get("Authorization") || "";
+    const idToken = authz.startsWith("Bearer ") ? authz.slice(7) : null;
+    if (!idToken) return json({ error: "Inicia sesión para usar el servicio." }, 401, cors);
+    const payload = await verifyFirebaseToken(idToken, PROJECT_ID);
+    if (!payload || !payload.email) return json({ error: "Sesión inválida o expirada. Vuelve a iniciar sesión." }, 401, cors);
+    if (!(await isEmailAllowed(payload.email, idToken, PROJECT_ID, ADMIN_EMAIL))) {
+      return json({ error: "Tu cuenta no está autorizada." }, 403, cors);
     }
 
     const seg = url.pathname.replace(/^\/+/, "").split("/");
@@ -154,4 +166,61 @@ function json(obj, status, cors) {
     status,
     headers: { ...cors, "Content-Type": "application/json" },
   });
+}
+
+// ── Verificación del ID token de Firebase (JWT RS256 firmado por Google) ──────
+let _jwksCache = { keys: null, exp: 0 };
+async function getGoogleJwks() {
+  if (_jwksCache.keys && Date.now() < _jwksCache.exp) return _jwksCache.keys;
+  const r = await fetch("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com");
+  const j = await r.json();
+  _jwksCache = { keys: j.keys || [], exp: Date.now() + 3600 * 1000 }; // cache 1 h
+  return _jwksCache.keys;
+}
+function b64urlToBytes(s) {
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function b64urlToStr(s) { return new TextDecoder().decode(b64urlToBytes(s)); }
+
+async function verifyFirebaseToken(token, projectId) {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const header = JSON.parse(b64urlToStr(parts[0]));
+    const payload = JSON.parse(b64urlToStr(parts[1]));
+    if (header.alg !== "RS256" || !header.kid) return null;
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.aud !== projectId) return null;
+    if (payload.iss !== `https://securetoken.google.com/${projectId}`) return null;
+    if (!payload.exp || payload.exp < now) return null;
+    if (!payload.sub) return null;
+    const jwks = await getGoogleJwks();
+    const jwk = jwks.find((k) => k.kid === header.kid);
+    if (!jwk) return null;
+    const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+    const data = new TextEncoder().encode(parts[0] + "." + parts[1]);
+    const ok = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, b64urlToBytes(parts[2]), data);
+    return ok ? payload : null;
+  } catch (e) { return null; }
+}
+
+// ── ¿Email autorizado? admin siempre; resto, doc en la colección allowlist ────
+const _allowCache = new Map(); // email -> expira(ms)
+async function isEmailAllowed(email, idToken, projectId, adminEmail) {
+  email = (email || "").toLowerCase();
+  if (!email) return false;
+  if (email === adminEmail) return true;
+  const c = _allowCache.get(email);
+  if (c && Date.now() < c) return true;
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/allowlist/${encodeURIComponent(email)}`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${idToken}` } });
+    if (r.status === 200) { _allowCache.set(email, Date.now() + 5 * 60 * 1000); return true; } // cache 5 min
+    return false;
+  } catch (e) { return false; }
 }

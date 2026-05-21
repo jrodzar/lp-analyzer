@@ -77,6 +77,10 @@ const GATEWAY = "https://gateway.thegraph.com/api";
 // Proxy de Cloudflare (las API keys viven dentro del Worker, no aquí). Si está
 // puesto, los usuarios no necesitan su propia key. Override por localStorage.
 const PROXY_BASE = (localStorage.getItem("lp:proxyBase") || "https://lp-proxy.jrodzar.workers.dev").replace(/\/$/, "");
+let proxyToken = ""; // ID token de Firebase, lo envía el shell (lp-set-token); requerido por el proxy
+function proxyAuth(url) {
+  return (PROXY_BASE && url.startsWith(PROXY_BASE) && proxyToken) ? { Authorization: `Bearer ${proxyToken}` } : {};
+}
 const DEFAULTS_VERSION = 8; // bump cuando cambien IDs por defecto para forzar refresh
 
 // ============================================================================
@@ -204,7 +208,7 @@ async function gql(chainKey, query, variables) {
   else throw new Error("Falta API key de The Graph (Settings) o proxy configurado.");
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...proxyAuth(url) },
     body: JSON.stringify({ query, variables }),
   });
   if (!res.ok) {
@@ -1924,7 +1928,9 @@ document.addEventListener("DOMContentLoaded", init);
   }
   window.addEventListener("message", (e) => {
     const d = e.data || {};
-    if (d.type === "lp-analyze" && typeof d.address === "string") {
+    if (d.type === "lp-set-token") {
+      proxyToken = d.token || "";
+    } else if (d.type === "lp-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
       Promise.resolve(typeof analyze === "function" ? analyze() : null)

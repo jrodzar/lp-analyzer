@@ -230,7 +230,7 @@ function quickAnalyze(opts = {}) {
     clearTimeout(_quickModalTimer);
     _quickModalTimer = setTimeout(closeAnalyzingModal, 90000);
   }
-  const send = () => postToActive({ type: "lp-analyze", address: addr });
+  const send = async () => { await pushTokenToEngines(); postToActive({ type: "lp-analyze", address: addr }); };
   if (state.ready[state.mode]) send(); else setTimeout(send, 800);
 }
 let _quickModalTimer = null;
@@ -498,6 +498,7 @@ async function onAuthChange(user) {
     await loadPortfolio(user.uid);
     renderPrefs();
     pushPrefsToEngines();
+    pushTokenToEngines(); // los engines necesitan el token para usar el proxy
     const unlocked = await ensureUnlocked(user.uid); // pide contraseña si hace falta
     if (!unlocked) setPfStatus("Introduce tu contraseña de cifrado para ver tu portfolio.", "err");
     renderPortfolioList();
@@ -755,6 +756,16 @@ function pushPrefsToEngines() {
   if (els.frameSol.contentWindow) els.frameSol.contentWindow.postMessage({ type: "lp-set-protocols", protocols: state.prefs.protocols }, "*");
 }
 
+// Envía el ID token de Firebase a los iframes para que puedan usar el proxy.
+// (getIdToken refresca solo si está por expirar.) Sin sesión, no envía nada.
+async function pushTokenToEngines() {
+  try {
+    if (!fb.auth || !fb.auth.currentUser) return;
+    const token = await fb.auth.currentUser.getIdToken();
+    [els.frameEvm, els.frameSol].forEach((f) => { if (f && f.contentWindow) f.contentWindow.postMessage({ type: "lp-set-token", token }, "*"); });
+  } catch (e) { console.warn("pushTokenToEngines", e); }
+}
+
 async function savePrefs() {
   if (!state.user || !fb.db) return;
   try {
@@ -796,7 +807,8 @@ function analyzeAddressHeadless(address, type) {
     const reqId = "r" + Math.random().toString(36).slice(2);
     pendingReqs.set(reqId, resolve);
     const frame = type === "evm" ? els.frameEvm : els.frameSol;
-    const send = () => {
+    const send = async () => {
+      await pushTokenToEngines(); // token fresco para que el engine use el proxy
       // fijar redes/protocolos según prefs antes de analizar (entrega ordenada por target)
       if (type === "evm") frame.contentWindow.postMessage({ type: "lp-set-chains", chains: state.prefs.chains }, "*");
       else frame.contentWindow.postMessage({ type: "lp-set-protocols", protocols: state.prefs.protocols }, "*");
@@ -1198,6 +1210,7 @@ window.addEventListener("message", (e) => {
   const d = e.data || {};
   if (d.type === "lp-ready" && (d.app === "evm" || d.app === "sol")) {
     state.ready[d.app] = true;
+    pushTokenToEngines(); // dar al engine recién listo el token actual (si hay sesión)
   } else if (d.type === "lp-wallet" && (d.app === "evm" || d.app === "sol")) {
     state.wallet[d.app] = d.address || null;
     if (d.app === state.mode) { renderWalletButton(); if (d.address) els.addr.value = d.address; }
