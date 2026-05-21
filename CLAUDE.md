@@ -69,6 +69,13 @@ variables de entorno y las inyecta server-side. Así las keys nunca están en el
   `localStorage["lp:proxyBase"]`). Lógica: si el usuario tiene su key → llamada directa;
   si no y hay `PROXY_BASE` → vía proxy; si no hay ninguno → error pidiendo configurar.
 - Tras desplegar el Worker hay que poner su URL en `PROXY_BASE` de **ambos** engines.
+- **Rate-limiting** (proteger cuotas, ambas opcionales vía bindings del Worker):
+  - Capa 1 — binding "Rate limiting" llamado `RL` (por IP, p. ej. 100/60s).
+  - Capa 2 — KV namespace llamado `QUOTA`: tope diario por servicio (Graph/Helius/
+    Birdeye) con contador shardeado; topes en `DEFAULT_DAILY` o env `DAILY_LIMIT_*`.
+  - URL del Worker es pública (repo público) y el check de Origin es spoofable; el
+    rate-limit frena abuso casual. Para identidad real haría falta verificar el ID
+    token de Firebase en el Worker (pendiente, "Capa 3").
 
 ## Modelo de datos (Firestore)
 ```
