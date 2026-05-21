@@ -121,8 +121,8 @@
     <section id="charts-section" class="hidden grid grid-cols-1 lg:grid-cols-2 gap-4">
       <div id="fees-chart-panel" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-semibold">Fees acumuladas (USD)</h3>
-          <span class="text-[11px] text-slate-400">basado en snapshots del subgraph</span>
+          <h3 class="text-sm font-semibold">Fees cobradas acumuladas por pool</h3>
+          <span class="text-[11px] text-slate-400">reconstruido de eventos on-chain / snapshots</span>
         </div>
         <div class="relative h-64"><canvas id="chart-fees"></canvas></div>
       </div>
@@ -169,6 +169,6 @@
     Las métricas son estimaciones basadas en datos del subgraph. Precios USD usan los snapshots actuales (no históricos de cada deposit/withdraw). El coste de gas no se incluye en el PnL.
   </footer>
 
-  <script src="app.js?v=20"></script>
+  <script src="app.js?v=21"></script>
 </body>
 </html>
