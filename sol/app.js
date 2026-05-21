@@ -1339,6 +1339,8 @@ async function analyze() {
         beWarn = " ⚠ Birdeye limitó las peticiones (rate limit): PnL/IL incompleto, reintenta en un momento.";
       } else if (st.ok === 0 && st.error > 0) {
         beWarn = " ⚠ No se pudo obtener histórico de Birdeye: PnL/IL no disponible.";
+      } else if (st.partial > 0) {
+        beWarn = ` ⚠ ${st.partial} posición(es) sin histórico completo en Birdeye (p. ej. tokens RWA): PnL/IL omitido en ellas.`;
       }
     }
 
@@ -1498,7 +1500,7 @@ async function birdeyePriceAt(mint, unixSec) {
 // Calcula PnL real + IL vs HODL por posición usando precios históricos (Birdeye).
 // Reconstruye el coste base a partir de las transferencias depósito/retiro/fee.
 async function enrichSolanaPnL(owner) {
-  state._beStats = { ok: 0, denied: 0, rate: 0, error: 0 };
+  state._beStats = { ok: 0, denied: 0, rate: 0, error: 0, partial: 0 };
   if (!state.birdeyeKey || !owner || !(state.positions || []).length) return;
   const txs = await fetchEnhancedTxs(owner);
   if (!txs.length) return;
@@ -1533,11 +1535,17 @@ async function enrichSolanaPnL(owner) {
     if (!evs || !evs.length) continue;
     evs.sort((a, b) => a.ts - b.ts);
     let costBasisUSD = 0, withdrawnUSD = 0, feesCollectedUSD = 0;
-    let cumDep = 0, cumWd = 0;
+    let cumDep = 0, cumWd = 0, incomplete = false;
     const netAmt = new Map(); // mint -> cantidad neta de principal (depósito - retiro)
     for (const e of evs) {
+      if (e.amount <= 0) continue; // transferencias informativas sin importe
       const hp = await birdeyePriceAt(e.mint, e.ts);
-      if (hp == null) continue; // sin precio histórico no contamos este evento
+      if (hp == null) {
+        // sin precio histórico de esta pata: la reconstrucción queda incompleta
+        // (típico en tokens RWA recientes que Birdeye no cubre). No falseamos: marcamos.
+        incomplete = true;
+        continue;
+      }
       const usd = e.amount * hp;
       if (e.dir === "out") {
         costBasisUSD += usd; cumDep += usd;
@@ -1552,6 +1560,8 @@ async function enrichSolanaPnL(owner) {
         }
       }
     }
+    // Si falta el histórico de alguna pata, el coste base es poco fiable → no mostramos PnL/IL.
+    if (incomplete) { state._beStats.partial++; continue; }
     if (costBasisUSD <= 0) continue; // no pudimos reconstruir nada útil
 
     // HODL: lo que valdrían hoy los tokens netos depositados
