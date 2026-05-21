@@ -354,12 +354,22 @@ async function rpcEthCall(rpcUrl, to, data) {
 // ============================================================================
 
 const REVERT_LEND = {
-  ethereum: { name: "Ethereum", vault: "0xa2754543f69dC036764bBfad16d2A74F5cD15667", rpc: "https://ethereum-rpc.publicnode.com", explorerApi: "https://eth.blockscout.com/api" },
-  arbitrum: { name: "Arbitrum", vault: "0x74e6afef5705beb126c6d3bf46f8fad8f3e07825", rpc: "https://arb1.arbitrum.io/rpc", explorerApi: "https://arbitrum.blockscout.com/api" },
-  base:     { name: "Base",     vault: "0x36AEAe0E411a1E28372e0d66f02E57744EbE7599", rpc: "https://mainnet.base.org", explorerApi: "https://base.blockscout.com/api" },
+  ethereum: { name: "Ethereum", vault: "0xa2754543f69dC036764bBfad16d2A74F5cD15667", rpcs: ["https://ethereum-rpc.publicnode.com", "https://eth.llamarpc.com", "https://1rpc.io/eth"], explorerApi: "https://eth.blockscout.com/api" },
+  arbitrum: { name: "Arbitrum", vault: "0x74e6afef5705beb126c6d3bf46f8fad8f3e07825", rpcs: ["https://arb1.arbitrum.io/rpc", "https://arbitrum-one-rpc.publicnode.com", "https://1rpc.io/arb"], explorerApi: "https://arbitrum.blockscout.com/api" },
+  base:     { name: "Base",     vault: "0x36AEAe0E411a1E28372e0d66f02E57744EbE7599", rpcs: ["https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://1rpc.io/base"], explorerApi: "https://base.blockscout.com/api" },
 };
 const SEL_CONVERT_TO_ASSETS = "0x07a2d13a"; // convertToAssets(uint256)
 const SEL_ASSET             = "0x38d52e0f"; // asset()
+
+// eth_call probando varios RPC hasta que uno responda (resiliencia ante rate limit)
+async function rpcCallFallback(rpcs, to, data) {
+  let lastErr;
+  for (const rpc of rpcs) {
+    try { return await rpcEthCall(rpc, to, data); }
+    catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("todos los RPC fallaron");
+}
 const EV_4626_DEPOSIT  = "0xdcbc1c05240f31ff3ad067ef1ee35ce4997762752e3a095284754544f4c709d7"; // Deposit(address,address,uint256,uint256)
 const EV_4626_WITHDRAW = "0xfbde797d201c681b91056529119e0b02407c7bb96a4a2c75c01fc9667232c8db"; // Withdraw(address,address,address,uint256,uint256)
 
@@ -386,13 +396,13 @@ async function fetchRevertLending(owner) {
   const now = Math.floor(Date.now() / 1000);
   const results = await Promise.all(Object.entries(REVERT_LEND).map(async ([chainKey, c]) => {
     try {
-      const sharesHex = await rpcEthCall(c.rpc, c.vault, "0x70a08231" + encodeAddr32(owner));
+      const sharesHex = await rpcCallFallback(c.rpcs, c.vault, "0x70a08231" + encodeAddr32(owner));
       const shares = decU(sharesHex, 0);
       if (shares === 0n) return null;
-      const assets = decU(await rpcEthCall(c.rpc, c.vault, SEL_CONVERT_TO_ASSETS + shares.toString(16).padStart(64, "0")), 0);
-      const assetAddr = decAddr(await rpcEthCall(c.rpc, c.vault, SEL_ASSET), 0);
-      const dec = Number(decU(await rpcEthCall(c.rpc, assetAddr, "0x313ce567"), 0));
-      const symbol = decABIString(await rpcEthCall(c.rpc, assetAddr, "0x95d89b41")) || "?";
+      const assets = decU(await rpcCallFallback(c.rpcs, c.vault, SEL_CONVERT_TO_ASSETS + shares.toString(16).padStart(64, "0")), 0);
+      const assetAddr = decAddr(await rpcCallFallback(c.rpcs, c.vault, SEL_ASSET), 0);
+      const dec = Number(decU(await rpcCallFallback(c.rpcs, assetAddr, "0x313ce567"), 0));
+      const symbol = decABIString(await rpcCallFallback(c.rpcs, assetAddr, "0x95d89b41")) || "?";
       const priceUSD = /usd/i.test(symbol) ? 1 : 1; // USDC/stable ≈ $1 (mejor esfuerzo)
       const currentValueUSD = (Number(assets) / 10 ** dec) * priceUSD;
 
