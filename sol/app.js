@@ -63,7 +63,7 @@ const state = {
   prices: {}, // mint -> usd price
   loading: false,
   sortBy: "value",
-  hideClosed: false,
+  hideClosed: true,
   connectedAddress: null,
 };
 

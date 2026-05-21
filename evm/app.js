@@ -90,7 +90,7 @@ const state = {
   loading: false,
   error: null,
   sortBy: "value",
-  hideClosed: false,
+  hideClosed: true,
 };
 
 let charts = { fees: null, value: null };
