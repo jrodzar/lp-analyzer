@@ -226,7 +226,7 @@
 
       <div id="hist-content" class="hidden space-y-6">
         <!-- Resumen -->
-        <div class="grid grid-cols-2 lg:grid-cols-3 gap-3">
+        <div class="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <div class="text-[11px] uppercase tracking-wide text-slate-400">Capital aportado</div>
             <div id="hist-aportado" class="text-xl font-bold mt-1">—</div>
@@ -238,6 +238,16 @@
           <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <div class="text-[11px] uppercase tracking-wide text-slate-400">Ganado (fees)</div>
             <div id="hist-ganado" class="text-xl font-bold mt-1 text-emerald-400">—</div>
+          </div>
+          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">PnL neto</div>
+            <div id="hist-pnl" class="text-xl font-bold mt-1">—</div>
+            <div id="hist-pnl-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
+          </div>
+          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">IL vs HODL</div>
+            <div id="hist-il" class="text-xl font-bold mt-1">—</div>
+            <div id="hist-il-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
           </div>
         </div>
 
@@ -254,6 +264,6 @@
 
   </main>
 
-  <script src="shell.js?v=17"></script>
+  <script src="shell.js?v=18"></script>
 </body>
 </html>

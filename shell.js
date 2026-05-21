@@ -44,6 +44,7 @@ const els = {
   // histórico
   histEmpty: $("hist-empty"), histContent: $("hist-content"),
   histAportado: $("hist-aportado"), histValor: $("hist-valor"), histGanado: $("hist-ganado"),
+  histPnl: $("hist-pnl"), histPnlSub: $("hist-pnl-sub"), histIl: $("hist-il"), histIlSub: $("hist-il-sub"),
   histNote: $("hist-note"), chartProjection: $("chart-projection"),
 };
 
@@ -1005,7 +1006,24 @@ function renderHistorico() {
   els.histAportado.textContent = fmtUSD(curves.lastAportado);
   els.histValor.textContent = fmtUSD(curves.lastValor);
   els.histGanado.textContent = fmtUSD(curves.ganado);
-  els.histNote.textContent = "Valor = aportado + fees, reconstruido de eventos on-chain (EVM/HyperEVM/lending) y transacciones (Solana). No incluye variación de precio/IL.";
+
+  // PnL e IL agregados a partir de las posiciones analizadas (incluye variación de precio).
+  // Solo cuentan las posiciones que aportan el dato (EVM siempre; Solana solo con Birdeye key).
+  const items = state.results.flatMap((r) => r.items || []).filter((it) => !it.lending);
+  let pnlSum = 0, pnlN = 0, ilSum = 0, ilN = 0;
+  for (const it of items) {
+    if (it.pnlUSD != null && isFinite(it.pnlUSD)) { pnlSum += it.pnlUSD; pnlN++; }
+    if (it.ilUSD != null && isFinite(it.ilUSD)) { ilSum += it.ilUSD; ilN++; }
+  }
+  const totalLP = items.length;
+  els.histPnl.textContent = pnlN ? fmtUSD(pnlSum) : "—";
+  els.histPnl.className = "text-xl font-bold mt-1 " + (pnlN ? pnlColor(pnlSum) : "");
+  els.histPnlSub.textContent = pnlN ? `${pnlN}/${totalLP} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
+  els.histIl.textContent = ilN ? fmtUSD(ilSum) : "—";
+  els.histIl.className = "text-xl font-bold mt-1 " + (ilN ? pnlColor(ilSum) : "");
+  els.histIlSub.textContent = ilN ? `${ilN}/${totalLP} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
+
+  els.histNote.textContent = "La curva = aportado + fees (eventos on-chain EVM/HyperEVM/lending y transacciones Solana). PnL e IL del resumen sí incluyen variación de precio, calculados por posición.";
 
   const datasets = [
     { label: "Capital aportado", data: curves.aportado, borderColor: "#94a3b8", borderDash: [5, 4], pointRadius: 2, borderWidth: 1.5, tension: 0.2 },
