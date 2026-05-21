@@ -258,7 +258,7 @@ async function decodeWhirlpool(data) {
   const tokenVaultB = r.pubkey();
   const feeGrowthGlobalB = r.u128();
   // rewardLastUpdatedTimestamp + rewardInfos -> omitido
-  return { tickSpacing, feeRate, protocolFeeRate, liquidity, sqrtPrice, tickCurrentIndex, tokenMintA, tokenMintB, feeGrowthGlobalA, feeGrowthGlobalB };
+  return { tickSpacing, feeRate, protocolFeeRate, liquidity, sqrtPrice, tickCurrentIndex, tokenMintA, tokenMintB, tokenVaultA, tokenVaultB, feeGrowthGlobalA, feeGrowthGlobalB };
 }
 
 // ============================================================================
@@ -610,6 +610,8 @@ async function decodeRaydiumPool(data) {
   // offsets exactos del struct PoolState
   r.pos = 73; const tokenMint0 = r.pubkey();   // @73
   const tokenMint1 = r.pubkey();               // @105
+  const tokenVault0 = r.pubkey();              // @137
+  const tokenVault1 = r.pubkey();              // @169
   r.pos = 233;
   const mintDecimals0 = r.u8();                // @233
   const mintDecimals1 = r.u8();                // @234
@@ -620,7 +622,7 @@ async function decodeRaydiumPool(data) {
   r.skip(4);                                   // padding3 + padding4 @273
   const feeGrowthGlobal0 = r.u128();           // @277
   const feeGrowthGlobal1 = r.u128();           // @293
-  return { tokenMint0, tokenMint1, mintDecimals0, mintDecimals1, tickSpacing, liquidity, sqrtPriceX64, tickCurrent, feeGrowthGlobal0, feeGrowthGlobal1 };
+  return { tokenMint0, tokenMint1, tokenVault0, tokenVault1, mintDecimals0, mintDecimals1, tickSpacing, liquidity, sqrtPriceX64, tickCurrent, feeGrowthGlobal0, feeGrowthGlobal1 };
 }
 
 async function findRaydiumPositions(candidates) {
@@ -788,6 +790,7 @@ async function enrichRaydiumPositions(rawPositions) {
       id: rp.pda,
       mint: rp.mint,
       whirlpool: poolAddr,
+      vaults: [pool.tokenVault0.toBase58(), pool.tokenVault1.toBase58()],
       feeTier: null, // Raydium guarda la fee en amm_config; lo omitimos por ahora
       tickSpacing: pool.tickSpacing,
       tickLower: p.tickLowerIndex,
@@ -917,6 +920,7 @@ async function enrichOrcaPositions(rawPositions) {
       id: rp.pda,
       mint: rp.mint,
       whirlpool: wAddr,
+      vaults: [w.tokenVaultA.toBase58(), w.tokenVaultB.toBase58()],
       feeTier: w.feeRate / 10000, // bps a %
       tickSpacing: w.tickSpacing,
       tickLower: p.tickLowerIndex,
@@ -1376,32 +1380,58 @@ async function fetchSolanaHistory(owner) {
     before = arr[arr.length - 1].signature;
     if (arr.length < 100) break;
   }
+  // mapa vault (cuenta de token del pool) -> posición, para atribuir cada transferencia
+  const vaultToPos = new Map();
+  for (const p of (state.positions || [])) {
+    const label = `${p.token0.symbol}/${p.token1.symbol}`;
+    for (const v of (p.vaults || [])) if (v) vaultToPos.set(v, { posId: p.mint, label });
+  }
+  const hasVaultMap = vaultToPos.size > 0;
+
   const SRC = new Set(["RAYDIUM", "ORCA", "WHIRLPOOL"]);
-  const events = [];
+  // acumular eventos por posición (o agregado si no hay mapa de vaults)
+  const perPos = new Map(); // posId -> { label, events: [{ts, net}] }
+  const pushEvent = (posId, label, ts, net) => {
+    if (!perPos.has(posId)) perPos.set(posId, { label, events: [] });
+    perPos.get(posId).events.push({ ts, net });
+  };
   for (const tx of txs) {
     if (!SRC.has(tx.source)) continue;
-    let sent = 0, recv = 0;
+    const ts = tx.timestamp || 0;
+    // agregado por tx para el fallback
+    let aggSent = 0, aggRecv = 0;
     for (const t of (tx.tokenTransfers || [])) {
       const p = priceOf(t.mint); if (!p) continue;
       const usd = (t.tokenAmount || 0) * p;
-      if (t.fromUserAccount === owner) sent += usd;
-      else if (t.toUserAccount === owner) recv += usd;
+      let counterparty = null, net = 0;
+      if (t.fromUserAccount === owner) { counterparty = t.toTokenAccount; net = usd; aggSent += usd; }       // depósito
+      else if (t.toUserAccount === owner) { counterparty = t.fromTokenAccount; net = -usd; aggRecv += usd; } // recibido (fees/retiro)
+      else continue;
+      if (hasVaultMap && counterparty && vaultToPos.has(counterparty)) {
+        const pos = vaultToPos.get(counterparty);
+        pushEvent(pos.posId, pos.label, ts, net);
+      }
     }
-    const net = sent - recv;
-    if (Math.abs(net) < 1e-9) continue;
-    events.push({ ts: tx.timestamp || 0, net });
+    if (!hasVaultMap) {
+      const net = aggSent - aggRecv;
+      if (Math.abs(net) >= 1e-9) pushEvent("sol-agg", "Solana (Orca/Raydium)", ts, net);
+    }
   }
-  if (!events.length) return [];
-  events.sort((a, b) => a.ts - b.ts);
-  let cumDep = 0, cumFees = 0;
-  const byDay = new Map();
-  for (const e of events) {
-    if (e.net > 0) cumDep += e.net; else cumFees += -e.net; // recibido ≈ fees (posiciones abiertas)
-    const day = Math.floor((e.ts * 1000) / 86400000) * 86400000;
-    byDay.set(day, { depositedUSD: cumDep, withdrawnUSD: 0, feesUSD: cumFees });
+
+  const series = [];
+  for (const [posId, rec] of perPos) {
+    rec.events.sort((a, b) => a.ts - b.ts);
+    let cumDep = 0, cumFees = 0;
+    const byDay = new Map();
+    for (const e of rec.events) {
+      if (e.net > 0) cumDep += e.net; else cumFees += -e.net; // recibido ≈ fees (posiciones abiertas)
+      const day = Math.floor((e.ts * 1000) / 86400000) * 86400000;
+      byDay.set(day, { depositedUSD: cumDep, withdrawnUSD: 0, feesUSD: cumFees });
+    }
+    const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
+    if (points.length) series.push({ posId, label: rec.label, points });
   }
-  const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
-  return [{ posId: "sol-" + owner, label: "Solana (Orca/Raydium)", points }];
+  return series;
 }
 
 // ============================================================================
