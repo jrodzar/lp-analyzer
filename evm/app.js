@@ -349,6 +349,80 @@ async function rpcEthCall(rpcUrl, to, data) {
   return json.result;
 }
 
+// ============================================================================
+// Revert Lend — vaults ERC-4626 (lending). Lectura on-chain + histórico vía Blockscout.
+// ============================================================================
+
+const REVERT_LEND = {
+  ethereum: { name: "Ethereum", vault: "0xa2754543f69dC036764bBfad16d2A74F5cD15667", rpc: "https://ethereum-rpc.publicnode.com", explorerApi: "https://eth.blockscout.com/api" },
+  arbitrum: { name: "Arbitrum", vault: "0x74e6afef5705beb126c6d3bf46f8fad8f3e07825", rpc: "https://arb1.arbitrum.io/rpc", explorerApi: "https://arbitrum.blockscout.com/api" },
+  base:     { name: "Base",     vault: "0x36AEAe0E411a1E28372e0d66f02E57744EbE7599", rpc: "https://mainnet.base.org", explorerApi: "https://base.blockscout.com/api" },
+};
+const SEL_CONVERT_TO_ASSETS = "0x07a2d13a"; // convertToAssets(uint256)
+const SEL_ASSET             = "0x38d52e0f"; // asset()
+const EV_4626_DEPOSIT  = "0xdcbc1c05240f31ff3ad067ef1ee35ce4997762752e3a095284754544f4c709d7"; // Deposit(address,address,uint256,uint256)
+const EV_4626_WITHDRAW = "0xfbde797d201c681b91056529119e0b02407c7bb96a4a2c75c01fc9667232c8db"; // Withdraw(address,address,address,uint256,uint256)
+
+// Histórico de un lender: depositado/retirado (assets) + timestamp del primer depósito
+async function fetchLendingHistory(apiBase, vault, owner, dec) {
+  const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
+  const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
+  const get = async (qs) => {
+    const r = await fetch(`${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${vault}&${qs}`);
+    const j = await r.json();
+    return Array.isArray(j.result) ? j.result : [];
+  };
+  // Deposit: owner = topic2 ; Withdraw: owner = topic3
+  const dep = await get(`topic0=${EV_4626_DEPOSIT}&topic2=${ownerTopic}&topic0_2_opr=and`);
+  const wth = await get(`topic0=${EV_4626_WITHDRAW}&topic3=${ownerTopic}&topic0_3_opr=and`);
+  let d = 0n, w = 0n, firstTs = null;
+  for (const l of dep) { d += word(l.data, 0); const ts = parseInt(l.timeStamp, 16); if (firstTs === null || ts < firstTs) firstTs = ts; }
+  for (const l of wth) { w += word(l.data, 0); }
+  return { deposited: Number(d) / 10 ** dec, withdrawn: Number(w) / 10 ** dec, firstTs };
+}
+
+// Devuelve posiciones de lending (una por red con saldo) para un owner
+async function fetchRevertLending(owner) {
+  const now = Math.floor(Date.now() / 1000);
+  const results = await Promise.all(Object.entries(REVERT_LEND).map(async ([chainKey, c]) => {
+    try {
+      const sharesHex = await rpcEthCall(c.rpc, c.vault, "0x70a08231" + encodeAddr32(owner));
+      const shares = decU(sharesHex, 0);
+      if (shares === 0n) return null;
+      const assets = decU(await rpcEthCall(c.rpc, c.vault, SEL_CONVERT_TO_ASSETS + shares.toString(16).padStart(64, "0")), 0);
+      const assetAddr = decAddr(await rpcEthCall(c.rpc, c.vault, SEL_ASSET), 0);
+      const dec = Number(decU(await rpcEthCall(c.rpc, assetAddr, "0x313ce567"), 0));
+      const symbol = decABIString(await rpcEthCall(c.rpc, assetAddr, "0x95d89b41")) || "?";
+      const priceUSD = /usd/i.test(symbol) ? 1 : 1; // USDC/stable ≈ $1 (mejor esfuerzo)
+      const currentValueUSD = (Number(assets) / 10 ** dec) * priceUSD;
+
+      let depositedUSD = null, gainsUSD = null, openedAt = null, ageDays = null, apr = null;
+      if (c.explorerApi) {
+        try {
+          const h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec);
+          const net = h.deposited - h.withdrawn;
+          depositedUSD = net * priceUSD;
+          gainsUSD = currentValueUSD - depositedUSD;
+          openedAt = h.firstTs;
+          ageDays = openedAt ? Math.max((now - openedAt) / 86400, 1 / 24) : null;
+          apr = (depositedUSD > 0 && ageDays) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
+        } catch (e) { /* sin histórico: solo valor actual */ }
+      }
+      return {
+        _lending: true, chainKey, chainName: c.name, vault: c.vault, asset: symbol,
+        currentValueUSD, depositedUSD, gainsUSD, apr,
+        ageDays: ageDays || 0, openedAt: openedAt || now,
+        // campos compatibles con aggregate()/orden/portfolio
+        feesUSD: gainsUSD || 0, uncollectedUSD: 0, ilUSD: 0,
+        pnlUSD: gainsUSD == null ? 0 : gainsUSD,
+        hodlUSD: depositedUSD || currentValueUSD,
+        closed: false, inRange: true,
+      };
+    } catch (e) { return null; }
+  }));
+  return results.filter(Boolean);
+}
+
 /**
  * Lee Pool.ticks(int24) y devuelve feeGrowthOutside0/1 X128 como strings.
  * Layout de retorno (8 campos × 32 bytes):
@@ -1232,7 +1306,48 @@ function renderPositions() {
   for (const p of list) container.appendChild(positionCard(p));
 }
 
+function lendingCard(p) {
+  const chain = state.chains[p.chainKey] || { name: p.chainName, explorer: "" };
+  const el = document.createElement("article");
+  el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
+  if (p.color) el.style.borderLeft = `3px solid ${p.color.line}`;
+  const gain = p.gainsUSD;
+  el.innerHTML = `
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full" style="background:${p.color ? p.color.line : "#34d399"}"></span>
+          <span class="text-[11px] uppercase tracking-wide text-slate-400">Revert Lend · ${p.chainName}</span>
+        </div>
+        <div class="font-semibold mt-0.5 truncate">${p.asset} (lending)</div>
+        <div class="text-[11px] text-slate-400">${p.ageDays ? "abierto hace " + Math.round(p.ageDays) + "d" : ""}</div>
+      </div>
+      <span class="chip bg-sky-500/15 text-sky-300 border border-sky-500/30">préstamo</span>
+    </div>
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Valor actual</div>
+        <div class="font-semibold">${fmtUSD(p.currentValueUSD)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">depo ${p.depositedUSD == null ? "—" : fmtUSD(p.depositedUSD)}</div>
+      </div>
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Ganancias (interés)</div>
+        <div class="font-semibold ${pnlColor(gain)}">${gain == null ? "—" : fmtUSD(gain)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">APR ~ ${p.apr == null ? "—" : p.apr.toFixed(1) + "%"}</div>
+      </div>
+    </div>
+    <details class="text-xs">
+      <summary class="text-slate-400 hover:text-slate-200">▾ detalles</summary>
+      <div class="mt-2 space-y-1 text-slate-400">
+        <div>Vault: <a href="${chain.explorer}/address/${p.vault}" target="_blank" class="font-mono text-slate-300 hover:text-fuchsia-300">${shortAddr(p.vault)}</a></div>
+        <div>Activo: ${p.asset}</div>
+      </div>
+    </details>`;
+  return el;
+}
+
 function positionCard(p) {
+  if (p._lending) return lendingCard(p);
   const chain = state.chains[p.chainKey];
   const el = document.createElement("article");
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
@@ -1315,9 +1430,9 @@ function renderValueChart() {
   const top = [...state.positions]
     .sort((a, b) => b.currentValueUSD - a.currentValueUSD)
     .slice(0, 8);
-  const labels = top.map((p) => `${p.token0.symbol}/${p.token1.symbol} #${p.nftId.slice(-4)}`);
+  const labels = top.map((p) => p._lending ? `${p.asset} Lend·${p.chainName}` : `${p.token0.symbol}/${p.token1.symbol} #${p.nftId.slice(-4)}`);
   const data = top.map((p) => p.currentValueUSD);
-  const bg = top.map((p) => (p.color ? p.color.line : state.chains[p.chainKey].color));
+  const bg = top.map((p) => (p.color ? p.color.line : (state.chains[p.chainKey] ? state.chains[p.chainKey].color : "#34d399")));
 
   if (charts.value) charts.value.destroy();
   charts.value = new Chart(document.getElementById("chart-value"), {
@@ -1419,15 +1534,23 @@ async function analyze() {
   try {
     const { positions, errors, skipped } = await fetchAllPositions(addr);
     state.positions = positions;
+    // Revert Lend (vaults ERC-4626) — se añade como posiciones de tipo "lending"
+    try {
+      const lending = await fetchRevertLending(addr);
+      if (lending.length) state.positions.push(...lending);
+    } catch (e) { console.warn("Revert Lend:", e); }
     assignColors(state.positions);
 
     const skippedNote = skipped.length ? ` (saltadas: ${skipped.map((s) => state.chains[s.chainKey].name).join(", ")})` : "";
     if (errors.length) {
       setStatus(`Algunas redes fallaron: ${errors.map((e) => `${state.chains[e.chainKey].name}`).join(", ")}.${skippedNote} Revisa la consola para detalle.`, "err");
-    } else if (positions.length === 0) {
+    } else if (state.positions.length === 0) {
       setStatus(`Sin posiciones de Uniswap V3 para ${shortAddr(addr)} en las redes seleccionadas.${skippedNote}`, "info");
     } else {
-      setStatus(`${positions.length} posiciones encontradas en ${new Set(positions.map((p) => p.chainKey)).size} red(es).${skippedNote}`, "ok");
+      const lendN = state.positions.filter((p) => p._lending).length;
+      const lpN = positions.length;
+      const lendNote = lendN ? ` + ${lendN} en Revert Lend` : "";
+      setStatus(`${lpN} posiciones de LP${lendNote}.${skippedNote}`, "ok");
     }
 
     renderAll();
@@ -1589,19 +1712,35 @@ document.addEventListener("DOMContentLoaded", init);
   }
   // Normaliza las posiciones EVM para el portfolio del shell
   function toPortfolioItems() {
-    return (state.positions || []).map((p) => ({
-      kind: "evm",
-      venue: (state.chains[p.chainKey] && state.chains[p.chainKey].name) || p.chainKey,
-      pair: `${p.token0.symbol}/${p.token1.symbol}`,
-      valueUSD: p.currentValueUSD || 0,
-      feesUSD: p.feesUSD || 0,
-      feesPendingUSD: p.uncollectedUSD == null ? null : p.uncollectedUSD,
-      ilUSD: p.ilUSD == null ? null : p.ilUSD,
-      pnlUSD: p.pnlUSD == null ? null : p.pnlUSD,
-      inRange: !!p.inRange,
-      closed: !!p.closed,
-      id: String(p.nftId || ""),
-    }));
+    return (state.positions || []).map((p) => {
+      if (p._lending) {
+        return {
+          kind: "evm", lending: true,
+          venue: `Revert Lend · ${p.chainName}`,
+          pair: `${p.asset} (lending)`,
+          valueUSD: p.currentValueUSD || 0,
+          feesUSD: p.gainsUSD || 0,           // interés ganado
+          feesPendingUSD: 0,
+          ilUSD: null,
+          pnlUSD: p.gainsUSD == null ? null : p.gainsUSD,
+          inRange: true, closed: false,
+          id: p.vault || "",
+        };
+      }
+      return {
+        kind: "evm",
+        venue: (state.chains[p.chainKey] && state.chains[p.chainKey].name) || p.chainKey,
+        pair: `${p.token0.symbol}/${p.token1.symbol}`,
+        valueUSD: p.currentValueUSD || 0,
+        feesUSD: p.feesUSD || 0,
+        feesPendingUSD: p.uncollectedUSD == null ? null : p.uncollectedUSD,
+        ilUSD: p.ilUSD == null ? null : p.ilUSD,
+        pnlUSD: p.pnlUSD == null ? null : p.pnlUSD,
+        inRange: !!p.inRange,
+        closed: !!p.closed,
+        id: String(p.nftId || ""),
+      };
+    });
   }
   window.addEventListener("message", (e) => {
     const d = e.data || {};
