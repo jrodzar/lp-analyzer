@@ -114,7 +114,7 @@ function distinctColor(i) { const h = Math.round((i * 137.508) % 360); return `h
 
 function setTab(tab) {
   state.tab = tab;
-  const active = "seg px-3 py-1.5 text-xs rounded-md font-semibold bg-slate-950 text-white shadow";
+  const active = "seg px-3 py-1.5 text-xs rounded-md font-semibold bg-[#ECE600] text-slate-900 shadow";
   const idle = "seg px-3 py-1.5 text-xs rounded-md font-semibold text-slate-400 hover:text-slate-200";
   els.tabBtnPortfolio.className = tab === "portfolio" ? active : idle;
   els.tabBtnQuick.className = tab === "quick" ? active : idle;
@@ -132,7 +132,7 @@ function setTab(tab) {
 function setMode(mode) {
   state.mode = mode;
   localStorage.setItem("lp:lastMode", mode);
-  const active = "seg px-3 py-1.5 text-xs rounded-md font-semibold bg-slate-950 text-white shadow";
+  const active = "seg px-3 py-1.5 text-xs rounded-md font-semibold bg-[#ECE600] text-slate-900 shadow";
   const idle = "seg px-3 py-1.5 text-xs rounded-md font-semibold text-slate-400 hover:text-slate-200";
   els.modeEvm.className = mode === "evm" ? active : idle;
   els.modeSol.className = mode === "sol" ? active : idle;
@@ -523,7 +523,7 @@ function renderPrefs() {
     for (const item of list) {
       const active = selectedKeys.includes(item.key);
       const btn = document.createElement("button");
-      btn.className = `chip border ${active ? "border-purple-500 bg-purple-500/15 text-purple-200" : "border-slate-700 bg-slate-800 text-slate-400 hover:bg-slate-700"}`;
+      btn.className = `chip border ${active ? "border-[#ECE600] bg-[#ECE600]/15 text-yellow-200" : "border-slate-700 bg-slate-800 text-slate-400 hover:bg-slate-700"}`;
       btn.innerHTML = `<span class="w-2 h-2 rounded-full" style="background:${item.color}"></span>${item.name}`;
       btn.onclick = () => onToggle(item.key);
       container.appendChild(btn);

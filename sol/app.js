@@ -1028,7 +1028,7 @@ function renderProtocolChips() {
     const baseCls = disabled
       ? "chip border border-slate-800 bg-slate-900 text-slate-500 cursor-not-allowed"
       : active
-        ? "chip border border-purple-500 bg-purple-500/15 text-purple-200"
+        ? "chip border border-[#ECE600] bg-[#ECE600]/15 text-yellow-200"
         : "chip border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700";
     btn.className = baseCls;
     btn.innerHTML = `<span class="w-2 h-2 rounded-full" style="background:${p.color}"></span>${p.name}${disabled ? " <span class=\"text-amber-400\">⚠</span>" : ""}`;

@@ -1260,7 +1260,7 @@ function renderChainChips() {
     const unconfigured = !c.subgraphId && !isRpcOnly;
     const btn = document.createElement("button");
     btn.title = unconfigured ? "Sin subgraph configurado — abre Settings para añadir uno" : c.name;
-    btn.className = `chip border ${active ? "border-fuchsia-500 bg-fuchsia-500/15 text-fuchsia-200" : "border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"}`;
+    btn.className = `chip border ${active ? "border-[#ECE600] bg-[#ECE600]/15 text-yellow-200" : "border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"}`;
     btn.innerHTML = `<span class="w-2 h-2 rounded-full" style="background:${c.color}"></span>${c.name}${unconfigured ? ' <span class="text-amber-400">⚠</span>' : ""}`;
     btn.onclick = () => {
       if (active) state.selectedChains = state.selectedChains.filter((k) => k !== key);

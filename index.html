@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LP Analyzer — EVM + Solana</title>
+  <title>Booster Crypto PRO</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -19,18 +19,16 @@
 <body class="bg-slate-950 text-slate-100 flex flex-col min-h-screen">
 
   <!-- Barra superior -->
-  <header class="border-b border-slate-800 bg-slate-950/95 backdrop-blur z-20 shrink-0 sticky top-0">
-    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3">
-      <div class="flex items-center gap-2 shrink-0">
-        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-fuchsia-500 via-purple-500 to-emerald-400 flex items-center justify-center font-black text-slate-900">LP</div>
-        <div class="hidden sm:block">
-          <div class="text-sm font-semibold leading-none">LP Analyzer</div>
-          <div class="text-[11px] text-slate-400">Uniswap V3 · Orca · Raydium</div>
-        </div>
+  <header class="bg-[#ECE600] z-20 shrink-0 sticky top-0 shadow-md">
+    <div class="max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-3 flex-wrap">
+      <!-- Logo Booster Crypto PRO -->
+      <div class="flex items-center gap-1.5 shrink-0">
+        <span class="bg-white text-slate-900 font-black tracking-tight text-base sm:text-lg px-2 py-0.5 rounded-sm leading-none">Booster&nbsp;Crypto</span>
+        <span class="bg-slate-900 text-white font-bold text-[10px] sm:text-xs px-1.5 py-1 rounded-sm leading-none">PRO</span>
       </div>
 
       <!-- Tabs -->
-      <div class="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700 shrink-0">
+      <div class="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-900 shrink-0">
         <button id="tab-btn-quick" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">⚡ Quick</button>
         <button id="tab-btn-portfolio" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📁 Portfolio</button>
         <button id="tab-btn-projection" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📈 Histórico</button>
@@ -53,7 +51,7 @@
       <p class="text-xs text-slate-400">Pega aquí el objeto <code>firebaseConfig</code> de tu proyecto (Firebase Console → Project settings → tu app web). Se guarda solo en tu navegador.</p>
       <textarea id="fb-config-input" rows="9" placeholder='{\n  "apiKey": "…",\n  "authDomain": "tuapp.firebaseapp.com",\n  "projectId": "tuapp",\n  "appId": "…"\n}' class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-xs font-mono"></textarea>
       <div id="fb-config-err" class="text-[11px] text-rose-400 hidden"></div>
-      <button id="fb-config-save" class="w-full px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-sm font-semibold">Guardar y conectar</button>
+      <button id="fb-config-save" class="w-full px-3 py-2 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-sm font-semibold">Guardar y conectar</button>
     </div>
   </div>
 
@@ -72,13 +70,13 @@
         </label>
       </div>
       <label class="text-xs text-slate-300 flex items-center gap-2">
-        <input id="enc-remember" type="checkbox" class="accent-purple-500 w-4 h-4" />
+        <input id="enc-remember" type="checkbox" class="accent-[#ECE600] w-4 h-4" />
         <span>Recordar en este dispositivo</span>
       </label>
       <div id="enc-err" class="text-[11px] text-rose-400 hidden"></div>
       <div class="flex gap-2">
         <button id="enc-cancel" class="hidden px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm">Cancelar</button>
-        <button id="enc-submit" class="flex-1 px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-sm font-semibold">Continuar</button>
+        <button id="enc-submit" class="flex-1 px-3 py-2 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-sm font-semibold">Continuar</button>
       </div>
     </div>
   </div>
@@ -95,7 +93,7 @@
           <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.4 29.3 35 24 35c-6.1 0-11-4.9-11-11s4.9-11 11-11c2.8 0 5.4 1.1 7.3 2.8l5.7-5.7C33.6 6.5 29 4.5 24 4.5 13.2 4.5 4.5 13.2 4.5 24S13.2 43.5 24 43.5c10 0 19-7.3 19-19.5 0-1.3-.1-2.3-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 13 24 13c2.8 0 5.4 1.1 7.3 2.8l5.7-5.7C33.6 6.5 29 4.5 24 4.5 16.3 4.5 9.7 8.9 6.3 14.7z"/><path fill="#4CAF50" d="M24 43.5c5.2 0 9.8-2 13.3-5.2l-6.1-5.2C29.2 34.7 26.7 35.5 24 35.5c-5.3 0-9.7-2.6-11.3-7l-6.5 5C9.6 39 16.2 43.5 24 43.5z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4.1 5.5l6.1 5.2C40.9 36.4 43.5 30.8 43.5 24c0-1.3-.1-2.3-.4-3.5z"/></svg>
           Sign in with Google
         </button>
-        <p class="text-[11px] text-slate-500 mt-4">¿Aún no conectaste Firebase? <button id="open-fb-setup" class="underline text-purple-400">Configúralo aquí</button>.</p>
+        <p class="text-[11px] text-slate-500 mt-4">¿Aún no conectaste Firebase? <button id="open-fb-setup" class="underline text-yellow-400">Configúralo aquí</button>.</p>
       </div>
 
       <!-- Portfolio (logueado) -->
@@ -106,7 +104,7 @@
             <h2 class="text-base font-semibold">Mi portfolio</h2>
             <div class="flex items-center gap-2">
               <button id="change-pass" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Cambiar contraseña de cifrado">🔑 Contraseña</button>
-              <button id="analyze-all" class="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-xs font-semibold">Analizar todo</button>
+              <button id="analyze-all" class="px-3 py-1.5 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-xs font-semibold">Analizar todo</button>
             </div>
           </div>
           <div class="flex flex-col sm:flex-row gap-2">
@@ -206,16 +204,16 @@
           <button id="mode-sol" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">◎ Solana</button>
         </div>
         <div class="flex-1 flex gap-2 min-w-0">
-          <input id="addr" type="text" placeholder="Pega una dirección EVM (0x…) o Solana (base58)…" class="flex-1 min-w-0 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono focus:outline-none focus:border-purple-500" />
-          <button id="go" class="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-sm font-semibold shrink-0">Analizar</button>
+          <input id="addr" type="text" placeholder="Pega una dirección EVM (0x…) o Solana (base58)…" class="flex-1 min-w-0 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono focus:outline-none focus:border-[#ECE600]" />
+          <button id="go" class="px-4 py-2 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-sm font-semibold shrink-0">Analizar</button>
           <button id="wallet" class="hidden px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs shrink-0">🔗 Conectar</button>
           <button id="settings" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm shrink-0" title="Settings del panel activo">⚙</button>
         </div>
       </div>
       <div id="hint" class="text-[11px] hidden mb-2"></div>
       <div class="relative" style="height: calc(100vh - 220px); min-height: 480px;">
-        <iframe id="frame-evm" src="evm/index.html?v=12" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
-        <iframe id="frame-sol" src="sol/index.html?v=8" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
+        <iframe id="frame-evm" src="evm/index.html?v=13" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
+        <iframe id="frame-sol" src="sol/index.html?v=9" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
       </div>
     </section>
 
@@ -256,6 +254,6 @@
 
   </main>
 
-  <script src="shell.js?v=13"></script>
+  <script src="shell.js?v=14"></script>
 </body>
 </html>
