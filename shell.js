@@ -693,8 +693,12 @@ function renderPortfolioList() {
         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       </button>
       <span class="flex-1"></span>
+      <button class="move-up text-xs leading-none ${idx === 0 ? "text-slate-700 cursor-default" : "text-slate-500 hover:text-slate-200"}" title="Subir" ${idx === 0 ? "disabled" : ""}>▲</button>
+      <button class="move-down text-xs leading-none ${idx === state.portfolio.length - 1 ? "text-slate-700 cursor-default" : "text-slate-500 hover:text-slate-200"}" title="Bajar" ${idx === state.portfolio.length - 1 ? "disabled" : ""}>▼</button>
       <button data-rename="${p.address}" title="Renombrar" class="text-xs text-slate-500 hover:text-sky-400">✎</button>
       <button data-rm="${p.address}" class="text-xs text-slate-500 hover:text-rose-400">✕</button>`;
+    row.querySelector(".move-up").onclick = () => reorderPortfolio(idx, idx - 1);
+    row.querySelector(".move-down").onclick = () => reorderPortfolio(idx, idx + 1);
     row.addEventListener("dragstart", (e) => { _dragIdx = idx; e.dataTransfer.effectAllowed = "move"; row.classList.add("opacity-40"); });
     row.addEventListener("dragend", () => row.classList.remove("opacity-40"));
     row.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; row.classList.add("ring-1", "ring-[#ECE600]"); });
