@@ -1159,10 +1159,12 @@ window.addEventListener("message", (e) => {
     pendingReqs.delete(d.reqId);
     resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [] });
   } else if (d.type === "lp-analyze-done") {
-    // el engine terminó el análisis de Quick → cerrar el modal de progreso
+    // el engine terminó el análisis de Quick → cerrar el modal y actualizar el aviso
     clearTimeout(_quickModalTimer);
     closeAnalyzingModal();
     _autoBusy = false; // liberar el guard de auto-actualización
+    const stamp = new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+    showHint(`${(d.app || state.mode) === "evm" ? "EVM" : "Solana"} · actualizado a las ${stamp}.`);
   }
 });
 
