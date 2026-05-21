@@ -651,19 +651,41 @@ function addWalletAddress(type) {
   setPfStatus(`Añadida ${shortAddr(address)} al portfolio.`, "ok");
 }
 
+let _dragIdx = null;
+
+// Reordena una dirección del portfolio (drag & drop) y persiste el nuevo orden.
+function reorderPortfolio(from, to) {
+  if (from == null || to == null || from === to || from < 0 || to < 0) return;
+  const arr = state.portfolio;
+  const [moved] = arr.splice(from, 1);
+  arr.splice(to, 0, moved);
+  // que las secciones ya analizadas sigan el nuevo orden sin re-analizar
+  if (state.results && state.results.length) {
+    const ord = (a) => arr.findIndex((p) => p.address === a.entry.address && p.type === a.entry.type);
+    state.results.sort((a, b) => ord(a) - ord(b));
+  }
+  renderPortfolioList();
+  renderPortfolio();
+  if (state.tab === "projection") renderHistorico();
+  savePortfolio();
+}
+
 function renderPortfolioList() {
   els.pfList.innerHTML = "";
   if (!state.portfolio.length) {
     els.pfList.innerHTML = `<div class="text-xs text-slate-500">Aún no hay direcciones. Añade una arriba.</div>`;
     return;
   }
-  for (const p of state.portfolio) {
+  state.portfolio.forEach((p, idx) => {
     const row = document.createElement("div");
     row.className = "flex items-center gap-2 text-sm bg-slate-950/40 rounded-lg px-3 py-2";
+    row.draggable = true;
+    row.dataset.idx = String(idx);
     const badge = p.type === "evm"
       ? `<span class="chip bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30">EVM</span>`
       : `<span class="chip bg-purple-500/15 text-purple-300 border border-purple-500/30">SOL</span>`;
     row.innerHTML = `
+      <span class="drag-handle cursor-move text-slate-600 hover:text-slate-300 select-none flex-shrink-0" title="Arrastra para reordenar">⠿</span>
       ${badge}
       ${p.label ? `<span class="font-semibold">${p.label}</span>` : ""}
       <span class="font-mono text-xs text-slate-400 truncate">${shortAddr(p.address)}</span>
@@ -673,8 +695,13 @@ function renderPortfolioList() {
       <span class="flex-1"></span>
       <button data-rename="${p.address}" title="Renombrar" class="text-xs text-slate-500 hover:text-sky-400">✎</button>
       <button data-rm="${p.address}" class="text-xs text-slate-500 hover:text-rose-400">✕</button>`;
+    row.addEventListener("dragstart", (e) => { _dragIdx = idx; e.dataTransfer.effectAllowed = "move"; row.classList.add("opacity-40"); });
+    row.addEventListener("dragend", () => row.classList.remove("opacity-40"));
+    row.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; row.classList.add("ring-1", "ring-[#ECE600]"); });
+    row.addEventListener("dragleave", () => row.classList.remove("ring-1", "ring-[#ECE600]"));
+    row.addEventListener("drop", (e) => { e.preventDefault(); row.classList.remove("ring-1", "ring-[#ECE600]"); reorderPortfolio(_dragIdx, idx); });
     els.pfList.appendChild(row);
-  }
+  });
   els.pfList.querySelectorAll("[data-rm]").forEach((b) => { b.onclick = () => removePortfolioEntry(b.dataset.rm); });
   els.pfList.querySelectorAll("[data-rename]").forEach((b) => { b.onclick = () => renamePortfolioEntry(b.dataset.rename); });
   const copySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
