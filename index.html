@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" type="image/svg+xml" href="favicon.svg?v=1" />
   <title>Booster Crypto PRO</title>
+  <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
+       common.js y los app.js de cada motor. No hay que tocar más sitios. -->
+  <script>window.APP_VERSION = "46";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -15,6 +18,8 @@
     .chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
     .scrollbar::-webkit-scrollbar { width: 8px; }
     .scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+    .skeleton { background: linear-gradient(90deg, rgba(255,255,255,.04) 25%, rgba(255,255,255,.09) 50%, rgba(255,255,255,.04) 75%); background-size: 200% 100%; animation: shimmer 1.3s infinite; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 flex flex-col min-h-screen">
@@ -49,6 +54,12 @@
         <option value="60000">1 min</option>
         <option value="300000" selected>5 min</option>
         <option value="900000">15 min</option>
+      </select>
+
+      <!-- Divisa de visualización -->
+      <select id="currency" title="Divisa de visualización" class="shrink-0 text-xs px-2 py-1.5 rounded-lg bg-slate-800 text-slate-100 border border-slate-700">
+        <option value="USD">$ USD</option>
+        <option value="EUR">€ EUR</option>
       </select>
 
       <!-- Auth -->
@@ -304,8 +315,8 @@
       </div>
       <div id="hint" class="text-[11px] hidden mb-2"></div>
       <div class="relative" style="height: calc(100vh - 220px); min-height: 480px;">
-        <iframe id="frame-evm" src="evm/index.html?v=31" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
-        <iframe id="frame-sol" src="sol/index.html?v=29" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
+        <iframe id="frame-evm" data-src="evm/index.html" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
+        <iframe id="frame-sol" data-src="sol/index.html" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
       </div>
       </div><!-- /#quick-content -->
     </section>
@@ -357,6 +368,6 @@
 
   </main>
 
-  <script src="shell.js?v=45"></script>
+  <script>document.write('<scr' + 'ipt src="shell.js?v=' + window.APP_VERSION + '"><\/scr' + 'ipt>');</script>
 </body>
 </html>

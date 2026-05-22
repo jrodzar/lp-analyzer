@@ -14,7 +14,7 @@ const els = {
   // tabs
   tabBtnPortfolio: $("tab-btn-portfolio"), tabBtnQuick: $("tab-btn-quick"), tabBtnProjection: $("tab-btn-projection"),
   tabPortfolio: $("tab-portfolio"), tabQuick: $("tab-quick"), tabProjection: $("tab-projection"),
-  autoRefresh: $("auto-refresh"), refreshNow: $("refresh-now"), lastUpdated: $("last-updated"),
+  autoRefresh: $("auto-refresh"), refreshNow: $("refresh-now"), lastUpdated: $("last-updated"), currency: $("currency"),
   authArea: $("auth-area"),
   // firebase setup
   fbSetup: $("fb-setup"), fbInput: $("fb-config-input"), fbErr: $("fb-config-err"), fbSave: $("fb-config-save"),
@@ -72,6 +72,10 @@ const SOL_PROTOCOLS = [
 ];
 const DEFAULT_PREFS = { chains: EVM_CHAINS.map((c) => c.key), protocols: SOL_PROTOCOLS.map((p) => p.key) };
 
+// ⚠️ EMAIL ADMIN — fuente única conceptual. Si lo cambias, hay que cambiarlo TAMBIÉN en:
+//   1) las reglas de Firestore  (función isAdmin(), en Firebase Console)
+//   2) el Worker de Cloudflare   (variable ADMIN_EMAIL, o el default en cloudflare-worker.js)
+// (No se puede compartir entre cliente, reglas y Worker porque viven en sistemas distintos.)
 const ADMIN_EMAIL = "jrodzar@gmail.com";
 
 // Config de Firebase embebida (NO es secreta: la web apiKey está pensada para ir en el
@@ -117,26 +121,32 @@ function shortAddr(a) {
   if (!a) return "";
   return a.startsWith("0x") ? `${a.slice(0, 6)}…${a.slice(-4)}` : `${a.slice(0, 4)}…${a.slice(-4)}`;
 }
+// Divisa de visualización (USD por defecto; EUR convierte por tipo de cambio).
+let _fx = { rate: 1, sym: "$" };
+function setCurrency(rate, sym) { _fx = { rate: Number(rate) || 1, sym: sym || "$" }; }
+try { const _f = JSON.parse(localStorage.getItem("lp:fx") || "null"); if (_f && _f.rate) _fx = { rate: _f.rate, sym: _f.sym || "$" }; } catch (e) {}
 // Formato normal con separador de miles: $8,300.00 (para tarjetas, resúmenes, etc.)
 function fmtUSD(n) {
   if (n == null || !isFinite(n)) return "—";
+  n = n * _fx.rate; const S = _fx.sym;
   const abs = Math.abs(n), s = n < 0 ? "-" : "";
-  if (abs === 0) return "$0";
-  if (abs >= 1) return `${s}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  if (abs >= 0.01) return `${s}$${abs.toFixed(4)}`;
-  return `${s}$${abs.toExponential(2)}`;
+  if (abs === 0) return S + "0";
+  if (abs >= 1) return `${s}${S}${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (abs >= 0.01) return `${s}${S}${abs.toFixed(4)}`;
+  return `${s}${S}${abs.toExponential(2)}`;
 }
 // Formato compacto: $8.30k / $1.20M (solo para ejes y etiquetas de gráficos)
 function fmtUSDc(n) {
   if (n == null || !isFinite(n)) return "—";
+  n = n * _fx.rate; const S = _fx.sym;
   const abs = Math.abs(n), s = n < 0 ? "-" : "";
-  if (abs >= 1e9) return `${s}$${(abs / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${s}$${(abs / 1e6).toFixed(2)}M`;
-  if (abs >= 1e3) return `${s}$${(abs / 1e3).toFixed(2)}k`;
-  if (abs >= 1) return `${s}$${abs.toFixed(2)}`;
-  if (abs === 0) return "$0";
-  if (abs >= 0.01) return `${s}$${abs.toFixed(4)}`;
-  return `${s}$${abs.toExponential(2)}`;
+  if (abs >= 1e9) return `${s}${S}${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${s}${S}${(abs / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${s}${S}${(abs / 1e3).toFixed(2)}k`;
+  if (abs >= 1) return `${s}${S}${abs.toFixed(2)}`;
+  if (abs === 0) return S + "0";
+  if (abs >= 0.01) return `${s}${S}${abs.toFixed(4)}`;
+  return `${s}${S}${abs.toExponential(2)}`;
 }
 function pnlColor(n) { if (!isFinite(n)) return "text-slate-400"; return n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "text-slate-300"; }
 function distinctColor(i) { const h = Math.round((i * 137.508) % 360); return `hsl(${h} 70% 60%)`; }
@@ -848,6 +858,40 @@ function exportPortfolioCSV() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// Difunde la divisa actual a los iframes (para que sus fmtUSD conviertan igual)
+function pushFxToEngines() {
+  [els.frameEvm, els.frameSol].forEach((f) => { if (f && f.contentWindow) f.contentWindow.postMessage({ type: "lp-set-fx", rate: _fx.rate, sym: _fx.sym }, "*"); });
+}
+
+// Obtiene el tipo de cambio USD→EUR (cacheado 12 h en localStorage). Frankfurter es gratis y sin key.
+async function getEurRate() {
+  try {
+    const cached = JSON.parse(localStorage.getItem("lp:eurRate") || "null");
+    if (cached && cached.rate && (Date.now() - cached.ts) < 12 * 3600 * 1000) return cached.rate;
+    const r = await fetch("https://api.frankfurter.app/latest?from=USD&to=EUR");
+    const j = await r.json();
+    const rate = j && j.rates && j.rates.EUR;
+    if (rate) { localStorage.setItem("lp:eurRate", JSON.stringify({ rate, ts: Date.now() })); return rate; }
+  } catch (e) { console.warn("getEurRate", e); }
+  const cached = JSON.parse(localStorage.getItem("lp:eurRate") || "null"); // último conocido si falla la red
+  return cached && cached.rate ? cached.rate : 0.92; // fallback razonable
+}
+
+// Aplica la divisa elegida (USD/EUR): fija _fx, persiste, avisa a iframes y re-renderiza.
+async function applyCurrency(code) {
+  if (code === "EUR") {
+    const rate = await getEurRate();
+    setCurrency(rate, "€");
+  } else {
+    setCurrency(1, "$");
+  }
+  localStorage.setItem("lp:fx", JSON.stringify({ rate: _fx.rate, sym: _fx.sym, code }));
+  localStorage.setItem("lp:currency", code);
+  pushFxToEngines();
+  renderPortfolio();
+  if (state.tab === "projection") renderHistorico();
+}
+
 async function savePrefs() {
   if (!state.user || !fb.db) return;
   try {
@@ -861,6 +905,19 @@ function setPfStatus(msg, kind) {
   els.pfStatus.classList.remove("hidden");
   els.pfStatus.className = `text-sm ${kind === "err" ? "text-rose-400" : kind === "ok" ? "text-emerald-400" : "text-slate-300"}`;
   els.pfStatus.textContent = msg;
+}
+
+// Placeholders "esqueleto" mientras llegan los primeros resultados
+function renderPortfolioSkeleton() {
+  const cards = Math.min(6, Math.max(2, state.portfolio.length * 2));
+  els.pfSections.innerHTML = `<div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">${
+    Array.from({ length: cards }).map(() => `
+      <div class="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
+        <div class="flex justify-between"><div class="skeleton h-3 w-24 rounded"></div><div class="skeleton h-4 w-14 rounded-full"></div></div>
+        <div class="skeleton h-6 w-full rounded-md"></div>
+        <div class="grid grid-cols-2 gap-2"><div class="skeleton h-10 rounded"></div><div class="skeleton h-10 rounded"></div></div>
+      </div>`).join("")
+  }</div>`;
 }
 
 // Modal de progreso mientras se consultan las direcciones
@@ -908,22 +965,26 @@ async function analyzeAll(opts = {}) {
   if (!state.portfolio.length) { if (!silent) setPfStatus("Añade alguna dirección primero.", "err"); return; }
   els.analyzeAll.disabled = true;
   els.analyzeAll.textContent = silent ? "Actualizando…" : "Analizando…";
-  const results = [];
-  const n = state.portfolio.length;
-  if (!silent) openAnalyzingModal(`Analizando direcciones (0/${n})…`);
-  try {
+    const n = state.portfolio.length;
+  const results = new Array(n); // indexado por posición del portfolio → conserva el orden
+  if (!silent) { openAnalyzingModal(`Analizando direcciones (0/${n})…`); if (!state.results.length) renderPortfolioSkeleton(); }
+  let done = 0;
+  // Dos "carriles" en paralelo: EVM y Solana usan iframes distintos (sin colisión de
+  // estado). Dentro de cada carril es secuencial (mismo iframe, estado compartido).
+  const runLane = async (type) => {
     for (let i = 0; i < n; i++) {
       const entry = state.portfolio[i];
-      const label = entry.label || shortAddr(entry.address);
-      const msg = `Analizando ${label} (${i + 1}/${n})…`;
-      if (!silent) { setPfStatus(msg); updateAnalyzingModal(msg, i, n); }
+      if (entry.type !== type) continue;
       const r = await analyzeAddressHeadless(entry.address, entry.type);
-      results.push({ entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [] });
-      if (!silent) updateAnalyzingModal(msg, i + 1, n);
-      // en silencio no re-renderizamos hasta el final para no parpadear
-      if (!silent) { state.results = results.slice(); renderPortfolio(); }
+      results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [] };
+      done++;
+      const msg = `Analizando direcciones (${done}/${n})…`;
+      if (!silent) { setPfStatus(msg); updateAnalyzingModal(msg, done, n); state.results = results.filter(Boolean); renderPortfolio(); }
     }
-    state.results = results;
+  };
+  try {
+    await Promise.all([runLane("evm"), runLane("sol")]);
+    state.results = results.filter(Boolean);
     renderPortfolio();
     if (state.tab === "projection") renderHistorico(); // mantener Histórico sincronizado
     setLastUpdated();
@@ -1299,6 +1360,7 @@ window.addEventListener("message", (e) => {
   if (d.type === "lp-ready" && (d.app === "evm" || d.app === "sol")) {
     state.ready[d.app] = true;
     pushTokenToEngines(); // dar al engine recién listo el token actual (si hay sesión)
+    pushFxToEngines();     // y la divisa actual
   } else if (d.type === "lp-wallet" && (d.app === "evm" || d.app === "sol")) {
     state.wallet[d.app] = d.address || null;
     if (d.app === state.mode) { renderWalletButton(); if (d.address) els.addr.value = d.address; }
@@ -1468,12 +1530,42 @@ els.addRabby.onclick = () => addConnectedWallet("evm");
 els.addPhantom.onclick = () => addConnectedWallet("sol");
 els.autoRefresh.onchange = applyAutoRefresh;
 els.refreshNow.onclick = refreshActiveTab;
+els.currency.onchange = () => applyCurrency(els.currency.value);
 
 // ============================================================================
 // Init
 // ============================================================================
 
+// Tooltips por toque (móvil): muestra el title de los ⓘ al pulsar.
+function setupTipTaps(doc) {
+  let tip = null;
+  const hide = () => { if (tip) { tip.remove(); tip = null; } };
+  doc.addEventListener("click", (e) => {
+    const el = e.target.closest && e.target.closest(".cursor-help[title]");
+    if (!el) { hide(); return; }
+    e.preventDefault(); e.stopPropagation();
+    hide();
+    tip = doc.createElement("div");
+    tip.textContent = el.getAttribute("title");
+    tip.style.cssText = "position:fixed;z-index:9999;max-width:260px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.4;box-shadow:0 4px 16px rgba(0,0,0,.45)";
+    doc.body.appendChild(tip);
+    const r = el.getBoundingClientRect();
+    let top = r.bottom + 6;
+    let left = Math.min(r.left, doc.documentElement.clientWidth - tip.offsetWidth - 8);
+    if (top + tip.offsetHeight > doc.documentElement.clientHeight) top = r.top - tip.offsetHeight - 6;
+    tip.style.top = Math.max(8, top) + "px";
+    tip.style.left = Math.max(8, left) + "px";
+  }, true);
+  doc.addEventListener("scroll", hide, true);
+}
+
 (function init() {
+  // Cargar los iframes con la versión única (cache-busting propagado a los motores)
+  const V = window.APP_VERSION || "0";
+  if (els.frameEvm && !els.frameEvm.src) els.frameEvm.src = els.frameEvm.dataset.src + "?v=" + V;
+  if (els.frameSol && !els.frameSol.src) els.frameSol.src = els.frameSol.dataset.src + "?v=" + V;
+
+  setupTipTaps(document);
   setTab("quick"); // por defecto, análisis de una dirección (como hasta ahora)
   setMode(state.mode);
   renderAuthArea();
@@ -1483,6 +1575,9 @@ els.refreshNow.onclick = refreshActiveTab;
   // intervalo de auto-actualización: el guardado, o 5 min por defecto
   els.autoRefresh.value = localStorage.getItem("lp:autoRefresh") || "300000";
   applyAutoRefresh();
+
+  // divisa guardada (USD por defecto); _fx ya se cargó de localStorage arriba
+  els.currency.value = localStorage.getItem("lp:currency") || "USD";
 
   // Config guardada por el usuario (override avanzado) o la embebida por defecto.
   const cfg = getStoredFbConfig() || DEFAULT_FB_CONFIG;

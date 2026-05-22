@@ -7,29 +7,37 @@
  * Solana 4).
  */
 
+// Divisa de visualización: los importes se guardan en USD; aquí se convierten al
+// mostrarlos. setCurrency lo cambia (el shell lo controla y avisa a los iframes).
+var _fx = { rate: 1, sym: "$" };
+function setCurrency(rate, sym) { _fx = { rate: Number(rate) || 1, sym: sym || "$" }; }
+try { var _f = JSON.parse(localStorage.getItem("lp:fx") || "null"); if (_f && _f.rate) _fx = { rate: _f.rate, sym: _f.sym || "$" }; } catch (e) {}
+
 // Formato normal con separador de miles: $8,300.00 (tarjetas, resúmenes…)
 function fmtUSD(n) {
   if (n === null || n === undefined || !isFinite(n)) return "—";
+  n = n * _fx.rate; const S = _fx.sym;
   const abs = Math.abs(n);
   const sign = n < 0 ? "-" : "";
-  if (abs === 0) return "$0";
-  if (abs >= 1) return `${sign}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  if (abs >= 0.01) return `${sign}$${abs.toFixed(4)}`;
-  return `${sign}$${abs.toExponential(2)}`;
+  if (abs === 0) return S + "0";
+  if (abs >= 1) return `${sign}${S}${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (abs >= 0.01) return `${sign}${S}${abs.toFixed(4)}`;
+  return `${sign}${S}${abs.toExponential(2)}`;
 }
 
 // Formato compacto: $8.30k / $1.20M (solo ejes y etiquetas de gráficos)
 function fmtUSDc(n) {
   if (n === null || n === undefined || !isFinite(n)) return "—";
+  n = n * _fx.rate; const S = _fx.sym;
   const abs = Math.abs(n);
   const sign = n < 0 ? "-" : "";
-  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`;
-  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(2)}k`;
-  if (abs >= 1) return `${sign}$${abs.toFixed(2)}`;
-  if (abs >= 0.01) return `${sign}$${abs.toFixed(4)}`;
-  if (abs === 0) return "$0";
-  return `${sign}$${abs.toExponential(2)}`;
+  if (abs >= 1e9) return `${sign}${S}${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sign}${S}${(abs / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${sign}${S}${(abs / 1e3).toFixed(2)}k`;
+  if (abs >= 1) return `${sign}${S}${abs.toFixed(2)}`;
+  if (abs >= 0.01) return `${sign}${S}${abs.toFixed(4)}`;
+  if (abs === 0) return S + "0";
+  return `${sign}${S}${abs.toExponential(2)}`;
 }
 
 function fmtToken(n, sym) {
@@ -92,6 +100,35 @@ function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed
         <span>${fmtP(pHigh)}</span>
       </div>
     </div>`;
+}
+
+// Tooltips por toque: en móvil no hay hover, así que al pulsar un elemento con
+// clase "cursor-help" y atributo title se muestra el texto en un pequeño popover.
+// (En escritorio se mantiene el hover nativo del title.)
+function setupTipTaps(doc) {
+  let tip = null;
+  const hide = () => { if (tip) { tip.remove(); tip = null; } };
+  doc.addEventListener("click", (e) => {
+    const el = e.target.closest && e.target.closest(".cursor-help[title]");
+    if (!el) { hide(); return; }
+    e.preventDefault(); e.stopPropagation();
+    hide();
+    tip = doc.createElement("div");
+    tip.textContent = el.getAttribute("title");
+    tip.style.cssText = "position:fixed;z-index:9999;max-width:260px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.4;box-shadow:0 4px 16px rgba(0,0,0,.45)";
+    doc.body.appendChild(tip);
+    const r = el.getBoundingClientRect();
+    let top = r.bottom + 6;
+    let left = Math.min(r.left, doc.documentElement.clientWidth - tip.offsetWidth - 8);
+    if (top + tip.offsetHeight > doc.documentElement.clientHeight) top = r.top - tip.offsetHeight - 6;
+    tip.style.top = Math.max(8, top) + "px";
+    tip.style.left = Math.max(8, left) + "px";
+  }, true);
+  doc.addEventListener("scroll", hide, true);
+}
+if (typeof document !== "undefined") {
+  if (document.readyState !== "loading") setupTipTaps(document);
+  else document.addEventListener("DOMContentLoaded", () => setupTipTaps(document));
 }
 
 // Plugin Chart.js: imprime el valor (compacto) encima de cada barra.

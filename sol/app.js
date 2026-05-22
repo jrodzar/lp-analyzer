@@ -1697,6 +1697,9 @@ document.addEventListener("DOMContentLoaded", init);
     const d = e.data || {};
     if (d.type === "lp-set-token") {
       proxyToken = d.token || "";
+    } else if (d.type === "lp-set-fx") {
+      if (typeof setCurrency === "function") setCurrency(d.rate, d.sym);
+      if (typeof renderAll === "function" && (state.positions || []).length) renderAll();
     } else if (d.type === "lp-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;

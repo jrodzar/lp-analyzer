@@ -170,7 +170,13 @@
     Las fees pendientes muestran <em>feeOwedA/B</em> del programa (ya settled). Las fees aún no settled requerirían recalcular feeGrowthInside con los tick arrays — pendiente para Phase 2. Precios USD vía Jupiter API.
   </footer>
 
-  <script src="../common.js?v=1"></script>
-  <script src="app.js?v=29"></script>
+  <!-- Versión heredada del shell (?v): carga common.js y app.js con cache-busting unificado -->
+  <script>
+    (function () {
+      var v = new URLSearchParams(location.search).get("v") || "0";
+      document.write('<scr' + 'ipt src="../common.js?v=' + v + '"><\/scr' + 'ipt>');
+      document.write('<scr' + 'ipt src="app.js?v=' + v + '"><\/scr' + 'ipt>');
+    })();
+  </script>
 </body>
 </html>

@@ -169,7 +169,13 @@
     Las métricas son estimaciones basadas en datos del subgraph. Precios USD usan los snapshots actuales (no históricos de cada deposit/withdraw). El coste de gas no se incluye en el PnL.
   </footer>
 
-  <script src="../common.js?v=1"></script>
-  <script src="app.js?v=31"></script>
+  <!-- Versión heredada del shell (?v): carga common.js y app.js con cache-busting unificado -->
+  <script>
+    (function () {
+      var v = new URLSearchParams(location.search).get("v") || "0";
+      document.write('<scr' + 'ipt src="../common.js?v=' + v + '"><\/scr' + 'ipt>');
+      document.write('<scr' + 'ipt src="app.js?v=' + v + '"><\/scr' + 'ipt>');
+    })();
+  </script>
 </body>
 </html>
