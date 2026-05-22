@@ -873,7 +873,10 @@ async function getEurRate() {
   try {
     const cached = JSON.parse(localStorage.getItem("lp:eurRate") || "null");
     if (cached && cached.rate && (Date.now() - cached.ts) < 12 * 3600 * 1000) return cached.rate;
-    const r = await fetch("https://api.frankfurter.app/latest?from=USD&to=EUR");
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 4000); // no bloquear si la API tarda
+    const r = await fetch("https://api.frankfurter.app/latest?from=USD&to=EUR", { signal: ctrl.signal });
+    clearTimeout(to);
     const j = await r.json();
     const rate = j && j.rates && j.rates.EUR;
     if (rate) { localStorage.setItem("lp:eurRate", JSON.stringify({ rate, ts: Date.now() })); return rate; }
@@ -882,22 +885,31 @@ async function getEurRate() {
   return cached && cached.rate ? cached.rate : 0.92; // fallback razonable
 }
 
-// Aplica la divisa elegida (USD/EUR): fija _fx, persiste, avisa a iframes y re-renderiza.
-async function applyCurrency(code) {
-  if (code === "EUR") {
-    const rate = await getEurRate();
-    setCurrency(rate, "€");
-  } else {
-    setCurrency(1, "$");
-  }
+// Aplica la divisa elegida (USD/EUR). Aplica AL INSTANTE con el tipo cacheado/fallback
+// (sin esperar a la red) y refina el tipo real en segundo plano.
+function applyFxNow(code) {
   localStorage.setItem("lp:fx", JSON.stringify({ rate: _fx.rate, sym: _fx.sym, code }));
   localStorage.setItem("lp:currency", code);
   pushFxToEngines();
-  // Las fichas del portfolio son HTML pre-renderizado por el motor con su divisa →
-  // re-analizar (cacheado, rápido) para regenerarlas en la nueva moneda. Si no hay
-  // resultados aún, basta re-renderizar el resumen.
-  if (state.results.length) analyzeAll({ silent: true });
-  else { renderPortfolio(); if (state.tab === "projection") renderHistorico(); }
+  renderPortfolio();                                   // resumen ya en la nueva divisa (instantáneo)
+  if (state.tab === "projection") renderHistorico();
+  if (state.results.length) analyzeAll({ silent: true }); // regenerar fichas (HTML del motor) en la nueva divisa
+}
+async function applyCurrency(code) {
+  if (code === "EUR") {
+    const cached = JSON.parse(localStorage.getItem("lp:eurRate") || "null");
+    setCurrency((cached && cached.rate) || 0.92, "€"); // tipo provisional inmediato
+  } else {
+    setCurrency(1, "$");
+  }
+  applyFxNow(code);
+  // refinar el tipo real de EUR en segundo plano; si cambia, re-aplicar
+  if (code === "EUR") {
+    try {
+      const fresh = await getEurRate();
+      if (fresh && Math.abs(fresh - _fx.rate) > 1e-6) { setCurrency(fresh, "€"); applyFxNow(code); }
+    } catch (e) {}
+  }
 }
 
 async function savePrefs() {
