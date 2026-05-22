@@ -156,18 +156,25 @@ function rpcUrl() {
 
 async function rpc(method, params) {
   const url = rpcUrl();
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...proxyAuth(url) },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`RPC HTTP ${res.status}: ${text.slice(0, 120)}`);
+  const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method, params });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let lastErr;
+  // reintentos con backoff ante 429/5xx (rate limit del proxy o de Helius)
+  for (let attempt = 0; attempt < 4; attempt++) {
+    let res;
+    try { res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", ...proxyAuth(url) }, body }); }
+    catch (e) { lastErr = e; if (attempt < 3) { await sleep(500 * (attempt + 1)); continue; } throw e; }
+    if (res.status === 429 || res.status >= 500) {
+      lastErr = new Error(`RPC HTTP ${res.status}`);
+      if (attempt < 3) { await sleep(700 * (attempt + 1)); continue; } // backoff: 0.7s, 1.4s, 2.1s
+      throw lastErr;
+    }
+    if (!res.ok) { const text = await res.text().catch(() => ""); throw new Error(`RPC HTTP ${res.status}: ${text.slice(0, 120)}`); }
+    const json = await res.json();
+    if (json.error) throw new Error(`RPC: ${json.error.message || JSON.stringify(json.error)}`);
+    return json.result;
   }
-  const json = await res.json();
-  if (json.error) throw new Error(`RPC: ${json.error.message || JSON.stringify(json.error)}`);
-  return json.result;
+  throw lastErr || new Error("RPC falló");
 }
 
 function isValidSolanaAddress(addr) {

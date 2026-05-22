@@ -890,10 +890,12 @@ async function getEurRate() {
 function applyFxNow(code) {
   localStorage.setItem("lp:fx", JSON.stringify({ rate: _fx.rate, sym: _fx.sym, code }));
   localStorage.setItem("lp:currency", code);
-  pushFxToEngines();
-  renderPortfolio();                                   // resumen ya en la nueva divisa (instantáneo)
+  pushFxToEngines();      // Quick reacciona al instante (el motor re-renderiza sus fichas)
+  renderPortfolio();      // resumen del portfolio ya en la nueva divisa (instantáneo)
   if (state.tab === "projection") renderHistorico();
-  if (state.results.length) analyzeAll({ silent: true }); // regenerar fichas (HTML del motor) en la nueva divisa
+  // NO re-analizamos: re-hacer el descubrimiento RPC en cada cambio de divisa
+  // disparaba límites de peticiones (429). Las fichas del portfolio adoptan la
+  // divisa en el próximo "Analizar todo" / auto-actualización.
 }
 async function applyCurrency(code) {
   if (code === "EUR") {
