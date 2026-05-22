@@ -1407,6 +1407,10 @@ function renderHistorico() {
     { label: "Capital aportado", data: curves.aportado, borderColor: "#94a3b8", borderDash: [5, 4], pointRadius: 2, borderWidth: 1.5, tension: 0.2 },
     { label: "Valor acumulado", data: curves.valor, borderColor: "#34d399", backgroundColor: "rgba(52,211,153,0.12)", pointRadius: 2, borderWidth: 2.5, fill: true, tension: 0.2 },
   ];
+  // formato del eje según el rango: pocas semanas → "día mes"; meses/años → "mes año"
+  const xs = curves.valor.map((p) => p.x);
+  const spanDays = xs.length ? (Math.max(...xs) - Math.min(...xs)) / 86400000 : 0;
+  const xFmt = spanDays > 120 ? { month: "short", year: "2-digit" } : { day: "numeric", month: "short" };
   if (pfCharts.projection) { pfCharts.projection.destroy(); pfCharts.projection = null; }
   pfCharts.projection = new Chart(els.chartProjection, {
     type: "line",
@@ -1415,7 +1419,7 @@ function renderHistorico() {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { labels: { color: "#cbd5e1", font: { size: 10 } } }, tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}` } } },
       scales: {
-        x: { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: dateTick({ month: "short", year: "2-digit" }) }, grid: { color: "#1e293b" } },
+        x: { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: dateTick(xFmt) }, grid: { color: "#1e293b" } },
         y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSDc(v) }, grid: { color: "#1e293b" } },
       },
     },
