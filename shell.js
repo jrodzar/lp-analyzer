@@ -373,7 +373,18 @@ async function initFirebase(config) {
 }
 
 async function signInWithGoogle() {
-  if (!fb.auth) { openFbSetup(); return; }
+  if (!fb.auth) {
+    // Firebase todavía cargando (import async de CDN); esperar hasta 5 s
+    const msgEl = state.tab === "quick" ? els.quickGateMsg : els.gateMsg;
+    if (msgEl) { msgEl.textContent = "Conectando con Firebase, espera un momento…"; msgEl.classList.remove("hidden"); }
+    let waited = 0;
+    while (!fb.auth && waited < 5000) { await new Promise(r => setTimeout(r, 200)); waited += 200; }
+    if (!fb.auth) {
+      if (msgEl) { msgEl.textContent = "No se pudo conectar con Firebase. Recarga la página."; msgEl.classList.remove("hidden"); }
+      return;
+    }
+    if (msgEl) msgEl.classList.add("hidden");
+  }
   if (els.gateMsg) els.gateMsg.classList.add("hidden");
   if (els.quickGateMsg) els.quickGateMsg.classList.add("hidden");
   try {
@@ -381,7 +392,7 @@ async function signInWithGoogle() {
     await fb.authMod.signInWithPopup(fb.auth, provider);
   } catch (e) {
     console.error(e);
-    if (els.quickGateMsg && state.tab === "quick") {
+    if (state.tab === "quick" && els.quickGateMsg) {
       els.quickGateMsg.textContent = `Error de login: ${e.message}`;
       els.quickGateMsg.classList.remove("hidden");
     } else {
@@ -1413,7 +1424,7 @@ els.wallet.onclick = () => postToActive({ type: state.wallet[state.mode] ? "lp-d
 
 els.loginBtn.onclick = signInWithGoogle;
 els.quickLoginBtn.onclick = signInWithGoogle;
-els.openFbSetup.onclick = openFbSetup;
+if (els.openFbSetup) els.openFbSetup.onclick = openFbSetup;
 els.fbSave.onclick = saveFbConfig;
 els.encSubmit.onclick = handleEncSubmit;
 els.encCancel.onclick = () => closeEncModal(null);
