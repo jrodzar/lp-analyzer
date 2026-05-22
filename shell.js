@@ -140,6 +140,15 @@ function fmtUSDc(n) {
 }
 function pnlColor(n) { if (!isFinite(n)) return "text-slate-400"; return n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "text-slate-300"; }
 function distinctColor(i) { const h = Math.round((i * 137.508) % 360); return `hsl(${h} 70% 60%)`; }
+// Formatea ticks de fecha y omite repetidos consecutivos (evita fechas duplicadas en rangos cortos)
+function dateTick(fmtOpts) {
+  return function (value, index, ticks) {
+    const f = (v) => new Date(v).toLocaleDateString("es-ES", fmtOpts);
+    const cur = f(value);
+    const prev = index > 0 && ticks[index - 1] ? f(ticks[index - 1].value) : null;
+    return cur === prev ? "" : cur;
+  };
+}
 
 // ============================================================================
 // Tabs
@@ -1072,7 +1081,7 @@ function renderFeesTimelineChart() {
       scales: {
         x: {
           type: "linear",
-          ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: (v) => new Date(v).toLocaleDateString("es-ES", { day: "numeric", month: "short" }) },
+          ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: dateTick({ day: "numeric", month: "short" }) },
           grid: { color: "#1e293b" },
         },
         y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSDc(v) }, grid: { color: "#1e293b" } },
@@ -1111,7 +1120,7 @@ function renderFeesTimelineTotalChart() {
       tooltip: { callbacks: { label: (c) => `Total: ${fmtUSD(c.parsed.y)}` } },
     },
     scales: {
-      x: { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: (v) => new Date(v).toLocaleDateString("es-ES", { day: "numeric", month: "short" }) }, grid: { color: "#1e293b" } },
+      x: { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: dateTick({ day: "numeric", month: "short" }) }, grid: { color: "#1e293b" } },
       y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSD(v) }, grid: { color: "#1e293b" } },
     },
   };
@@ -1406,7 +1415,7 @@ function renderHistorico() {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { labels: { color: "#cbd5e1", font: { size: 10 } } }, tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}` } } },
       scales: {
-        x: { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: (v) => new Date(v).toLocaleDateString("es-ES", { month: "short", year: "2-digit" }) }, grid: { color: "#1e293b" } },
+        x: { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: dateTick({ month: "short", year: "2-digit" }) }, grid: { color: "#1e293b" } },
         y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSDc(v) }, grid: { color: "#1e293b" } },
       },
     },

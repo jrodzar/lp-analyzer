@@ -1768,7 +1768,7 @@ function chartBaseOptions({ time = false } = {}) {
     },
     scales: {
       x: time
-        ? { type: "linear", ticks: { color: "#94a3b8", callback: (v) => new Date(v).toISOString().slice(0, 10) }, grid: { color: "#1e293b" } }
+        ? { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: (v, i, ticks) => { const f = (x) => new Date(x).toISOString().slice(0, 10); const cur = f(v); const prev = i > 0 && ticks[i - 1] ? f(ticks[i - 1].value) : null; return cur === prev ? "" : cur; } }, grid: { color: "#1e293b" } }
         : { ticks: { color: "#94a3b8" }, grid: { color: "#1e293b" } },
       y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSDc(v) }, grid: { color: "#1e293b" } },
     },
