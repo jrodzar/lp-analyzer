@@ -1069,26 +1069,74 @@ async function fetchSnapshotsForChart(positions) {
   return Promise.all(tasks);
 }
 
+// Precio USD histórico de tokens por día vía The Graph (tokenDayDatas). Cacheado.
+const _dayPriceCache = new Map(); // `${chain}:${token}:${date}` -> priceUSD | null
+async function fetchTokenDayPrices(chainKey, tokenIds, dates) {
+  const out = {};
+  const toks = tokenIds.filter(Boolean).map((t) => t.toLowerCase());
+  const missTok = new Set(), missDate = new Set();
+  for (const tok of toks) for (const d of dates) {
+    const k = `${chainKey}:${tok}:${d}`;
+    if (_dayPriceCache.has(k)) { const v = _dayPriceCache.get(k); if (v != null) out[`${tok}:${d}`] = v; }
+    else { missTok.add(tok); missDate.add(d); }
+  }
+  if (missTok.size && missDate.size) {
+    const q = `query($t:[String!]!,$d:[Int!]!){ tokenDayDatas(first:1000, where:{ token_in:$t, date_in:$d }){ date token{id} priceUSD } }`;
+    const data = await gql(chainKey, q, { t: [...missTok], d: [...missDate] }); // si falla, propaga (lo captura el llamador)
+    for (const r of (data.tokenDayDatas || [])) {
+      const tok = (r.token.id || "").toLowerCase(), d = Number(r.date), v = Number(r.priceUSD);
+      _dayPriceCache.set(`${chainKey}:${tok}:${d}`, isFinite(v) ? v : null);
+      if (isFinite(v)) out[`${tok}:${d}`] = v;
+    }
+    for (const tok of missTok) for (const d of missDate) { const k = `${chainKey}:${tok}:${d}`; if (!_dayPriceCache.has(k)) _dayPriceCache.set(k, null); }
+  }
+  return out;
+}
+
 /**
- * Construye una línea temporal de fees acumuladas (cobradas) para el portfolio.
- * Recibe bundles { position, snapshots[] } y devuelve [{ts, feesUSD}] por día.
- * Los valores de snapshot son acumulados por posición; se suman en el tiempo.
+ * Serie temporal por posición con precios HISTÓRICOS (precio de cada token en la
+ * fecha de cada movimiento, vía tokenDayDatas). Reconstruye el coste base real por
+ * deltas entre snapshots y fija depositedUSD/withdrawnUSD/pnlUSD en la posición.
+ * Si no hay precio histórico de algún token/fecha, cae al precio actual (sin regresión).
  */
-function buildPortfolioTimeline(bundles) {
-  // Devuelve una serie por posición: [{posId, label, points:[{ts,feesUSD}]}]
+async function buildPortfolioTimeline(bundles) {
   const result = [];
   for (const b of bundles) {
     const p = b.position;
-    if (!b.snapshots?.length) continue;
+    const snaps = b.snapshots;
+    if (!snaps || !snaps.length) continue;
+    const sorted = [...snaps].sort((a, c) => Number(a.timestamp) - Number(c.timestamp));
+    const dates = [...new Set(sorted.map((s) => Math.floor(Number(s.timestamp) / 86400) * 86400))];
+    let prices = {};
+    try { prices = await fetchTokenDayPrices(p.chainKey, [p.token0.id, p.token1.id], dates); } catch (e) { console.warn("tokenDayDatas", p.chainKey, e); }
+    const t0 = (p.token0.id || "").toLowerCase(), t1 = (p.token1.id || "").toLowerCase();
+    const priceAt = (tok, ts) => { const v = prices[`${tok}:${Math.floor(Number(ts) / 86400) * 86400}`]; return (v != null && isFinite(v)) ? v : null; };
+    let pD0 = 0, pD1 = 0, pW0 = 0, pW1 = 0, pC0 = 0, pC1 = 0;
+    let costBasis = 0, withdrawn = 0, fees = 0, anyHist = false, anyCur = false;
     const byDay = new Map();
-    for (const s of b.snapshots) {
-      const feesUSD = Number(s.collectedFeesToken0) * p.token0.priceUSD + Number(s.collectedFeesToken1) * p.token1.priceUSD;
-      const dep = Number(s.depositedToken0) * p.token0.priceUSD + Number(s.depositedToken1) * p.token1.priceUSD;
-      const wd = Number(s.withdrawnToken0 || 0) * p.token0.priceUSD + Number(s.withdrawnToken1 || 0) * p.token1.priceUSD;
-      const day = Math.floor(Number(s.timestamp) * 1000 / 86400000) * 86400000;
-      byDay.set(day, { feesUSD, depositedUSD: dep, withdrawnUSD: wd }); // snapshots acumulados: último del día
+    for (const s of sorted) {
+      const ts = Number(s.timestamp);
+      const h0 = priceAt(t0, ts), h1 = priceAt(t1, ts);
+      const pr0 = h0 != null ? h0 : (p.token0.priceUSD || 0);
+      const pr1 = h1 != null ? h1 : (p.token1.priceUSD || 0);
+      if (h0 != null || h1 != null) anyHist = true; if (h0 == null || h1 == null) anyCur = true;
+      const d0 = Number(s.depositedToken0), d1 = Number(s.depositedToken1);
+      const w0 = Number(s.withdrawnToken0 || 0), w1 = Number(s.withdrawnToken1 || 0);
+      const c0 = Number(s.collectedFeesToken0), c1 = Number(s.collectedFeesToken1);
+      costBasis += Math.max(0, d0 - pD0) * pr0 + Math.max(0, d1 - pD1) * pr1;
+      withdrawn += Math.max(0, w0 - pW0) * pr0 + Math.max(0, w1 - pW1) * pr1;
+      fees      += Math.max(0, c0 - pC0) * pr0 + Math.max(0, c1 - pC1) * pr1;
+      pD0 = d0; pD1 = d1; pW0 = w0; pW1 = w1; pC0 = c0; pC1 = c1;
+      const day = Math.floor(ts * 1000 / 86400000) * 86400000;
+      byDay.set(day, { depositedUSD: Math.max(0, costBasis - withdrawn), withdrawnUSD: withdrawn, feesUSD: fees });
     }
-    const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
+    if (costBasis > 0) { // fijar coste base/PnL históricos en la posición
+      p.depositedUSD = costBasis;
+      p.withdrawnUSD = withdrawn;
+      p.pnlUSD = (p.currentValueUSD || 0) + withdrawn + fees + (p.uncollectedUSD || 0) - costBasis;
+      p.histBasis = anyHist && !anyCur; // true solo si TODO se valoró con histórico
+    }
+    const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, c) => a.ts - c.ts);
     if (points.length) result.push({ posId: p.id, label: `${p.token0.symbol}/${p.token1.symbol}`, points });
   }
   return result;
@@ -1660,10 +1708,12 @@ async function updateFeesChart() {
   let series = [];
   // 1) Posiciones de subgraph → snapshots (fees cobradas acumuladas)
   const subgraphPos = (state.positions || []).filter((p) => !p._lending && !p._rpcOnly && p.id && !p.closed);
+  let didHist = false;
   if (subgraphPos.length) {
     try {
       const bundles = await fetchSnapshotsForChart(subgraphPos);
-      series = series.concat(buildPortfolioTimeline(bundles.filter((b) => b.snapshots.length)));
+      series = series.concat(await buildPortfolioTimeline(bundles.filter((b) => b.snapshots.length))); // valora con precios históricos + fija PnL
+      didHist = true;
     } catch (e) { console.warn("snapshots fees chart:", e); }
   }
   // 2) HyperEVM (RPC) + lending → series ya reconstruidas de eventos on-chain
@@ -1674,6 +1724,8 @@ async function updateFeesChart() {
     }
   }
   renderFeesChart(series);
+  // buildPortfolioTimeline pudo actualizar coste base/PnL históricos → refrescar tarjetas
+  if (didHist) { renderSummary(); renderPositions(); }
 }
 
 // Pinta el gráfico de "Fees acumuladas" a partir de series [{label, points:[{ts,feesUSD}]}]
@@ -2016,7 +2068,7 @@ document.addEventListener("DOMContentLoaded", init);
                   return { position: p, snapshots: data.positionSnapshots || [] };
                 } catch { return { position: p, snapshots: [] }; }
               }));
-              timeline = buildPortfolioTimeline(bundles);
+              timeline = await buildPortfolioTimeline(bundles);
             }
           } catch (e) { console.warn("timeline build failed:", e); }
           // añadir series propias de HyperEVM (RPC) y lending (reconstruidas de eventos)

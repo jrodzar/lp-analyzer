@@ -1536,6 +1536,7 @@ async function fetchEnhancedTxs(owner) {
 async function birdeyePriceAt(mint, unixSec) {
   if (SOL_STABLES.has(mint)) return 1;
   if ((!state.birdeyeKey && !PROXY_BASE) || !mint || !unixSec) return null;
+  if (!state._beStats) state._beStats = { ok: 0, denied: 0, rate: 0, error: 0, partial: 0 };
   if (!state._bePriceCache) state._bePriceCache = new Map();
   const dayKey = mint + ":" + Math.floor(unixSec / 86400);
   if (state._bePriceCache.has(dayKey)) return state._bePriceCache.get(dayKey);
@@ -1656,7 +1657,7 @@ async function enrichSolanaPnL(owner) {
 }
 
 async function fetchSolanaHistory(owner) {
-  if (!state.heliusKey || !owner) return [];
+  if ((!state.heliusKey && !PROXY_BASE) || !owner) return [];
   const priceOf = (mint) => (state.prices[mint] != null ? state.prices[mint] : (SOL_STABLES.has(mint) ? 1 : 0));
   const txs = await fetchEnhancedTxs(owner);
   // mapa vault (cuenta de token del pool) -> posición, para atribuir cada transferencia
@@ -1680,7 +1681,9 @@ async function fetchSolanaHistory(owner) {
     // agregado por tx para el fallback
     let aggSent = 0, aggRecv = 0;
     for (const t of (tx.tokenTransfers || [])) {
-      const p = priceOf(t.mint); if (!p) continue;
+      let p = await birdeyePriceAt(t.mint, ts); // precio histórico (cacheado por mint+día)
+      if (p == null) p = priceOf(t.mint);        // fallback al precio actual si no hay histórico
+      if (!p) continue;
       const usd = (t.tokenAmount || 0) * p;
       let counterparty = null, net = 0;
       if (t.fromUserAccount === owner) { counterparty = t.toTokenAccount; net = usd; aggSent += usd; }       // depósito
