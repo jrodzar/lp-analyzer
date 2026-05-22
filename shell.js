@@ -24,8 +24,10 @@ const els = {
   encPass: $("enc-pass"), encPass2: $("enc-pass2"), encRemember: $("enc-remember"),
   encWarn: $("enc-warn"), encAck: $("enc-ack"), encErr: $("enc-err"), encSubmit: $("enc-submit"),
   encCancel: $("enc-cancel"), changePass: $("change-pass"),
-  // login
+  // login — portfolio
   loginGate: $("login-gate"), loginBtn: $("login-btn"), portfolioArea: $("portfolio-area"), gateMsg: $("gate-msg"),
+  // login — quick
+  quickLoginGate: $("quick-login-gate"), quickContent: $("quick-content"), quickLoginBtn: $("quick-login-btn"), quickGateMsg: $("quick-gate-msg"),
   // gestión de accesos (admin)
   manageAccess: $("manage-access"), accessModal: $("access-modal"), accessClose: $("access-close"),
   accessEmail: $("access-email"), accessAdd: $("access-add"), accessErr: $("access-err"), accessList: $("access-list"),
@@ -373,12 +375,18 @@ async function initFirebase(config) {
 async function signInWithGoogle() {
   if (!fb.auth) { openFbSetup(); return; }
   if (els.gateMsg) els.gateMsg.classList.add("hidden");
+  if (els.quickGateMsg) els.quickGateMsg.classList.add("hidden");
   try {
     const provider = new fb.authMod.GoogleAuthProvider();
     await fb.authMod.signInWithPopup(fb.auth, provider);
   } catch (e) {
     console.error(e);
-    setPfStatus(`Error de login: ${e.message}`, "err");
+    if (els.quickGateMsg && state.tab === "quick") {
+      els.quickGateMsg.textContent = `Error de login: ${e.message}`;
+      els.quickGateMsg.classList.remove("hidden");
+    } else {
+      setPfStatus(`Error de login: ${e.message}`, "err");
+    }
   }
 }
 
@@ -494,6 +502,9 @@ async function onAuthChange(user) {
     els.manageAccess.classList.toggle("hidden", !isAdminUser());
     els.loginGate.classList.add("hidden");
     els.portfolioArea.classList.remove("hidden");
+    // Quick tab: ocultar gate, mostrar contenido
+    els.quickLoginGate.classList.add("hidden");
+    els.quickContent.classList.remove("hidden");
     setTab("portfolio"); // al loguear, ir al portfolio
     await loadPortfolio(user.uid);
     renderPrefs();
@@ -506,9 +517,12 @@ async function onAuthChange(user) {
     els.loginGate.classList.remove("hidden");
     els.portfolioArea.classList.add("hidden");
     els.manageAccess.classList.add("hidden");
+    // Quick tab: mostrar gate, ocultar contenido
+    els.quickLoginGate.classList.remove("hidden");
+    els.quickContent.classList.add("hidden");
     state.portfolio = [];
     crypto_.key = null; _pendingEnc = null;
-    setTab("quick"); // sin sesión, la app funciona como antes (una dirección)
+    setTab("quick"); // sin sesión, mostrar el tab quick con el gate
   }
 }
 
@@ -1398,6 +1412,7 @@ els.settings.onclick = () => postToActive({ type: "lp-open-settings" });
 els.wallet.onclick = () => postToActive({ type: state.wallet[state.mode] ? "lp-disconnect-wallet" : "lp-connect-wallet" });
 
 els.loginBtn.onclick = signInWithGoogle;
+els.quickLoginBtn.onclick = signInWithGoogle;
 els.openFbSetup.onclick = openFbSetup;
 els.fbSave.onclick = saveFbConfig;
 els.encSubmit.onclick = handleEncSubmit;
