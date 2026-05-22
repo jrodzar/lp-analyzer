@@ -1522,7 +1522,7 @@ function positionCard(p) {
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees</div>
         <div class="font-semibold text-emerald-400 leading-tight">${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>
         <div class="text-amber-300 font-semibold leading-tight">${p.uncollectedUSD === null ? "n/d" : fmtUSD(p.uncollectedUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>
-        <div class="text-[10px] text-slate-400 mt-0.5">APR ~ ${isFinite(p.apr) ? p.apr.toFixed(1) + "%" : "—"}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${isFinite(p.apr) ? p.apr.toFixed(1) + "%" : "—"}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL <span class="cursor-help" title="Valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Estimación; no incluye gas.">ⓘ</span></div>

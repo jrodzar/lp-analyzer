@@ -1175,7 +1175,8 @@ function positionCard(p) {
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees</div>
         ${p.pnlBasis === "birdeye" ? `<div class="font-semibold text-emerald-400 leading-tight">${fmtUSD(p.feesCollectedUSD || 0)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>` : ""}
         <div class="font-semibold text-amber-300 leading-tight">${fmtUSD(p.feesPendingUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>
-        <div class="text-[10px] text-slate-400 mt-0.5">${fmtToken(p.feesA, p.token0.symbol)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${(p.apr != null && isFinite(p.apr)) ? p.apr.toFixed(1) + "%" : "—"}</div>
+        <div class="text-[10px] text-slate-400">${fmtToken(p.feesA, p.token0.symbol)}</div>
         <div class="text-[10px] text-slate-400">${fmtToken(p.feesB, p.token1.symbol)}</div>
       </div>
       ${p.pnlBasis === "birdeye" ? `
@@ -1549,6 +1550,10 @@ async function enrichSolanaPnL(owner) {
     for (const [mint, amt] of netAmt) hodlUSD += Math.max(0, amt) * curPrice(mint);
 
     const pendFees = p.feesPendingUSD || 0;
+    // antigüedad desde el primer depósito → APR de fees anualizado
+    const firstDep = evs.find((e) => e.dir === "out");
+    const openedAt = firstDep ? firstDep.ts : null;
+    const ageDays = openedAt ? Math.max((Date.now() / 1000 - openedAt) / 86400, 1 / 24) : null;
     p.depositedUSD = costBasisUSD;
     p.withdrawnUSD = withdrawnUSD;
     p.feesCollectedUSD = feesCollectedUSD;
@@ -1556,6 +1561,9 @@ async function enrichSolanaPnL(owner) {
     p.ilUSD = (p.currentValueUSD || 0) - hodlUSD;
     p.ilPct = hodlUSD > 0 ? (p.ilUSD / hodlUSD) * 100 : null;
     p.pnlUSD = (p.currentValueUSD || 0) + withdrawnUSD + feesCollectedUSD + pendFees - costBasisUSD;
+    p.openedAt = openedAt;
+    p.ageDays = ageDays;
+    p.apr = (ageDays && costBasisUSD > 0) ? ((feesCollectedUSD + pendFees) / costBasisUSD) * (365 / ageDays) * 100 : null;
     p.pnlBasis = "birdeye";
   }
 }
