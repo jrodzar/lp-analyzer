@@ -34,6 +34,7 @@ const els = {
   // portfolio crud
   pfLabel: $("pf-label"), pfAddress: $("pf-address"), pfAdd: $("pf-add"), pfAddErr: $("pf-add-err"),
   pfList: $("pf-list"), analyzeAll: $("analyze-all"), pfStatus: $("pf-status"), pfCsv: $("pf-csv"),
+  pfCta: $("pf-cta"), pfCtaBtn: $("pf-cta-btn"),
   addRabby: $("add-rabby"), addPhantom: $("add-phantom"),
   analyzingModal: $("analyzing-modal"), analyzingMsg: $("analyzing-msg"), analyzingBar: $("analyzing-bar"),
   // portfolio results
@@ -710,8 +711,11 @@ function renderPortfolioList() {
   els.pfList.innerHTML = "";
   if (!state.portfolio.length) {
     els.pfList.innerHTML = `<div class="text-xs text-slate-500">Aún no hay direcciones. Añade una arriba.</div>`;
+    els.pfCta.classList.add("hidden");
     return;
   }
+  // Mostrar CTA si hay direcciones pero aún no se ha analizado nada
+  els.pfCta.classList.toggle("hidden", state.results.length > 0);
   state.portfolio.forEach((p, idx) => {
     const row = document.createElement("div");
     row.className = "flex items-center gap-2 text-sm bg-slate-950/40 rounded-lg px-3 py-2";
@@ -934,6 +938,9 @@ function renderPortfolio() {
   let colorIdx = 0;
   const colorOf = new Map();
   for (const r of state.results) for (const it of visItems(r)) colorOf.set(it, distinctColor(colorIdx++));
+
+  // ocultar CTA en cuanto haya resultados
+  if (state.results.length > 0) els.pfCta.classList.add("hidden");
 
   // resumen global
   els.pfSummary.classList.toggle("hidden", all.length === 0 && state.results.length === 0);
@@ -1424,6 +1431,7 @@ els.wallet.onclick = () => postToActive({ type: state.wallet[state.mode] ? "lp-d
 
 els.loginBtn.onclick = signInWithGoogle;
 els.quickLoginBtn.onclick = signInWithGoogle;
+els.pfCtaBtn.onclick = () => analyzeAll();
 if (els.openFbSetup) els.openFbSetup.onclick = openFbSetup;
 els.fbSave.onclick = saveFbConfig;
 els.encSubmit.onclick = handleEncSubmit;

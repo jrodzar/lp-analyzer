@@ -190,6 +190,19 @@
 
         <div id="pf-status" class="text-sm hidden"></div>
 
+        <!-- CTA: primera vez sin resultados -->
+        <div id="pf-cta" class="hidden rounded-xl border border-[#ECE600]/30 bg-[#ECE600]/5 p-8 text-center space-y-4">
+          <div class="text-4xl">📊</div>
+          <div>
+            <p class="text-base font-semibold text-slate-100">¿Listo para ver tus posiciones?</p>
+            <p class="text-sm text-slate-400 mt-1">Pulsa el botón para consultar todas tus wallets en tiempo real: valor, fees, IL y PnL.</p>
+          </div>
+          <button id="pf-cta-btn" class="inline-flex items-center gap-2 px-8 py-3 rounded-xl bg-[#ECE600] hover:bg-[#f5ef4d] active:scale-95 text-slate-900 font-bold text-sm transition-transform shadow-lg shadow-[#ECE600]/20">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Analizar todo
+          </button>
+        </div>
+
         <!-- Resumen global -->
         <section id="pf-summary" class="hidden">
           <h2 class="text-lg font-semibold mb-3">Resumen global</h2>
@@ -344,6 +357,6 @@
 
   </main>
 
-  <script src="shell.js?v=42"></script>
+  <script src="shell.js?v=43"></script>
 </body>
 </html>
