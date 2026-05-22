@@ -175,6 +175,11 @@ function setTab(tab) {
   els.tabQuick.classList.toggle("hidden", tab !== "quick");
   els.tabProjection.classList.toggle("hidden", tab !== "projection");
   if (tab === "projection") renderHistorico();
+  // El iframe de Quick se comparte con "Analizar todo" (headless). Si entras a Quick
+  // sin una dirección escrita, limpia los resultados que pudo dejar el portfolio.
+  if (tab === "quick" && !els.addr.value.trim()) {
+    [els.frameEvm, els.frameSol].forEach((f) => { if (f && f.contentWindow) f.contentWindow.postMessage({ type: "lp-clear" }, "*"); });
+  }
 }
 
 // ============================================================================

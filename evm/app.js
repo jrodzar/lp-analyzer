@@ -1936,7 +1936,13 @@ document.addEventListener("DOMContentLoaded", init);
   }
   window.addEventListener("message", (e) => {
     const d = e.data || {};
-    if (d.type === "lp-set-token") {
+    if (d.type === "lp-clear") {
+      if (typeof state !== "undefined") state.positions = [];
+      ["positions-section", "summary-section", "charts-section", "fees-chart-panel"].forEach((id) => { const e = document.getElementById(id); if (e) e.classList.add("hidden"); });
+      const es = document.getElementById("empty-state"); if (es) es.classList.remove("hidden");
+      const sm = document.getElementById("status-msg"); if (sm) sm.classList.add("hidden");
+      const inp = document.getElementById("addr-input"); if (inp) inp.value = "";
+    } else if (d.type === "lp-set-token") {
       proxyToken = d.token || "";
     } else if (d.type === "lp-set-fx") {
       if (typeof setCurrency === "function") setCurrency(d.rate, d.sym);
