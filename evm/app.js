@@ -1901,9 +1901,13 @@ document.addEventListener("DOMContentLoaded", init);
   // Normaliza las posiciones EVM para el portfolio del shell
   function toPortfolioItems() {
     return (state.positions || []).map((p) => {
+      // cardHTML: la MISMA ficha que se ve en Quick (misma función positionCard/lendingCard)
+      // → Portfolio y Quick siempre consistentes.
+      let cardHTML = "";
+      try { cardHTML = (p._lending ? lendingCard(p) : positionCard(p)).outerHTML; } catch (e) {}
       if (p._lending) {
         return {
-          kind: "evm", lending: true,
+          kind: "evm", lending: true, cardHTML,
           venue: `Revert Lend · ${p.chainName}`,
           pair: `${p.asset} (lending)`,
           valueUSD: p.currentValueUSD || 0,
@@ -1917,7 +1921,7 @@ document.addEventListener("DOMContentLoaded", init);
         };
       }
       return {
-        kind: "evm",
+        kind: "evm", cardHTML,
         venue: (state.chains[p.chainKey] && state.chains[p.chainKey].name) || p.chainKey,
         pair: `${p.token0.symbol}/${p.token1.symbol}`,
         valueUSD: p.currentValueUSD || 0,

@@ -1686,6 +1686,7 @@ document.addEventListener("DOMContentLoaded", init);
   function toPortfolioItems() {
     return (state.positions || []).map((p) => ({
       kind: "sol",
+      cardHTML: (() => { try { return positionCard(p).outerHTML; } catch (e) { return ""; } })(), // misma ficha que en Quick
       venue: (PROTOCOLS[p.protocol] && PROTOCOLS[p.protocol].name) || p.protocol,
       pair: `${p.token0.symbol}/${p.token1.symbol}`,
       valueUSD: p.currentValueUSD || 0,

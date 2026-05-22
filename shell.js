@@ -893,8 +893,11 @@ async function applyCurrency(code) {
   localStorage.setItem("lp:fx", JSON.stringify({ rate: _fx.rate, sym: _fx.sym, code }));
   localStorage.setItem("lp:currency", code);
   pushFxToEngines();
-  renderPortfolio();
-  if (state.tab === "projection") renderHistorico();
+  // Las fichas del portfolio son HTML pre-renderizado por el motor con su divisa →
+  // re-analizar (cacheado, rápido) para regenerarlas en la nueva moneda. Si no hay
+  // resultados aún, basta re-renderizar el resumen.
+  if (state.results.length) analyzeAll({ silent: true });
+  else { renderPortfolio(); if (state.tab === "projection") renderHistorico(); }
 }
 
 async function savePrefs() {
@@ -1266,6 +1269,16 @@ function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed
 }
 
 function portfolioCard(it, color) {
+  // Si el motor envió la ficha completa (misma que en Quick), úsala tal cual
+  // para que Portfolio y Quick sean idénticas. Solo sobrescribimos el borde con
+  // el color global distintivo.
+  if (it.cardHTML) {
+    const tpl = document.createElement("template");
+    tpl.innerHTML = it.cardHTML.trim();
+    const node = tpl.content.firstElementChild;
+    if (node) { if (color) node.style.borderLeft = `3px solid ${color}`; return node; }
+  }
+  // Respaldo: ficha simple anterior (por si faltara cardHTML)
   const el = document.createElement("article");
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-2";
   el.style.borderLeft = `3px solid ${color}`;
