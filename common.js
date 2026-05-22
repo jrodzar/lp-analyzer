@@ -7,11 +7,9 @@
  * Solana 4).
  */
 
-// Divisa de visualización: los importes se guardan en USD; aquí se convierten al
-// mostrarlos. setCurrency lo cambia (el shell lo controla y avisa a los iframes).
+// Divisa de visualización: siempre USD.
 var _fx = { rate: 1, sym: "$" };
 function setCurrency(rate, sym) { _fx = { rate: Number(rate) || 1, sym: sym || "$" }; }
-try { var _f = JSON.parse(localStorage.getItem("lp:fx") || "null"); if (_f && _f.rate) _fx = { rate: _f.rate, sym: _f.sym || "$" }; } catch (e) {}
 
 // Formato normal con separador de miles: $8,300.00 (tarjetas, resúmenes…)
 function fmtUSD(n) {

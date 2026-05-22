@@ -14,7 +14,7 @@ const els = {
   // tabs
   tabBtnPortfolio: $("tab-btn-portfolio"), tabBtnQuick: $("tab-btn-quick"), tabBtnProjection: $("tab-btn-projection"),
   tabPortfolio: $("tab-portfolio"), tabQuick: $("tab-quick"), tabProjection: $("tab-projection"),
-  autoRefresh: $("auto-refresh"), refreshNow: $("refresh-now"), lastUpdated: $("last-updated"), currency: $("currency"),
+  autoRefresh: $("auto-refresh"), refreshNow: $("refresh-now"), lastUpdated: $("last-updated"),
   authArea: $("auth-area"),
   // firebase setup
   fbSetup: $("fb-setup"), fbInput: $("fb-config-input"), fbErr: $("fb-config-err"), fbSave: $("fb-config-save"),
@@ -121,10 +121,8 @@ function shortAddr(a) {
   if (!a) return "";
   return a.startsWith("0x") ? `${a.slice(0, 6)}…${a.slice(-4)}` : `${a.slice(0, 4)}…${a.slice(-4)}`;
 }
-// Divisa de visualización (USD por defecto; EUR convierte por tipo de cambio).
-let _fx = { rate: 1, sym: "$" };
-function setCurrency(rate, sym) { _fx = { rate: Number(rate) || 1, sym: sym || "$" }; }
-try { const _f = JSON.parse(localStorage.getItem("lp:fx") || "null"); if (_f && _f.rate) _fx = { rate: _f.rate, sym: _f.sym || "$" }; } catch (e) {}
+// Divisa de visualización: siempre USD.
+const _fx = { rate: 1, sym: "$" };
 // Formato normal con separador de miles: $8,300.00 (para tarjetas, resúmenes, etc.)
 function fmtUSD(n) {
   if (n == null || !isFinite(n)) return "—";
@@ -863,57 +861,6 @@ function exportPortfolioCSV() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// Difunde la divisa actual a los iframes (para que sus fmtUSD conviertan igual)
-function pushFxToEngines() {
-  [els.frameEvm, els.frameSol].forEach((f) => { if (f && f.contentWindow) f.contentWindow.postMessage({ type: "lp-set-fx", rate: _fx.rate, sym: _fx.sym }, "*"); });
-}
-
-// Obtiene el tipo de cambio USD→EUR (cacheado 12 h en localStorage). Frankfurter es gratis y sin key.
-async function getEurRate() {
-  try {
-    const cached = JSON.parse(localStorage.getItem("lp:eurRate") || "null");
-    if (cached && cached.rate && (Date.now() - cached.ts) < 12 * 3600 * 1000) return cached.rate;
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 4000); // no bloquear si la API tarda
-    const r = await fetch("https://api.frankfurter.app/latest?from=USD&to=EUR", { signal: ctrl.signal });
-    clearTimeout(to);
-    const j = await r.json();
-    const rate = j && j.rates && j.rates.EUR;
-    if (rate) { localStorage.setItem("lp:eurRate", JSON.stringify({ rate, ts: Date.now() })); return rate; }
-  } catch (e) { console.warn("getEurRate", e); }
-  const cached = JSON.parse(localStorage.getItem("lp:eurRate") || "null"); // último conocido si falla la red
-  return cached && cached.rate ? cached.rate : 0.92; // fallback razonable
-}
-
-// Aplica la divisa elegida (USD/EUR). Aplica AL INSTANTE con el tipo cacheado/fallback
-// (sin esperar a la red) y refina el tipo real en segundo plano.
-function applyFxNow(code) {
-  localStorage.setItem("lp:fx", JSON.stringify({ rate: _fx.rate, sym: _fx.sym, code }));
-  localStorage.setItem("lp:currency", code);
-  pushFxToEngines();      // Quick reacciona al instante (el motor re-renderiza sus fichas)
-  renderPortfolio();      // resumen del portfolio ya en la nueva divisa (instantáneo)
-  if (state.tab === "projection") renderHistorico();
-  // NO re-analizamos: re-hacer el descubrimiento RPC en cada cambio de divisa
-  // disparaba límites de peticiones (429). Las fichas del portfolio adoptan la
-  // divisa en el próximo "Analizar todo" / auto-actualización.
-}
-async function applyCurrency(code) {
-  if (code === "EUR") {
-    const cached = JSON.parse(localStorage.getItem("lp:eurRate") || "null");
-    setCurrency((cached && cached.rate) || 0.92, "€"); // tipo provisional inmediato
-  } else {
-    setCurrency(1, "$");
-  }
-  applyFxNow(code);
-  // refinar el tipo real de EUR en segundo plano; si cambia, re-aplicar
-  if (code === "EUR") {
-    try {
-      const fresh = await getEurRate();
-      if (fresh && Math.abs(fresh - _fx.rate) > 1e-6) { setCurrency(fresh, "€"); applyFxNow(code); }
-    } catch (e) {}
-  }
-}
-
 async function savePrefs() {
   if (!state.user || !fb.db) return;
   try {
@@ -1392,7 +1339,6 @@ window.addEventListener("message", (e) => {
   if (d.type === "lp-ready" && (d.app === "evm" || d.app === "sol")) {
     state.ready[d.app] = true;
     pushTokenToEngines(); // dar al engine recién listo el token actual (si hay sesión)
-    pushFxToEngines();     // y la divisa actual
   } else if (d.type === "lp-wallet" && (d.app === "evm" || d.app === "sol")) {
     state.wallet[d.app] = d.address || null;
     if (d.app === state.mode) { renderWalletButton(); if (d.address) els.addr.value = d.address; }
@@ -1562,7 +1508,6 @@ els.addRabby.onclick = () => addConnectedWallet("evm");
 els.addPhantom.onclick = () => addConnectedWallet("sol");
 els.autoRefresh.onchange = applyAutoRefresh;
 els.refreshNow.onclick = refreshActiveTab;
-els.currency.onchange = () => applyCurrency(els.currency.value);
 
 // ============================================================================
 // Init
@@ -1607,9 +1552,6 @@ function setupTipTaps(doc) {
   // intervalo de auto-actualización: el guardado, o 5 min por defecto
   els.autoRefresh.value = localStorage.getItem("lp:autoRefresh") || "300000";
   applyAutoRefresh();
-
-  // divisa guardada (USD por defecto); _fx ya se cargó de localStorage arriba
-  els.currency.value = localStorage.getItem("lp:currency") || "USD";
 
   // Config guardada por el usuario (override avanzado) o la embebida por defecto.
   const cfg = getStoredFbConfig() || DEFAULT_FB_CONFIG;
