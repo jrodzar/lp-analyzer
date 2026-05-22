@@ -1,0 +1,118 @@
+/**
+ * Helpers compartidos por los motores EVM (evm/app.js) y Solana (sol/app.js).
+ * Se carga ANTES de app.js en cada index.html. Son funciones puras (formato y UI),
+ * sin lógica específica de cadena. La lógica propia de cada motor sigue en su app.js.
+ *
+ * Nota: shortAddr NO está aquí porque difiere por motor (EVM usa 6 chars de prefijo,
+ * Solana 4).
+ */
+
+// Formato normal con separador de miles: $8,300.00 (tarjetas, resúmenes…)
+function fmtUSD(n) {
+  if (n === null || n === undefined || !isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  const sign = n < 0 ? "-" : "";
+  if (abs === 0) return "$0";
+  if (abs >= 1) return `${sign}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (abs >= 0.01) return `${sign}$${abs.toFixed(4)}`;
+  return `${sign}$${abs.toExponential(2)}`;
+}
+
+// Formato compacto: $8.30k / $1.20M (solo ejes y etiquetas de gráficos)
+function fmtUSDc(n) {
+  if (n === null || n === undefined || !isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  const sign = n < 0 ? "-" : "";
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(2)}k`;
+  if (abs >= 1) return `${sign}$${abs.toFixed(2)}`;
+  if (abs >= 0.01) return `${sign}$${abs.toFixed(4)}`;
+  if (abs === 0) return "$0";
+  return `${sign}$${abs.toExponential(2)}`;
+}
+
+function fmtToken(n, sym) {
+  if (!isFinite(n)) return `— ${sym}`;
+  const abs = Math.abs(n);
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M ${sym}`;
+  if (abs >= 1) return `${n.toFixed(4)} ${sym}`;
+  if (abs >= 0.0001) return `${n.toFixed(6)} ${sym}`;
+  if (abs === 0) return `0 ${sym}`;
+  return `${n.toExponential(2)} ${sym}`;
+}
+
+function fmtPct(n) {
+  if (n === null || n === undefined || !isFinite(n)) return "—";
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
+function pnlColor(n) {
+  if (n === null || n === undefined || !isFinite(n)) return "text-slate-400";
+  if (n > 0) return "text-emerald-400";
+  if (n < 0) return "text-rose-400";
+  return "text-slate-300";
+}
+
+// Barra gráfica de rango: precio min/max + marcador del precio actual.
+// price(tick) = 1.0001^tick * 10^(dec0-dec1)
+function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed) {
+  if (tickLower == null || tickUpper == null || !isFinite(tickLower) || !isFinite(tickUpper)) return "";
+  const decAdj = Math.pow(10, (Number(dec0) || 0) - (Number(dec1) || 0));
+  const priceAt = (t) => Math.pow(1.0001, Number(t)) * decAdj;
+  const pLow = priceAt(tickLower), pHigh = priceAt(tickUpper);
+  const pCur = (tickCur != null && isFinite(tickCur)) ? priceAt(tickCur) : null;
+  if (!isFinite(pLow) || !isFinite(pHigh) || pHigh <= pLow) return "";
+
+  // Ventana visible: rango ±50%, incluyendo siempre el precio actual.
+  const span = pHigh - pLow;
+  let vMin = pLow - span * 0.5;
+  let vMax = pHigh + span * 0.5;
+  if (pCur != null) { vMin = Math.min(vMin, pCur); vMax = Math.max(vMax, pCur); }
+  const W = vMax - vMin || 1;
+  const pct = (v) => Math.max(0, Math.min(100, ((v - vMin) / W) * 100));
+  const left = pct(pLow), right = pct(pHigh);
+  const bandColor = closed ? "rgba(100,116,139,0.35)" : inRange ? "rgba(16,185,129,0.30)" : "rgba(245,158,11,0.28)";
+  const borderC = closed ? "rgba(100,116,139,0.5)" : inRange ? "rgba(16,185,129,0.6)" : "rgba(245,158,11,0.6)";
+  const fmtP = (v) => v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 })
+                    : v >= 1 ? v.toFixed(3) : v.toPrecision(3);
+  const marker = pCur != null
+    ? `<div class="absolute top-0 bottom-0 w-0.5 bg-slate-100" style="left:${pct(pCur)}%"></div>
+       <div class="absolute -top-1 w-2 h-2 rounded-full bg-slate-100" style="left:${pct(pCur)}%;transform:translateX(-50%)"></div>`
+    : "";
+  return `
+    <div class="pt-0.5">
+      <div class="relative h-6 rounded-md bg-slate-950/60 border border-slate-800 overflow-hidden">
+        <div class="absolute top-0 bottom-0 rounded-sm" style="left:${left}%;width:${Math.max(1, right - left)}%;background:${bandColor};border-left:2px solid ${borderC};border-right:2px solid ${borderC}"></div>
+        ${marker}
+      </div>
+      <div class="flex justify-between text-[9px] text-slate-500 mt-0.5">
+        <span>${fmtP(pLow)}</span>
+        ${pCur != null ? `<span class="text-slate-300 font-semibold">${fmtP(pCur)}</span>` : ""}
+        <span>${fmtP(pHigh)}</span>
+      </div>
+    </div>`;
+}
+
+// Plugin Chart.js: imprime el valor (compacto) encima de cada barra.
+var barValueLabels = {
+  id: "barValueLabels",
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    chart.data.datasets.forEach((ds, di) => {
+      const meta = chart.getDatasetMeta(di);
+      if (meta.hidden) return;
+      meta.data.forEach((bar, i) => {
+        const val = ds.data[i];
+        if (val == null) return;
+        ctx.save();
+        ctx.fillStyle = "#e2e8f0";
+        ctx.font = "600 11px ui-sans-serif, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(fmtUSDc(val), bar.x, bar.y - 4);
+        ctx.restore();
+      });
+    });
+  },
+};
