@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Booster Crypto PRO — Tests</title>
+  <style>
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #0b1220; color: #e2e8f0; padding: 20px; line-height: 1.5; }
+    h1 { color: #ECE600; }
+    .h { color: #ECE600; font-weight: bold; margin-top: 16px; }
+    .ok { color: #34d399; }
+    .fail { color: #f87171; }
+    #sum { margin-top: 16px; font-size: 18px; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Booster Crypto PRO — Tests</h1>
+  <p style="color:#94a3b8">Página de pruebas en navegador (sin Node). Verifica funciones puras de common.js y la matemática de los motores EVM/Solana cargados en iframes.</p>
+  <div id="out"></div>
+  <div id="sum"></div>
+
+  <!-- iframes ocultos: cargan los motores reales para probar su matemática -->
+  <iframe id="evm" src="evm/index.html?v=test" style="display:none"></iframe>
+  <iframe id="sol" src="sol/index.html?v=test" style="display:none"></iframe>
+
+  <!-- helpers compartidos (probados directamente) -->
+  <script src="common.js?v=test"></script>
+  <script>
+    const out = document.getElementById("out");
+    let pass = 0, fail = 0;
+    const group = (name) => { const d = document.createElement("div"); d.className = "h"; d.textContent = name; out.appendChild(d); };
+    const ok = (cond, label, got) => {
+      const d = document.createElement("div");
+      if (cond) { pass++; d.className = "ok"; d.textContent = "✓ " + label; }
+      else { fail++; d.className = "fail"; d.textContent = "✗ " + label + (got !== undefined ? "  → got: " + JSON.stringify(got) : ""); }
+      out.appendChild(d);
+    };
+    const near = (a, b, eps) => Math.abs(a - b) <= (eps || 1e-9);
+
+    function runCommon() {
+      group("common.js — formato");
+      ok(fmtUSD(8300) === "$8,300.00", "fmtUSD(8300)", fmtUSD(8300));
+      ok(fmtUSD(1.58) === "$1.58", "fmtUSD(1.58)", fmtUSD(1.58));
+      ok(fmtUSD(0) === "$0", "fmtUSD(0)", fmtUSD(0));
+      ok(fmtUSD(-12.5) === "-$12.50", "fmtUSD(-12.5)", fmtUSD(-12.5));
+      ok(fmtUSD(NaN) === "—", "fmtUSD(NaN)=—", fmtUSD(NaN));
+      ok(fmtUSDc(8300) === "$8.30k", "fmtUSDc(8300)", fmtUSDc(8300));
+      ok(fmtUSDc(1234567) === "$1.23M", "fmtUSDc(1.23M)", fmtUSDc(1234567));
+      ok(fmtToken(1.5, "ETH") === "1.5000 ETH", "fmtToken(1.5,ETH)", fmtToken(1.5, "ETH"));
+      ok(fmtPct(2.5) === "+2.50%", "fmtPct(+2.5)", fmtPct(2.5));
+      ok(fmtPct(-1) === "-1.00%", "fmtPct(-1)", fmtPct(-1));
+      ok(pnlColor(5) === "text-emerald-400", "pnlColor(+)");
+      ok(pnlColor(-5) === "text-rose-400", "pnlColor(-)");
+      ok(rangeBarHTML(-100, 100, 0, 18, 18, true, false).length > 0, "rangeBarHTML válido → html");
+      ok(rangeBarHTML(null, 100, 0, 18, 18, true, false) === "", "rangeBarHTML inválido → ''");
+    }
+
+    function runEVM(w) {
+      group("EVM — matemática Uniswap V3");
+      ok(near(w.sqrtPriceFromTick(0), 1), "sqrtPriceFromTick(0)=1", w.sqrtPriceFromTick(0));
+      ok(w.inRange(0, -10, 10) === true, "inRange dentro");
+      ok(w.inRange(20, -10, 10) === false, "inRange por encima");
+      ok(w.inRange(10, -10, 10) === false, "inRange == upper (exclusivo)");
+      ok(w.inRange(-10, -10, 10) === true, "inRange == lower (inclusivo)");
+      ok(w.feeTierLabel(3000) === "0.30%", "feeTierLabel(3000)", w.feeTierLabel(3000));
+      ok(near(w.bigIntToDecimal(1000000000000000000n, 18), 1), "bigIntToDecimal 1e18/18=1", w.bigIntToDecimal(1000000000000000000n, 18));
+      ok(near(w.bigIntToDecimal(1500000n, 6), 1.5), "bigIntToDecimal 1.5e6/6=1.5", w.bigIntToDecimal(1500000n, 6));
+      const below = w.getAmountsFromLiquidity(1e18, -200, -100, 100, 18, 18);
+      ok(below.amount1 === 0 && below.amount0 > 0, "amounts: precio < rango → todo token0", below);
+      const above = w.getAmountsFromLiquidity(1e18, 200, -100, 100, 18, 18);
+      ok(above.amount0 === 0 && above.amount1 > 0, "amounts: precio > rango → todo token1", above);
+      const inr = w.getAmountsFromLiquidity(1e18, 0, -100, 100, 18, 18);
+      ok(inr.amount0 > 0 && inr.amount1 > 0, "amounts: precio en rango → ambos tokens", inr);
+    }
+
+    function runSOL(w) {
+      group("Solana — base58 / dirección");
+      const addr = "So11111111111111111111111111111111111111112";
+      const rt = w.base58Encode(w.base58Decode(addr));
+      ok(rt === addr, "base58 round-trip", rt);
+      ok(w.base58Decode(addr).length === 32, "base58Decode → 32 bytes", w.base58Decode(addr).length);
+      ok(w.isValidSolanaAddress(addr) === true, "isValidSolanaAddress válida");
+      ok(w.isValidSolanaAddress("0x1234") === false, "isValidSolanaAddress inválida");
+    }
+
+    function summary() {
+      const d = document.getElementById("sum");
+      d.className = fail ? "fail" : "ok";
+      d.textContent = `${pass} OK · ${fail} fallidos`;
+    }
+
+    window.addEventListener("load", () => {
+      runCommon();
+      const evm = document.getElementById("evm").contentWindow;
+      const sol = document.getElementById("sol").contentWindow;
+      let done = 0;
+      const maybeSummary = () => { if (++done === 2) summary(); };
+      const waitFor = (w, prop, fn) => {
+        let tries = 50;
+        const c = () => {
+          if (w && typeof w[prop] === "function") { try { fn(); } catch (e) { ok(false, prop + " lanzó: " + e.message); } maybeSummary(); }
+          else if (--tries <= 0) { ok(false, "motor no cargó (" + prop + ")"); maybeSummary(); }
+          else setTimeout(c, 100);
+        };
+        c();
+      };
+      waitFor(evm, "sqrtPriceFromTick", () => runEVM(evm));
+      waitFor(sol, "base58Encode", () => runSOL(sol));
+    });
+  </script>
+</body>
+</html>
