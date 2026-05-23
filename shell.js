@@ -1624,8 +1624,8 @@ function renderHistorico() {
   els.histNote.textContent = "La curva = aportado + fees (eventos on-chain EVM/HyperEVM/lending y transacciones Solana). PnL e IL del resumen sí incluyen variación de precio, calculados por posición.";
 
   const datasets = [
-    { label: "Capital aportado", data: curves.aportado, borderColor: "#94a3b8", borderDash: [5, 4], pointRadius: 2, borderWidth: 1.5, tension: 0.2 },
-    { label: "Valor acumulado", data: curves.valor, borderColor: "#34d399", backgroundColor: "rgba(52,211,153,0.12)", pointRadius: 2, borderWidth: 2.5, fill: true, tension: 0.2 },
+    { label: "Capital aportado", data: curves.aportado, borderColor: "#94a3b8", borderDash: [5, 4], pointRadius: 2, borderWidth: 1.5, stepped: "after" },
+    { label: "Valor acumulado", data: curves.valor, borderColor: "#34d399", backgroundColor: "rgba(52,211,153,0.12)", pointRadius: 2, borderWidth: 2.5, fill: true, stepped: "after" },
   ];
   // formato del eje según el rango: pocas semanas → "día mes"; meses/años → "mes año"
   const xs = curves.valor.map((p) => p.x);
