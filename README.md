@@ -3,7 +3,7 @@
 Web app para **analizar posiciones de liquidez** (LP) de una o varias wallets, multi-chain. Sin backend propio, sin instalación, sin servidor que custodie tus datos.
 
 🔗 **App publicada:** https://jrodzar.github.io/lp-analyzer/
-*(acceso por whitelist — pide al admin que añada tu email de Google)*
+*(acceso restringido a los alumnos del curso Booster Crypto PRO — el registro está limitado por whitelist)*
 
 ---
 
@@ -86,11 +86,9 @@ Web app para **analizar posiciones de liquidez** (LP) de una o varias wallets, m
 
 ---
 
-## ¿Quieres acceso?
-
-Pídele al admin que añada tu email de Google a la whitelist. Una vez añadido, entras directamente desde https://jrodzar.github.io/lp-analyzer/ con tu cuenta de Google.
-
 ## ¿Quieres auto-hostarte tu propia versión?
+
+El código es abierto, así que cualquiera puede levantar su propia instancia con su Firebase y su Cloudflare Worker:
 
 1. **Fork** este repo.
 2. **Crea un proyecto en Firebase**: habilita Google Auth + Firestore, copia las reglas de [CLAUDE.md](CLAUDE.md) y cambia el `ADMIN_EMAIL` en `shell.js` por el tuyo.
