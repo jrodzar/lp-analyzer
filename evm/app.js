@@ -15,6 +15,7 @@ const DEFAULT_CHAINS = {
     blockscoutApi: "https://eth.blockscout.com/api",
     llamaChain: "ethereum",
     uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
+    nativeSymbol: "ETH", nativeName: "Ethereum", nativeCoingecko: "ethereum",
   },
   arbitrum: {
     name: "Arbitrum",
@@ -27,6 +28,7 @@ const DEFAULT_CHAINS = {
     blockscoutApi: "https://arbitrum.blockscout.com/api",
     llamaChain: "arbitrum",
     uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
+    nativeSymbol: "ETH", nativeName: "Ethereum", nativeCoingecko: "ethereum",
   },
   optimism: {
     name: "Optimism",
@@ -40,6 +42,7 @@ const DEFAULT_CHAINS = {
     // blockscoutApi: "https://optimism.blockscout.com/api",
     llamaChain: "optimism",
     uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
+    nativeSymbol: "ETH", nativeName: "Ethereum", nativeCoingecko: "ethereum",
   },
   polygon: {
     name: "Polygon",
@@ -51,6 +54,7 @@ const DEFAULT_CHAINS = {
     blockscoutApi: "https://polygon.blockscout.com/api",
     llamaChain: "polygon",
     uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
+    nativeSymbol: "POL", nativeName: "Polygon", nativeCoingecko: "matic-network",
   },
   base: {
     name: "Base",
@@ -64,6 +68,7 @@ const DEFAULT_CHAINS = {
     blockscoutApi: "https://base.blockscout.com/api",
     llamaChain: "base",
     uniNftManager: "0x03a520b32C04BF3bE5F46762d11A6c3A4ad0C0a4",
+    nativeSymbol: "ETH", nativeName: "Ethereum", nativeCoingecko: "ethereum",
   },
   bnb: {
     name: "BNB Chain",
@@ -75,6 +80,7 @@ const DEFAULT_CHAINS = {
     // BNB no tiene Blockscout oficial → tokens idle no soportados aún
     llamaChain: "bsc",
     uniNftManager: "0x7b8A01B39D58278b5DE7e48c8449c9f4F5170613",
+    nativeSymbol: "BNB", nativeName: "BNB", nativeCoingecko: "binancecoin",
   },
   hyperevm: {
     name: "HyperEVM",
@@ -93,6 +99,7 @@ const DEFAULT_CHAINS = {
     explorerApi:       "https://www.hyperscan.com/api",
     blockscoutApi:     "https://www.hyperscan.com/api",
     llamaChain:        "hyperliquid",
+    nativeSymbol: "HYPE", nativeName: "Hyperliquid", nativeCoingecko: "hyperliquid",
   },
 };
 
@@ -497,16 +504,18 @@ async function fetchIdleTokensEVM(chainKey, address) {
   const c = state.chains[chainKey];
   if (!c || !c.blockscoutApi) return []; // chain sin soporte (p. ej. BNB / Optimism)
   if (c._noIdleSupport) return [];        // ya falló antes (CORS / red) → no reintentamos
-  const url = `${c.blockscoutApi}/v2/addresses/${address}/tokens?type=ERC-20`;
-  let items;
+  // Dos peticiones en paralelo:
+  //   /v2/addresses/{addr}/tokens?type=ERC-20  → tokens ERC-20 con balance
+  //   /v2/addresses/{addr}                     → coin_balance (nativo: ETH, HYPE, etc.)
+  const urlTokens = `${c.blockscoutApi}/v2/addresses/${address}/tokens?type=ERC-20`;
+  const urlAddr   = `${c.blockscoutApi}/v2/addresses/${address}`;
+  let items = [], addrInfo = null;
   try {
-    const r = await fetch(url);
-    if (!r.ok) return [];
-    items = (await r.json()).items || [];
+    const [rT, rA] = await Promise.all([fetch(urlTokens), fetch(urlAddr)]);
+    if (rT.ok) items = (await rT.json()).items || [];
+    if (rA.ok) addrInfo = await rA.json();
   } catch (e) {
     // CORS o red caída → marcar la chain para no volver a intentar en esta sesión.
-    // (El navegador igualmente loggea el CORS error la primera vez; el flag evita
-    //  el ruido posterior.)
     c._noIdleSupport = true;
     return [];
   }
@@ -514,6 +523,29 @@ async function fetchIdleTokensEVM(chainKey, address) {
   // Procesar y filtrar tokens sin balance
   const tokens = [];
   const missingPrice = [];
+  // 1) Balance nativo (ETH, HYPE, MATIC, BNB…) — viene en `coin_balance` (wei).
+  if (addrInfo && addrInfo.coin_balance && c.nativeSymbol) {
+    try {
+      const raw = BigInt(addrInfo.coin_balance);
+      if (raw > 0n) {
+        const balance = bigIntToDecimal(raw, 18); // todos los nativos EVM usan 18 decimales
+        const obj = {
+          chain: chainKey,
+          symbol: c.nativeSymbol,
+          name: c.nativeName || c.nativeSymbol,
+          address: "0x0000000000000000000000000000000000000000", // placeholder convencional
+          decimals: 18,
+          balance, priceUSD: null, valueUSD: null,
+          logo: null, native: true,
+          // marca interna para resolver precio via DefiLlama coingecko slug:
+          _coingeckoSlug: c.nativeCoingecko || null,
+        };
+        tokens.push(obj);
+        if (obj._coingeckoSlug) missingPrice.push(obj);
+      }
+    } catch (e) { /* parseInt falló → ignorar nativo */ }
+  }
+  // 2) Tokens ERC-20
   for (const it of items) {
     const t = it.token || {};
     const raw = it.value != null ? BigInt(it.value) : 0n;
@@ -535,20 +567,26 @@ async function fetchIdleTokensEVM(chainKey, address) {
     if (priceUSD == null && obj.address) missingPrice.push(obj);
   }
 
-  // Fallback de precios via DefiLlama (1 petición batch para todos los faltantes)
-  if (missingPrice.length && c.llamaChain) {
+  // Fallback de precios via DefiLlama (1 petición batch para todos los faltantes).
+  // Acepta tanto `chain:address` (ERC-20) como `coingecko:slug` (nativo).
+  if (missingPrice.length) {
     try {
-      const coins = missingPrice.map((t) => `${c.llamaChain}:${t.address}`).join(",");
-      const r = await fetch(`https://coins.llama.fi/prices/current/${coins}`);
-      if (r.ok) {
-        const data = await r.json();
-        const prices = data.coins || {};
-        for (const t of missingPrice) {
-          const key = `${c.llamaChain}:${t.address}`;
-          const p = prices[key]?.price;
-          if (typeof p === "number" && p > 0) {
-            t.priceUSD = p;
-            t.valueUSD = t.balance * p;
+      const coinKeys = missingPrice.map((t) =>
+        t._coingeckoSlug ? `coingecko:${t._coingeckoSlug}` : `${c.llamaChain}:${t.address}`
+      ).filter(Boolean);
+      if (coinKeys.length) {
+        const r = await fetch(`https://coins.llama.fi/prices/current/${coinKeys.join(",")}`);
+        if (r.ok) {
+          const data = await r.json();
+          const prices = data.coins || {};
+          for (const t of missingPrice) {
+            const key = t._coingeckoSlug ? `coingecko:${t._coingeckoSlug}` : `${c.llamaChain}:${t.address}`;
+            const p = prices[key]?.price;
+            if (typeof p === "number" && p > 0) {
+              t.priceUSD = p;
+              t.valueUSD = t.balance * p;
+            }
+            delete t._coingeckoSlug; // limpiar marca interna antes de devolver
           }
         }
       }
