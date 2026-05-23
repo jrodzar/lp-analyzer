@@ -714,7 +714,9 @@ async function onAuthChange(user) {
 
 function renderAuthArea() {
   const isAdmin = state.user?.email === ADMIN_EMAIL;
-  els.settingsOpen.classList.toggle("hidden", !isAdmin);
+  // Settings: disponible para cualquier usuario logueado (poner sus propias API keys
+  // es opcional; sin claves se usa el proxy compartido). Ya está dentro de
+  // #portfolio-area, así que solo se ve a usuarios autenticados de todas formas.
   els.authArea.innerHTML = "";
   if (state.user) {
     const wrap = document.createElement("div");
@@ -1761,7 +1763,6 @@ function pushKeysToEngines(keys) {
   if (els.frameSol?.contentWindow) els.frameSol.contentWindow.postMessage(msgSol, "*");
 }
 function openSettingsModal() {
-  if (!isAdminUser()) return; // defensa: solo admin (botón ya oculto en UI)
   const k = loadApiKeys();
   els.setGraphKey.value = k.graph || "";
   els.setHeliusKey.value = k.helius || "";

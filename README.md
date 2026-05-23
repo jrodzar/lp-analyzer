@@ -31,6 +31,20 @@ Web app para **analizar posiciones de liquidez** (LP) de una o varias wallets, m
 
 > Si pierdes la contraseña de cifrado **no se puede recuperar**. Hay un botón "Olvidé mi contraseña → empezar de cero" que borra tus direcciones cifradas para poder volver a entrar (no recupera las que tenías).
 
+### ⚙ Settings — usa tus propias API keys (opcional)
+
+En Portfolio hay un botón **"⚙ Settings"** donde cualquier usuario puede pegar **sus propias claves** de The Graph, Helius y/o Birdeye:
+
+- Si las dejas en blanco → la app usa el **proxy compartido** (lo normal, no tienes que hacer nada).
+- Si pegas tu clave → la app la usa **en vez del proxy** para esa API, consumiendo de tu propia cuota.
+
+Las claves se guardan **únicamente en el `localStorage` de ese navegador**:
+- No se sincronizan a otros dispositivos (las tienes que reintroducir si entras desde otro PC/móvil).
+- No se envían a Firestore ni a ningún servidor del proyecto.
+- Si limpias los datos del navegador, se pierden.
+
+Útil si ya tienes claves propias, si el proxy se satura, o si prefieres no depender del proxy compartido.
+
 ---
 
 ## Arquitectura

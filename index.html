@@ -12,7 +12,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "70";</script>
+  <script>window.APP_VERSION = "71";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -119,13 +119,15 @@
   <div id="settings-modal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
     <div class="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
       <div class="flex items-center justify-between gap-2">
-        <h2 class="text-lg font-semibold">⚙ Settings — API keys</h2>
+        <h2 class="text-lg font-semibold">⚙ Settings — Tus API keys (opcional)</h2>
         <button id="settings-close" class="text-slate-400 hover:text-slate-100">✕</button>
       </div>
       <p class="text-[11px] text-slate-400">
-        Por defecto la app usa el proxy de Cloudflare (sin claves propias). Si pegas tus claves aquí
-        se usarán <b>en vez del proxy</b> para tu cuota personal. Se guardan en este navegador
-        (localStorage), no se envían a ningún sitio. Deja en blanco para volver al proxy.
+        Por defecto la app usa un <b>proxy compartido</b> (sin que tengas que configurar nada).
+        Si quieres usar <b>tus propias claves</b> —porque ya las tienes, para no depender del proxy,
+        o porque quieres tu propia cuota— pégalas aquí y se usarán <b>en vez del proxy</b>.
+        Se guardan en el <b>localStorage de este navegador</b>; no se sincronizan a otros equipos
+        ni se envían a ningún sitio. Deja en blanco para volver al proxy compartido.
       </p>
       <div class="space-y-3">
         <div>
@@ -205,7 +207,7 @@
             </div>
             <div class="flex items-center gap-2">
               <button id="manage-access" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Gestionar accesos (admin)">👥 Accesos</button>
-              <button id="settings-open" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="API keys (admin)">⚙ Settings</button>
+              <button id="settings-open" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Configurar tus propias API keys (opcional)">⚙ Settings</button>
               <button id="change-pass" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Cambiar contraseña de cifrado">🔑 Contraseña</button>
               <button id="delete-account" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/40 border border-slate-700 hover:border-rose-700 text-xs text-rose-300" title="Eliminar permanentemente tu cuenta y todos tus datos">🗑️ Eliminar cuenta</button>
               <button id="pf-csv" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Descargar posiciones en CSV">⬇ CSV</button>
