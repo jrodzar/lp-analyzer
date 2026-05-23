@@ -2205,8 +2205,8 @@ function setupTipTaps(doc) {
   renderPortfolioList();
   renderPrefs();
 
-  // intervalo de auto-actualización: el guardado, o 5 min por defecto
-  els.autoRefresh.value = localStorage.getItem("lp:autoRefresh") || "300000";
+  // intervalo de auto-actualización: el guardado, o 15 min por defecto
+  els.autoRefresh.value = localStorage.getItem("lp:autoRefresh") || "900000";
   applyAutoRefresh();
 
   // Config guardada por el usuario (override avanzado) o la embebida por defecto.
