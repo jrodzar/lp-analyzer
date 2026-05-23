@@ -1232,8 +1232,9 @@ async function analyzeAll(opts = {}) {
       const entry = state.portfolio[i];
       if (entry.type !== type) continue;
       // Pequeña pausa entre direcciones consecutivas del mismo carril para no
-      // saturar el rate limit del proxy (429). La primera no espera.
-      if (!firstInLane) await new Promise((r) => setTimeout(r, 400));
+      // saturar el rate limit del proxy (429). La primera no espera. Con el
+      // Worker a 1000/60s podemos ser más agresivos que el 400 ms inicial.
+      if (!firstInLane) await new Promise((r) => setTimeout(r, 250));
       firstInLane = false;
       const r = await analyzeAddressHeadless(entry.address, entry.type);
       results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [], analysisStatus: r.analysisStatus || null, idleTokens: r.idleTokens || [] };
