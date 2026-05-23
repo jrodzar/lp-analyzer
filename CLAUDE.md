@@ -7,6 +7,12 @@ modo multiusuario por **login de Google (Firebase)** y portfolios guardados.
 > Entorno del autor: Windows, **sin Node/npm**. Todo es HTML + JS servido estático.
 > Las librerías se cargan por CDN. No hay build step.
 
+> **Mantén el `README.md` al día.** Cada vez que un cambio sea visible para alguien
+> que mire el repo desde fuera —nueva pestaña, nueva métrica, nueva cadena/protocolo
+> soportado, cambio en privacy/auth/whitelist, nuevo botón importante, cambio en el
+> stack o en las limitaciones honestas— actualízalo en el mismo commit. Es la cara
+> pública del proyecto y no debe quedarse obsoleto.
+
 ## Cómo arrancar
 
 ```
