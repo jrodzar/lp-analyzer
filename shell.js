@@ -188,7 +188,9 @@ const VENUE_COLORS = {
   "bnb chain":  "#F3BA2F",
   "bnb":        "#F3BA2F",
   "hyperevm":   "#97FCE4",
-  // Solana
+  // Solana — el chip "Solana" lo usa el bloque idle (cadena nativa, no protocolo).
+  // Los pools concretos siguen pintándose con su color de protocolo (orca / raydium).
+  "solana":     "#FFEB3B",
   "orca":       "#FFD15C",
   "raydium":    "#C200FB",
 };
