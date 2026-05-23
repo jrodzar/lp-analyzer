@@ -1220,6 +1220,7 @@ function positionCard(p) {
         <div>Position NFT: <a href="https://solscan.io/token/${p.mint}" target="_blank" class="font-mono text-slate-300 hover:text-purple-300">${shortAddr(p.mint)}</a></div>
         <div>Whirlpool: <a href="https://solscan.io/account/${p.whirlpool}" target="_blank" class="font-mono text-slate-300 hover:text-purple-300">${shortAddr(p.whirlpool)}</a></div>
         <div>Rango ticks: ${p.tickLower} → ${p.tickUpper} (actual: ${p.tick})</div>
+        <div>tickSpacing: ${p.tickSpacing} <span class="text-[10px] text-slate-500">(granularidad mínima del rango — saltos de ${(p.tickSpacing * 0.01).toFixed(2)}% de precio)</span></div>
         <div>Liquidez: <span class="font-mono">${p.liquidity.toString()}</span></div>
         ${p.pnlBasis === "birdeye" ? `
         <div class="pt-1 mt-1 border-t border-slate-800">Depositado (coste): ${fmtUSD(p.depositedUSD)}</div>
