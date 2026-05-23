@@ -1455,7 +1455,9 @@ function renderPortfolio() {
     } else {
       const grid = document.createElement("div");
       grid.className = "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3";
-      for (const it of items) grid.appendChild(portfolioCard(it, colorOf.get(it)));
+      // Ordenadas por valor actual descendente — primero las posiciones más grandes.
+      const sorted = [...items].sort((a, b) => (b.valueUSD || 0) - (a.valueUSD || 0));
+      for (const it of sorted) grid.appendChild(portfolioCard(it, colorOf.get(it)));
       body.appendChild(grid);
     }
     section.appendChild(body);
