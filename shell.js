@@ -1306,7 +1306,13 @@ function renderFeesTimelineChart() {
       maintainAspectRatio: false,
       plugins: {
         legend: { labels: { color: "#cbd5e1", font: { size: 10 }, boxWidth: 12 } },
-        tooltip: { mode: "index", intersect: false, callbacks: { label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}` } },
+        tooltip: {
+          mode: "index", intersect: false,
+          callbacks: {
+            title: (items) => items.length ? new Date(items[0].parsed.x).toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" }) : "",
+            label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}`,
+          },
+        },
       },
       scales: {
         x: {
@@ -1347,7 +1353,12 @@ function renderFeesTimelineTotalChart() {
     responsive: true, maintainAspectRatio: false,
     plugins: {
       legend: { labels: { color: "#cbd5e1", font: { size: 10 } } },
-      tooltip: { callbacks: { label: (c) => `Total: ${fmtUSD(c.parsed.y)}` } },
+      tooltip: {
+        callbacks: {
+          title: (items) => items.length ? new Date(items[0].parsed.x).toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" }) : "",
+          label: (c) => `Total: ${fmtUSD(c.parsed.y)}`,
+        },
+      },
     },
     scales: {
       x: { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: dateTick({ day: "numeric", month: "short" }) }, grid: { color: "#1e293b" } },
@@ -1657,7 +1668,15 @@ function renderHistorico() {
     data: { datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: "#cbd5e1", font: { size: 10 } } }, tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}` } } },
+      plugins: {
+        legend: { labels: { color: "#cbd5e1", font: { size: 10 } } },
+        tooltip: {
+          callbacks: {
+            title: (items) => items.length ? new Date(items[0].parsed.x).toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" }) : "",
+            label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}`,
+          },
+        },
+      },
       scales: {
         x: { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: dateTick(xFmt) }, grid: { color: "#1e293b" } },
         y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSDc(v) }, grid: { color: "#1e293b" } },

@@ -1713,6 +1713,9 @@ function chartBaseOptions({ time = false } = {}) {
       legend: { labels: { color: "#cbd5e1", font: { size: 10 } } },
       tooltip: {
         callbacks: {
+          title: time
+            ? (items) => items.length ? new Date(items[0].parsed.x).toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" }) : ""
+            : undefined,
           label: (ctx) => `${ctx.dataset.label}: ${fmtUSD(ctx.parsed.y)}`,
         },
       },
