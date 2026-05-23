@@ -547,7 +547,14 @@ async function renderAllowlist() {
     if (r.email === ADMIN_EMAIL.toLowerCase()) continue;
     const row = document.createElement("div");
     row.className = "flex items-center justify-between gap-2 bg-slate-950/40 rounded-lg px-3 py-2";
-    row.innerHTML = `<span class="font-mono text-xs truncate">${r.email}</span>`;
+    const reg = r.registeredAt
+      ? `<span class="chip bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0" title="Registrado en la app el ${new Date(r.registeredAt).toLocaleString()}">✓ Registrado</span>`
+      : `<span class="chip bg-slate-700/40 text-slate-400 border border-slate-700 shrink-0" title="Aún no ha iniciado sesión en la app">Pendiente</span>`;
+    row.innerHTML = `
+      <div class="flex items-center gap-2 min-w-0 flex-1">
+        <span class="font-mono text-xs truncate">${r.email}</span>
+        ${reg}
+      </div>`;
     const btn = document.createElement("button");
     btn.className = "text-xs text-rose-400 hover:text-rose-300 shrink-0";
     btn.textContent = "Quitar";
@@ -569,6 +576,24 @@ async function addAllowEmail() {
     await renderAllowlist();
   } catch (e) {
     els.accessErr.textContent = `No se pudo añadir: ${e.message}`; els.accessErr.classList.remove("hidden");
+  }
+}
+
+// Marca el doc de allowlist como "registrado" (1ª vez que este usuario entra).
+// Idempotente: solo escribe si no existe el campo ya. Tolera errores (p.ej.
+// si las Firestore rules todavía no permiten la actualización por el usuario).
+async function markAllowEntryRegistered(email) {
+  if (!email || !fb.db) return;
+  const e = email.toLowerCase();
+  if (e === ADMIN_EMAIL.toLowerCase()) return; // admin no se lista
+  try {
+    const ref = fb.fsMod.doc(fb.db, "allowlist", e);
+    const snap = await fb.fsMod.getDoc(ref);
+    const data = snap.exists() ? snap.data() : null;
+    if (data && data.registeredAt) return; // ya estaba marcado
+    await fb.fsMod.setDoc(ref, { registeredAt: Date.now() }, { merge: true });
+  } catch (e2) {
+    console.warn("markAllowEntryRegistered:", e2.message);
   }
 }
 
@@ -617,6 +642,8 @@ async function onAuthChange(user) {
       await signOutUser(); // dispara onAuthChange(null); el mensaje permanece
       return;
     }
+    // Marcar que este email se ha registrado en la app (para indicador del admin)
+    markAllowEntryRegistered(user.email).catch(() => {});
     els.gateMsg.classList.add("hidden");
     els.manageAccess.classList.toggle("hidden", !isAdminUser());
     els.deleteAccount.classList.toggle("hidden", isAdminUser()); // admin no puede autoeliminarse
