@@ -50,7 +50,7 @@ const els = {
   prefChains: $("pref-chains"), prefProtocols: $("pref-protocols"),
   // quick
   modeEvm: $("mode-evm"), modeSol: $("mode-sol"), addr: $("addr"), go: $("go"),
-  wallet: $("wallet"), settings: $("settings"), hint: $("hint"),
+  wallet: $("wallet"), settingsEvm: $("settings-evm"), settingsSol: $("settings-sol"), hint: $("hint"),
   frameEvm: $("frame-evm"), frameSol: $("frame-sol"),
   // histórico
   histEmpty: $("hist-empty"), histContent: $("hist-content"),
@@ -709,7 +709,8 @@ async function onAuthChange(user) {
 
 function renderAuthArea() {
   const isAdmin = state.user?.email === ADMIN_EMAIL;
-  els.settings.classList.toggle("hidden", !isAdmin);
+  els.settingsEvm.classList.toggle("hidden", !isAdmin);
+  els.settingsSol.classList.toggle("hidden", !isAdmin);
   els.authArea.innerHTML = "";
   if (state.user) {
     const wrap = document.createElement("div");
@@ -1737,7 +1738,18 @@ els.addr.addEventListener("keydown", (e) => { if (e.key === "Enter") quickAnalyz
 els.addr.addEventListener("input", () => { const t = detectType(els.addr.value.trim()); if (t && t !== state.mode) setMode(t); });
 els.modeEvm.onclick = () => setMode("evm");
 els.modeSol.onclick = () => setMode("sol");
-els.settings.onclick = () => postToActive({ type: "lp-open-settings" });
+// Settings de los engines: como el modal de settings vive DENTRO del iframe,
+// abrirlo solo tiene sentido cuando ese iframe es visible → al pulsar desde
+// Portfolio, cambiamos a Quick + modo correcto y disparamos lp-open-settings.
+function openEngineSettings(mode) {
+  setTab("quick");
+  setMode(mode);
+  const frame = mode === "evm" ? els.frameEvm : els.frameSol;
+  // damos un breve respiro para que el iframe sea visible antes de abrir el modal
+  setTimeout(() => { if (frame && frame.contentWindow) frame.contentWindow.postMessage({ type: "lp-open-settings" }, "*"); }, 50);
+}
+els.settingsEvm.onclick = () => openEngineSettings("evm");
+els.settingsSol.onclick = () => openEngineSettings("sol");
 els.wallet.onclick = () => postToActive({ type: state.wallet[state.mode] ? "lp-disconnect-wallet" : "lp-connect-wallet" });
 
 els.loginBtn.onclick = signInWithGoogle;

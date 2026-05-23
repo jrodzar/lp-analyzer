@@ -12,7 +12,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "67";</script>
+  <script>window.APP_VERSION = "68";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -171,6 +171,8 @@
             </div>
             <div class="flex items-center gap-2">
               <button id="manage-access" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Gestionar accesos (admin)">👥 Accesos</button>
+              <button id="settings-evm" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Settings del motor EVM: subgraphs y override de API key">⚙ EVM</button>
+              <button id="settings-sol" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Settings del motor Solana: override de API keys (Helius / Birdeye)">⚙ Solana</button>
               <button id="change-pass" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Cambiar contraseña de cifrado">🔑 Contraseña</button>
               <button id="delete-account" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/40 border border-slate-700 hover:border-rose-700 text-xs text-rose-300" title="Eliminar permanentemente tu cuenta y todos tus datos">🗑️ Eliminar cuenta</button>
               <button id="pf-csv" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Descargar posiciones en CSV">⬇ CSV</button>
@@ -327,7 +329,6 @@
         <!-- empuja wallet/settings a la derecha solo en móvil -->
         <span class="flex-1 order-2 lg:hidden"></span>
         <button id="wallet" class="hidden px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs shrink-0 order-3 lg:order-4">🔗 Conectar</button>
-        <button id="settings" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm shrink-0 order-3 lg:order-5" title="Settings del panel activo">⚙</button>
         <!-- dirección + analizar: fila completa en móvil, en línea en escritorio -->
         <div class="flex gap-2 min-w-0 order-4 basis-full lg:order-3 lg:basis-0 lg:flex-1">
           <input id="addr" type="text" placeholder="Dirección EVM (0x…) o Solana…" class="flex-1 min-w-0 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono focus:outline-none focus:border-[#ECE600]" />
