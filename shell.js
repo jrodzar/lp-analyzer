@@ -2121,6 +2121,26 @@ async function saveApiKeysToFirestore(keys, key) {
   _pendingApiKeysEnc = enc;
 }
 
+// Pinta debajo de cada input si esa key está en uso ("tu key personal") o si
+// pasa por el proxy compartido. Se llama al abrir el modal, al teclear y tras
+// guardar — el usuario ve al instante por qué camino van sus peticiones.
+function updateApiKeyStatusIndicators() {
+  const set = (id, hasKey) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (hasKey) {
+      el.className = "text-[10px] mt-1 text-emerald-400";
+      el.textContent = "✓ Usando tu key personal (sin pasar por el proxy)";
+    } else {
+      el.className = "text-[10px] mt-1 text-slate-500";
+      el.textContent = "🌐 Sin key → usa el proxy compartido";
+    }
+  };
+  set("set-graph-status",   !!(els.setGraphKey.value || "").trim());
+  set("set-helius-status",  !!(els.setHeliusKey.value || "").trim());
+  set("set-birdeye-status", !!(els.setBirdeyeKey.value || "").trim());
+}
+
 function openSettingsModal() {
   if (!crypto_.key) {
     setPfStatus("Desbloquea tu portfolio primero para gestionar tus API keys.", "err");
@@ -2129,6 +2149,7 @@ function openSettingsModal() {
   els.setGraphKey.value = _apiKeys.graph || "";
   els.setHeliusKey.value = _apiKeys.helius || "";
   els.setBirdeyeKey.value = _apiKeys.birdeye || "";
+  updateApiKeyStatusIndicators();
   els.settingsStatus.classList.add("hidden");
   els.settingsModal.classList.remove("hidden");
   setTimeout(() => els.setGraphKey.focus(), 50);
@@ -2162,6 +2183,11 @@ els.settingsClose.onclick = closeSettingsModal;
 els.settingsCancel.onclick = closeSettingsModal;
 els.settingsSave.onclick = saveSettingsModal;
 els.settingsModal.addEventListener("click", (e) => { if (e.target === els.settingsModal) closeSettingsModal(); });
+// Indicador en vivo: al teclear en cualquier campo, refrescar los badges.
+for (const id of ["set-graph-key", "set-helius-key", "set-birdeye-key"]) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("input", updateApiKeyStatusIndicators);
+}
 els.wallet.onclick = () => postToActive({ type: state.wallet[state.mode] ? "lp-disconnect-wallet" : "lp-connect-wallet" });
 
 els.loginBtn.onclick = signInWithGoogle;

@@ -20,7 +20,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "109";</script>
+  <script>window.APP_VERSION = "110";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -151,6 +151,7 @@
             <a href="https://thegraph.com/studio/apikeys/" target="_blank" rel="noopener" class="text-[10px] text-fuchsia-400 hover:underline">Obtener clave ↗</a>
           </div>
           <input id="set-graph-key" type="text" placeholder="api key de The Graph" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono" />
+          <div id="set-graph-status" class="text-[10px] mt-1"></div>
         </div>
         <div>
           <div class="flex items-baseline justify-between gap-2 mb-1">
@@ -158,6 +159,7 @@
             <a href="https://dashboard.helius.dev/" target="_blank" rel="noopener" class="text-[10px] text-fuchsia-400 hover:underline">Obtener clave ↗</a>
           </div>
           <input id="set-helius-key" type="text" placeholder="api key de Helius" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono" />
+          <div id="set-helius-status" class="text-[10px] mt-1"></div>
         </div>
         <div>
           <div class="flex items-baseline justify-between gap-2 mb-1">
@@ -165,6 +167,7 @@
             <a href="https://birdeye.so/data-api" target="_blank" rel="noopener" class="text-[10px] text-fuchsia-400 hover:underline">Obtener clave ↗</a>
           </div>
           <input id="set-birdeye-key" type="text" placeholder="api key de Birdeye (opcional)" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono" />
+          <div id="set-birdeye-status" class="text-[10px] mt-1"></div>
         </div>
       </div>
       <div id="settings-status" class="text-[11px] hidden"></div>
