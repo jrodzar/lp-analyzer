@@ -507,6 +507,15 @@ function buildLendingTimeline(events, gainsUSD, nowSec) {
 // Blockscout v2 los devuelve listos con symbol/decimals y un exchange_rate (USD).
 // Cuando exchange_rate falta, hacemos fallback batch a DefiLlama (gratis, sin key).
 // ============================================================================
+// Set de address (lowercase) de vaults Revert Lend, para excluirlos del listado
+// de tokens idle: sus shares (rlBaseUSDC, rlEthUSDC, …) ya se cuentan como
+// posición de tipo "lending" en el resumen DeFi, mostrarlos también en idle
+// sería doble contar + el precio de share tokens vía DexScreener no es real
+// (debería ser convertToAssets, que ya hace fetchRevertLending).
+const _revertVaultsLower = new Set(
+  Object.values(REVERT_LEND).map((v) => (v.vault || "").toLowerCase()).filter(Boolean)
+);
+
 async function fetchIdleTokensEVM(chainKey, address) {
   const c = state.chains[chainKey];
   if (!c || !c.blockscoutApi) return []; // chain sin soporte (p. ej. BNB / Optimism)
@@ -561,6 +570,11 @@ async function fetchIdleTokensEVM(chainKey, address) {
     const raw = it.value != null ? BigInt(it.value) : 0n;
     const dec = Number(t.decimals || 0);
     if (raw === 0n) continue;
+    const tokenAddr = (t.address || t.address_hash || "").toLowerCase();
+    // Saltar shares de Revert Lend (rlBaseUSDC, rlEthUSDC…) — ya se contabilizan
+    // como posición lending. Mostrarlos aquí duplica el valor y con precio
+    // incorrecto (DexScreener da el precio de share, no el USDC subyacente).
+    if (tokenAddr && _revertVaultsLower.has(tokenAddr)) continue;
     const balance = bigIntToDecimal(raw, dec);
     let priceUSD = null;
     if (t.exchange_rate != null && t.exchange_rate !== "") {
@@ -568,7 +582,6 @@ async function fetchIdleTokensEVM(chainKey, address) {
       if (isFinite(p) && p > 0) priceUSD = p;
     }
     const valueUSD = priceUSD != null ? balance * priceUSD : null;
-    const tokenAddr = (t.address || t.address_hash || "").toLowerCase();
     const obj = {
       chain: chainKey, symbol: t.symbol || "?", name: t.name || "",
       address: tokenAddr, decimals: dec,
