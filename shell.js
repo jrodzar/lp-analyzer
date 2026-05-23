@@ -1515,7 +1515,8 @@ function idleTokensBlock(tokens, opts = {}) {
       <div class="flex items-center gap-2 bg-slate-950/40 rounded-md px-2 py-1.5">
         ${chip}
         <span class="font-semibold text-slate-200 w-16 truncate">${t.symbol || "?"}</span>
-        <span class="text-slate-500 text-[11px] truncate flex-1">${t.name || ""}</span>
+        <span class="hidden sm:inline text-slate-500 text-[11px] truncate flex-1">${t.name || ""}</span>
+        <span class="flex-1 sm:hidden"></span>
         <span class="font-mono text-[11px] text-slate-400 shrink-0">${bal}</span>
         <span class="font-semibold text-slate-100 shrink-0 w-20 text-right">${valStr}</span>
       </div>`;
