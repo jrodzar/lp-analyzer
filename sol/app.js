@@ -1179,7 +1179,7 @@ function positionCard(p) {
           <span class="text-[11px] uppercase tracking-wide text-slate-400">${proto.name}</span>
         </div>
         <div class="font-semibold mt-0.5 truncate">${p.token0.symbol} / ${p.token1.symbol}</div>
-        <div class="text-[11px] text-slate-400">${p.feeTier != null ? `fee ${p.feeTier.toFixed(2)}% · ` : ""}tickSpacing ${p.tickSpacing}</div>
+        ${p.feeTier != null ? `<div class="text-[11px] text-slate-400">fee ${p.feeTier.toFixed(2)}%</div>` : ""}
       </div>
       ${rangeChip}
     </div>
