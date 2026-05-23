@@ -44,6 +44,7 @@ const els = {
   gPositions: $("g-positions"), gPositionsSub: $("g-positions-sub"), gAddresses: $("g-addresses"),
   pfSections: $("pf-sections"),
   pfCharts: $("pf-charts"), chartByAddress: $("chart-by-address"), chartByVenue: $("chart-by-venue"), chartByFees: $("chart-by-fees"),
+  quickBanner: $("quick-banner"), pfBanner: $("pf-banner"),
   pfFeesTimeline: $("pf-fees-timeline"), chartFeesTimeline: $("chart-fees-timeline"),
   pfFeesTimelineTotal: $("pf-fees-timeline-total"), chartFeesTimelineTotal: $("chart-fees-timeline-total"),
   feesMinThreshold: $("fees-min-threshold"), pfFeesSummary: $("pf-fees-summary"),
@@ -1148,7 +1149,7 @@ async function analyzeAll(opts = {}) {
       const entry = state.portfolio[i];
       if (entry.type !== type) continue;
       const r = await analyzeAddressHeadless(entry.address, entry.type);
-      results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [] };
+      results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [], analysisStatus: r.analysisStatus || null };
       done++;
       const msg = `Analizando direcciones (${done}/${n})…`;
       if (!silent) { setPfStatus(msg); updateAnalyzingModal(msg, done, n); state.results = results.filter(Boolean); renderPortfolio(); }
@@ -1215,6 +1216,42 @@ function fillSummary(prefix, items, extra = {}) {
   if ($i("addresses") && typeof extra.addresses === "number") $i("addresses").textContent = extra.addresses;
 }
 
+// Renderiza un banner de resultado del análisis (verde si OK, rojo si hubo errores).
+// `errors` es un array de objetos { source, reason }. Si no hay errores, banner verde
+// con un breve resumen. Si los hay, banner rojo listándolos + invitación a usar las
+// API keys propias desde Settings (link a #settings-modal).
+function renderAnalysisBanner(elem, opts) {
+  if (!elem) return;
+  if (!opts) { elem.classList.add("hidden"); elem.innerHTML = ""; return; }
+  const errors = Array.isArray(opts.errors) ? opts.errors : [];
+  const summary = String(opts.summary || "");
+  if (errors.length === 0) {
+    elem.className = "rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200 mb-3";
+    elem.innerHTML = `<span class="font-semibold">✓ Análisis completado</span>${summary ? " · " + summary : ""}`;
+  } else {
+    const byReason = new Map();
+    for (const e of errors) {
+      const k = e.reason || "error desconocido";
+      if (!byReason.has(k)) byReason.set(k, []);
+      byReason.get(k).push(e.source || "?");
+    }
+    const detail = [...byReason.entries()].map(([reason, srcs]) => `<span class="font-mono">${srcs.join(", ")}</span> <span class="text-rose-300/80">(${reason})</span>`).join(" · ");
+    elem.className = "rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200 mb-3 space-y-1";
+    elem.innerHTML =
+      `<div><span class="font-semibold">⚠ Análisis con errores</span>${summary ? " · " + summary : ""}</div>` +
+      `<div class="text-[12px]">Fallaron: ${detail}.</div>` +
+      `<div class="text-[11px] text-rose-300/80">Si los errores persisten, puedes configurar tus propias API keys desde <button type="button" id="banner-open-settings" class="underline hover:text-rose-100">⚙ Settings</button>.</div>`;
+    const openBtn = elem.querySelector("#banner-open-settings");
+    if (openBtn) openBtn.onclick = openSettingsModal;
+  }
+  elem.classList.remove("hidden");
+}
+function clearAnalysisBanner(elem) {
+  if (!elem) return;
+  elem.classList.add("hidden");
+  elem.innerHTML = "";
+}
+
 // Resumen del Quick: lo recibe vía postMessage del engine (lp-summary {items}).
 // Misma función (fillSummary) que el Portfolio → consistencia garantizada.
 function renderQuickSummary(items) {
@@ -1227,6 +1264,7 @@ function renderQuickSummary(items) {
 function clearQuickSummary() {
   const wrap = document.getElementById("quick-summary");
   if (wrap) wrap.classList.add("hidden");
+  clearAnalysisBanner(els.quickBanner);
 }
 
 function renderPortfolio() {
@@ -1244,6 +1282,23 @@ function renderPortfolio() {
   // resumen global
   els.pfSummary.classList.toggle("hidden", all.length === 0 && state.results.length === 0);
   fillSummary("g", all, { addresses: state.results.length });
+
+  // Banner de resultado del análisis (verde si OK, rojo si hubo errores por chain/protocolo
+  // en alguna de las direcciones). Agregamos errores de TODAS las direcciones y prefijamos
+  // con la etiqueta de la dirección que falló para que sea claro dónde.
+  if (state.results.length === 0) {
+    clearAnalysisBanner(els.pfBanner);
+  } else {
+    const allErrors = [];
+    for (const r of state.results) {
+      const errs = r.analysisStatus?.errors || [];
+      const label = (r.entry?.label) || shortAddr(r.entry?.address || "");
+      for (const e of errs) allErrors.push({ source: `${label} · ${e.source}`, reason: e.reason });
+    }
+    const addrCount = state.results.length;
+    const summary = `${all.length} posiciones en ${addrCount} ${addrCount === 1 ? "dirección" : "direcciones"}`;
+    renderAnalysisBanner(els.pfBanner, { errors: allErrors, summary });
+  }
 
   renderPortfolioCharts();
 
@@ -1617,7 +1672,7 @@ window.addEventListener("message", (e) => {
   } else if (d.type === "lp-result" && pendingReqs.has(d.reqId)) {
     const resolve = pendingReqs.get(d.reqId);
     pendingReqs.delete(d.reqId);
-    resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [] });
+    resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [], analysisStatus: d.analysisStatus || null });
   } else if (d.type === "lp-analyze-done") {
     // el engine terminó el análisis de Quick → cerrar el modal de progreso
     clearTimeout(_quickModalTimer);
@@ -1629,6 +1684,15 @@ window.addEventListener("message", (e) => {
     // El engine ha pintado su Quick → renderizamos el mismo resumen aquí encima
     // del iframe, con la misma plantilla que el Portfolio (consistencia garantizada).
     renderQuickSummary(d.items || []);
+    // Banner verde/rojo con el resultado del análisis (errores por chain/protocolo)
+    const status = d.analysisStatus || {};
+    const items = d.items || [];
+    const lpN = items.filter((it) => !it.lending).length;
+    const lendN = items.length - lpN;
+    const summary = items.length
+      ? `${items.length} posiciones${lendN ? ` (${lpN} LP + ${lendN} lending)` : ""} en ${d.app === "evm" ? "EVM" : "Solana"}`
+      : `Sin posiciones en ${d.app === "evm" ? "las redes seleccionadas" : "los protocolos activos"}`;
+    renderAnalysisBanner(els.quickBanner, { errors: status.errors || [], summary });
   }
 });
 

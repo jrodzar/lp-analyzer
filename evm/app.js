@@ -1768,6 +1768,12 @@ async function analyze() {
     const skippedNote = skipped.length ? ` (saltadas: ${skipped.map((s) => state.chains[s.chainKey].name).join(", ")})` : "";
     const lendN = state.positions.filter((p) => p._lending).length;
     const lpN = positions.length;
+    // Resumen estructurado del análisis para el shell (banner de resultado)
+    state.analysisStatus = {
+      ok: errors.length === 0,
+      errors: errors.map((e) => ({ source: state.chains[e.chainKey]?.name || e.chainKey, reason: classifyError(e.__error).text })),
+    };
+
     if (errors.length) {
       // Clasificar errores por causa y nombrar las redes afectadas
       const byCat = new Map();
@@ -1816,6 +1822,7 @@ async function analyze() {
   } catch (e) {
     console.error(e);
     setStatus(`Error: ${e.message}`, "err");
+    state.analysisStatus = { ok: false, errors: [{ source: "EVM", reason: (classifyError(e?.message) || {}).text || (e?.message || "error") }] };
   } finally {
     setLoading(false);
   }
@@ -2019,7 +2026,8 @@ document.addEventListener("DOMContentLoaded", init);
           // que pinte su resumen Quick idéntico al global. Tolera errores.
           try {
             const items = (typeof toPortfolioItems === "function") ? toPortfolioItems() : [];
-            window.parent.postMessage({ type: "lp-summary", app: "evm", items }, "*");
+            const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
+            window.parent.postMessage({ type: "lp-summary", app: "evm", items, analysisStatus }, "*");
           } catch (e) {}
           try { window.parent.postMessage({ type: "lp-analyze-done", app: "evm" }, "*"); } catch (e) {}
         });
@@ -2063,10 +2071,11 @@ document.addEventListener("DOMContentLoaded", init);
             }
           }
           const status = (document.getElementById("status-msg") || {}).textContent || "";
-          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline }, "*");
+          const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
+          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline, analysisStatus }, "*");
         })
         .catch((err) => {
-          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err) }, "*");
+          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err), analysisStatus: { ok: false, errors: [{ source: "EVM", reason: String(err) }] } }, "*");
         });
     }
   });

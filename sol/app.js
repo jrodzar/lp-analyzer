@@ -1300,20 +1300,29 @@ async function analyze() {
 
     // PnL real + IL vs HODL con precios históricos (Birdeye, vía key propia o proxy)
     let beWarn = "";
+    let beError = null;
     if (all.length && (state.birdeyeKey || PROXY_BASE)) {
       setStatus("Calculando PnL e IL con históricos de Birdeye…", "info");
       try { await enrichSolanaPnL(addr); } catch (e) { console.warn("enrichSolanaPnL:", e); }
       const st = state._beStats || {};
       if (st.ok === 0 && (st.denied > 0)) {
         beWarn = " ⚠ Tu plan de Birdeye no permite precios históricos (o la key es inválida): PnL/IL no disponible.";
+        beError = "el plan no permite histórico (o key inválida)";
       } else if (st.ok === 0 && st.rate > 0) {
         beWarn = " ⚠ Birdeye limitó las peticiones (rate limit): PnL/IL incompleto, reintenta en un momento.";
+        beError = "rate limit";
       } else if (st.ok === 0 && st.error > 0) {
         beWarn = " ⚠ No se pudo obtener histórico de Birdeye: PnL/IL no disponible.";
+        beError = "error de petición";
       } else if (st.partial > 0) {
         beWarn = ` ⚠ ${st.partial} posición(es) sin histórico completo en Birdeye (p. ej. tokens RWA): PnL/IL omitido en ellas.`;
       }
     }
+
+    state.analysisStatus = {
+      ok: !beError,
+      errors: beError ? [{ source: "Birdeye", reason: beError }] : [],
+    };
 
     if (!all.length) {
       setStatus(`Sin posiciones para ${shortAddr(addr)} en los protocolos activos.`, "info");
@@ -1325,6 +1334,7 @@ async function analyze() {
   } catch (e) {
     console.error(e);
     setStatus(classifyError(e && e.message), "err");
+    state.analysisStatus = { ok: false, errors: [{ source: "Solana", reason: classifyError(e?.message) || (e?.message || "error") }] };
   } finally {
     setLoading(false);
   }
@@ -1744,7 +1754,8 @@ document.addEventListener("DOMContentLoaded", init);
           // con la misma plantilla y queda idéntico al global.
           try {
             const items = (typeof toPortfolioItems === "function") ? toPortfolioItems() : [];
-            window.parent.postMessage({ type: "lp-summary", app: "sol", items }, "*");
+            const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
+            window.parent.postMessage({ type: "lp-summary", app: "sol", items, analysisStatus }, "*");
           } catch (e) {}
           try { window.parent.postMessage({ type: "lp-analyze-done", app: "sol" }, "*"); } catch (e) {}
         });
@@ -1775,10 +1786,11 @@ document.addEventListener("DOMContentLoaded", init);
               return { posId: p.mint, label: `${p.token0.symbol}/${p.token1.symbol}`, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: fees }] };
             });
           }
-          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline }, "*");
+          const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
+          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline, analysisStatus }, "*");
         })
         .catch((err) => {
-          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err) }, "*");
+          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err), analysisStatus: { ok: false, errors: [{ source: "Solana", reason: String(err) }] } }, "*");
         });
     }
   });
