@@ -188,6 +188,7 @@ function setTab(tab) {
       if (f && f.contentWindow) f.contentWindow.postMessage({ type: "lp-clear" }, "*");
       state.iframeOwnedBy[mode] = null;
       els.addr.value = "";
+      clearQuickSummary();
     }
     // El iframe inactivo también lo limpiamos por si el usuario cambia de modo
     const other = mode === "evm" ? "sol" : "evm";
@@ -196,6 +197,9 @@ function setTab(tab) {
       if (f && f.contentWindow) f.contentWindow.postMessage({ type: "lp-clear" }, "*");
       state.iframeOwnedBy[other] = null;
     }
+  } else {
+    // al salir de Quick, escondemos su resumen (no es relevante en otros tabs)
+    clearQuickSummary();
   }
 }
 
@@ -240,6 +244,7 @@ function refreshActiveTab() {
 // ============================================================================
 
 function setMode(mode) {
+  const prevMode = state.mode;
   state.mode = mode;
   localStorage.setItem("lp:lastMode", mode);
   const active = "seg px-3 py-1.5 text-xs rounded-md font-semibold bg-[#ECE600] text-slate-900 shadow";
@@ -249,6 +254,9 @@ function setMode(mode) {
   els.frameEvm.classList.toggle("hidden", mode !== "evm");
   els.frameSol.classList.toggle("hidden", mode !== "sol");
   renderWalletButton();
+  // Al cambiar de cadena en Quick limpiamos el resumen (los datos del modo
+  // anterior ya no aplican). El siguiente lp-summary lo vuelve a pintar.
+  if (prevMode && prevMode !== mode) clearQuickSummary();
 }
 
 function showHint(msg, kind) {
@@ -1141,6 +1149,63 @@ async function analyzeAll(opts = {}) {
 // Render portfolio: resumen global + secciones por dirección
 // ============================================================================
 
+// Rellena las 5 cards del resumen (Valor, Fees, IL, PnL, Posiciones). Usado por
+// Portfolio (prefix "g") y Quick (prefix "q"). Garantiza que ambos resúmenes
+// muestren exactamente lo mismo a partir del array normalizado de items.
+function fillSummary(prefix, items, extra = {}) {
+  const $i = (id) => document.getElementById(`${prefix}-${id}`);
+  const totalValue = items.reduce((s, it) => s + (it.valueUSD || 0), 0);
+  const totalCollected = items.reduce((s, it) => s + (it.feesUSD || 0), 0);
+  const totalPending = items.reduce((s, it) => s + (it.feesPendingUSD || 0), 0);
+  const totalFees = totalCollected + totalPending;
+  const lp = items.filter((it) => !it.lending);
+  const lending = items.filter((it) => it.lending);
+  const inRange = lp.filter((it) => it.inRange).length;
+  let ilSum = 0, ilN = 0, pnlSum = 0, pnlN = 0;
+  for (const it of lp) {
+    if (it.ilUSD != null && isFinite(it.ilUSD)) { ilSum += it.ilUSD; ilN++; }
+    if (it.pnlUSD != null && isFinite(it.pnlUSD)) { pnlSum += it.pnlUSD; pnlN++; }
+  }
+  const pctOf = (x) => (totalValue > 0 ? ` (${x >= 0 ? "+" : ""}${((x / totalValue) * 100).toFixed(2)}%)` : "");
+
+  if ($i("value")) $i("value").textContent = fmtUSD(totalValue);
+  if ($i("fees")) {
+    $i("fees").textContent = fmtUSD(totalFees);
+    if ($i("fees-sub")) $i("fees-sub").innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(totalPending)}</span> pendientes · <span class="text-emerald-400 font-semibold">${fmtUSD(totalCollected)}</span> cobradas`;
+  }
+  if ($i("il")) {
+    $i("il").textContent = ilN ? fmtUSD(ilSum) + pctOf(ilSum) : "—";
+    $i("il").className = "text-xl font-bold mt-1 " + (ilN ? pnlColor(ilSum) : "");
+    if ($i("il-sub")) $i("il-sub").textContent = ilN ? `${ilN}/${lp.length} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
+  }
+  if ($i("pnl")) {
+    $i("pnl").textContent = pnlN ? fmtUSD(pnlSum) + pctOf(pnlSum) : "—";
+    $i("pnl").className = "text-xl font-bold mt-1 " + (pnlN ? pnlColor(pnlSum) : "");
+    if ($i("pnl-sub")) $i("pnl-sub").textContent = pnlN ? `${pnlN}/${lp.length} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
+  }
+  if ($i("positions")) {
+    $i("positions").textContent = items.length;
+    if ($i("positions-sub")) $i("positions-sub").textContent =
+      `${inRange} en rango · ${lp.length - inRange} fuera` +
+      (lending.length ? ` · ${lending.length} préstamo${lending.length > 1 ? "s" : ""}` : "");
+  }
+  if ($i("addresses") && typeof extra.addresses === "number") $i("addresses").textContent = extra.addresses;
+}
+
+// Resumen del Quick: lo recibe vía postMessage del engine (lp-summary {items}).
+// Misma función (fillSummary) que el Portfolio → consistencia garantizada.
+function renderQuickSummary(items) {
+  const wrap = document.getElementById("quick-summary");
+  if (!wrap) return;
+  if (!items || !items.length) { wrap.classList.add("hidden"); return; }
+  wrap.classList.remove("hidden");
+  fillSummary("q", items);
+}
+function clearQuickSummary() {
+  const wrap = document.getElementById("quick-summary");
+  if (wrap) wrap.classList.add("hidden");
+}
+
 function renderPortfolio() {
   // ocultamos las posiciones cerradas en toda la vista de portfolio
   const visItems = (r) => (r.items || []).filter((it) => !it.closed);
@@ -1155,37 +1220,7 @@ function renderPortfolio() {
 
   // resumen global
   els.pfSummary.classList.toggle("hidden", all.length === 0 && state.results.length === 0);
-  const totalValue = all.reduce((s, it) => s + (it.valueUSD || 0), 0);
-  const totalCollected = all.reduce((s, it) => s + (it.feesUSD || 0), 0);
-  const totalPending = all.reduce((s, it) => s + (it.feesPendingUSD || 0), 0);
-  const totalFees = totalCollected + totalPending;
-  // separar LP de préstamos para clasificar bien (un préstamo no tiene "rango")
-  const lp = all.filter((it) => !it.lending);
-  const lending = all.filter((it) => it.lending);
-  const inRange = lp.filter((it) => it.inRange).length;
-  els.gValue.textContent = fmtUSD(totalValue);
-  els.gFees.textContent = fmtUSD(totalFees);
-  els.gFeesSub.innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(totalPending)}</span> pendientes · <span class="text-emerald-400 font-semibold">${fmtUSD(totalCollected)}</span> cobradas`;
-
-  // IL vs HODL y PnL neto agregados (solo posiciones que aportan el dato; % sobre el valor LP)
-  let ilSum = 0, ilN = 0, pnlSum = 0, pnlN = 0;
-  for (const it of lp) {
-    if (it.ilUSD != null && isFinite(it.ilUSD)) { ilSum += it.ilUSD; ilN++; }
-    if (it.pnlUSD != null && isFinite(it.pnlUSD)) { pnlSum += it.pnlUSD; pnlN++; }
-  }
-  const pctOfValue = (x) => (totalValue > 0 ? ` (${x >= 0 ? "+" : ""}${((x / totalValue) * 100).toFixed(2)}%)` : "");
-  els.gIl.textContent = ilN ? fmtUSD(ilSum) + pctOfValue(ilSum) : "—";
-  els.gIl.className = "text-xl font-bold mt-1 " + (ilN ? pnlColor(ilSum) : "");
-  els.gIlSub.textContent = ilN ? `${ilN}/${lp.length} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
-  els.gPnl.textContent = pnlN ? fmtUSD(pnlSum) + pctOfValue(pnlSum) : "—";
-  els.gPnl.className = "text-xl font-bold mt-1 " + (pnlN ? pnlColor(pnlSum) : "");
-  els.gPnlSub.textContent = pnlN ? `${pnlN}/${lp.length} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
-
-  els.gPositions.textContent = all.length;
-  els.gPositionsSub.textContent =
-    `${inRange} en rango · ${lp.length - inRange} fuera` +
-    (lending.length ? ` · ${lending.length} préstamo${lending.length > 1 ? "s" : ""}` : "");
-  els.gAddresses.textContent = state.results.length;
+  fillSummary("g", all, { addresses: state.results.length });
 
   renderPortfolioCharts();
 
@@ -1566,6 +1601,10 @@ window.addEventListener("message", (e) => {
     _autoBusy = false; // liberar el guard de auto-actualización
     spinRefresh(false);
     setLastUpdated();
+  } else if (d.type === "lp-summary" && (d.app === "evm" || d.app === "sol")) {
+    // El engine ha pintado su Quick → renderizamos el mismo resumen aquí encima
+    // del iframe, con la misma plantilla que el Portfolio (consistencia garantizada).
+    renderQuickSummary(d.items || []);
   }
 });
 

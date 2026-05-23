@@ -1941,7 +1941,9 @@ document.addEventListener("DOMContentLoaded", init);
 (function () {
   if (window.parent === window) return; // no embebido
   const style = document.createElement("style");
-  style.textContent = "header{display:none!important}#addr-block{display:none!important}#input-section{margin-top:0}";
+  // Cuando estamos embebidos: ocultamos header, input block y el summary interno
+  // (el shell pinta uno propio idéntico al de Portfolio sobre el iframe).
+  style.textContent = "header{display:none!important}#addr-block{display:none!important}#input-section{margin-top:0}#summary-section{display:none!important}";
   document.head.appendChild(style);
   document.documentElement.classList.add("embedded");
   function notifyWallet() {
@@ -2005,7 +2007,15 @@ document.addEventListener("DOMContentLoaded", init);
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
       Promise.resolve(typeof analyze === "function" ? analyze() : null)
-        .finally(() => { try { window.parent.postMessage({ type: "lp-analyze-done", app: "evm" }, "*"); } catch (e) {} });
+        .finally(() => {
+          // Enviar al shell los items normalizados (= mismos datos que Portfolio) para
+          // que pinte su resumen Quick idéntico al global. Tolera errores.
+          try {
+            const items = (typeof toPortfolioItems === "function") ? toPortfolioItems() : [];
+            window.parent.postMessage({ type: "lp-summary", app: "evm", items }, "*");
+          } catch (e) {}
+          try { window.parent.postMessage({ type: "lp-analyze-done", app: "evm" }, "*"); } catch (e) {}
+        });
     } else if (d.type === "lp-open-settings") {
       if (typeof openSettings === "function") openSettings();
     } else if (d.type === "lp-connect-wallet") {

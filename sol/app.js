@@ -1683,7 +1683,9 @@ document.addEventListener("DOMContentLoaded", init);
 (function () {
   if (window.parent === window) return; // no embebido
   const style = document.createElement("style");
-  style.textContent = "header{display:none!important}#addr-block{display:none!important}#input-section{margin-top:0}";
+  // Embebido: ocultamos header, input block y summary interno (el shell pinta uno
+  // idéntico al de Portfolio sobre el iframe).
+  style.textContent = "header{display:none!important}#addr-block{display:none!important}#input-section{margin-top:0}#summary-section{display:none!important}";
   document.head.appendChild(style);
   document.documentElement.classList.add("embedded");
   function notifyWallet() {
@@ -1727,7 +1729,15 @@ document.addEventListener("DOMContentLoaded", init);
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
       Promise.resolve(typeof analyze === "function" ? analyze() : null)
-        .finally(() => { try { window.parent.postMessage({ type: "lp-analyze-done", app: "sol" }, "*"); } catch (e) {} });
+        .finally(() => {
+          // Mismos items normalizados que Portfolio → el shell pinta su resumen Quick
+          // con la misma plantilla y queda idéntico al global.
+          try {
+            const items = (typeof toPortfolioItems === "function") ? toPortfolioItems() : [];
+            window.parent.postMessage({ type: "lp-summary", app: "sol", items }, "*");
+          } catch (e) {}
+          try { window.parent.postMessage({ type: "lp-analyze-done", app: "sol" }, "*"); } catch (e) {}
+        });
     } else if (d.type === "lp-open-settings") {
       if (typeof openSettings === "function") openSettings();
     } else if (d.type === "lp-connect-wallet") {

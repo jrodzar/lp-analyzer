@@ -7,7 +7,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "65";</script>
+  <script>window.APP_VERSION = "66";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -330,6 +330,38 @@
         </div>
       </div>
       <div id="hint" class="text-[11px] hidden mb-2"></div>
+      <!-- Resumen del análisis Quick (idéntico al del Portfolio: una sola fuente de verdad
+           rellenada por shell.js → fillSummary("q", items). Se rellena al recibir lp-summary
+           del engine y se oculta al limpiar). -->
+      <section id="quick-summary" class="hidden mb-4">
+        <h2 class="text-lg font-semibold mb-3">Resumen</h2>
+        <div class="grid grid-cols-2 lg:grid-cols-5 gap-3">
+          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">Valor total LP</div>
+            <div id="q-value" class="text-xl font-bold mt-1">—</div>
+          </div>
+          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">Fees acumuladas</div>
+            <div id="q-fees" class="text-xl font-bold mt-1 text-emerald-400">—</div>
+            <div id="q-fees-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
+          </div>
+          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">IL vs HODL <span class="cursor-help text-slate-500" title="Pérdida impermanente: valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Es una estimación y no incluye gas.">ⓘ</span></div>
+            <div id="q-il" class="text-xl font-bold mt-1">—</div>
+            <div id="q-il-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
+          </div>
+          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">PnL neto <span class="cursor-help text-slate-500" title="PnL neto = valor actual + retirado + fees − depositado. Es una estimación y NO incluye el coste de gas. En Solana, fees y retiros se separan por heurística y los tokens sin histórico (p. ej. RWA) se omiten.">ⓘ</span></div>
+            <div id="q-pnl" class="text-xl font-bold mt-1">—</div>
+            <div id="q-pnl-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
+          </div>
+          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">Posiciones</div>
+            <div id="q-positions" class="text-xl font-bold mt-1">—</div>
+            <div id="q-positions-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
+          </div>
+        </div>
+      </section>
       <div class="relative" style="height: calc(100vh - 220px); min-height: 480px;">
         <iframe id="frame-evm" data-src="evm/index.html" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
         <iframe id="frame-sol" data-src="sol/index.html" class="absolute inset-0 w-full h-full border-0 hidden"></iframe>
