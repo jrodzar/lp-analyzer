@@ -9,7 +9,8 @@
 //   3) getMultipleAccounts -> filtrar los que tengan discriminator de Position
 //   4) Decodificar Borsh, leer Whirlpool de cada uno
 //   5) Calcular composición actual con sqrtPriceX64 + ticks (V3 math)
-//   6) Fees pendientes = feeOwedA/B (claimable; ver footer para limitación)
+//   6) Fees pendientes = feeOwedA/B + uncollected (calculado on-chain leyendo
+//      los TickArrays y reaplicando la fórmula de feeGrowthInside)
 //   7) Precios USD vía Jupiter
 // ============================================================================
 
