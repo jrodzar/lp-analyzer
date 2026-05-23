@@ -1350,56 +1350,64 @@ function renderPortfolio() {
 
   renderPortfolioCharts();
 
-  // secciones por dirección
+  // secciones por dirección — cada una es un <details> plegable con MARCO ÚNICO
+  // que engloba cabecera + tokens idle + cards LP. Abierto por defecto.
   els.pfSections.innerHTML = "";
   for (const r of state.results) {
     const items = visItems(r);
-    const section = document.createElement("section");
     const subVal = items.reduce((s, it) => s + (it.valueUSD || 0), 0);
     const subFees = items.reduce((s, it) => s + (it.feesPendingUSD || 0) + (it.feesUSD || 0), 0);
-    // Cabecera de dirección — más visual: border-left de color según red, fondo
-    // suave, label grande. Se distingue claramente al hacer scroll por el portfolio.
     const isEvm = r.entry.type === "evm";
     const borderCls = isEvm ? "border-l-fuchsia-500" : "border-l-purple-500";
     const bgCls = isEvm ? "bg-fuchsia-500/[0.04]" : "bg-purple-500/[0.04]";
     const badgeCls = isEvm
       ? "bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30"
       : "bg-purple-500/15 text-purple-300 border border-purple-500/30";
-    const head = document.createElement("div");
-    head.className = `rounded-lg border border-slate-800 border-l-4 ${borderCls} ${bgCls} px-4 py-3 mb-3 flex items-center gap-3 flex-wrap`;
+
+    const section = document.createElement("details");
+    section.open = true;
+    section.className = `pf-section rounded-xl border border-slate-800 border-l-4 ${borderCls} ${bgCls} mb-4 overflow-hidden`;
+
+    const head = document.createElement("summary");
+    head.className = "px-4 py-3 cursor-pointer hover:brightness-110 select-none";
     head.innerHTML = `
-      <span class="chip ${badgeCls} text-xs font-semibold">${isEvm ? "EVM" : "SOL"}</span>
-      <h3 class="font-bold text-lg text-slate-100">${r.entry.label || shortAddr(r.entry.address)}</h3>
-      <span class="font-mono text-[11px] text-slate-500">${shortAddr(r.entry.address)}</span>
-      <span class="flex-1"></span>
-      <span class="text-sm text-slate-300 flex items-center gap-2 flex-wrap">
-        <span><span class="font-semibold text-slate-100">${items.length}</span> pos</span>
-        <span class="text-slate-600">·</span>
-        <span class="font-semibold text-slate-100">${fmtUSD(subVal)}</span>
-        <span class="text-slate-600">·</span>
-        <span>fees <span class="font-semibold text-emerald-400">${fmtUSD(subFees)}</span></span>
-      </span>`;
+      <div class="flex items-center gap-3 flex-wrap">
+        <span class="pf-chev inline-block text-slate-400 transition-transform">▾</span>
+        <span class="chip ${badgeCls} text-xs font-semibold">${isEvm ? "EVM" : "SOL"}</span>
+        <h3 class="font-bold text-lg text-slate-100">${r.entry.label || shortAddr(r.entry.address)}</h3>
+        <span class="font-mono text-[11px] text-slate-500">${shortAddr(r.entry.address)}</span>
+        <span class="flex-1"></span>
+        <span class="text-sm text-slate-300 flex items-center gap-2 flex-wrap">
+          <span><span class="font-semibold text-slate-100">${items.length}</span> pos</span>
+          <span class="text-slate-600">·</span>
+          <span class="font-semibold text-slate-100">${fmtUSD(subVal)}</span>
+          <span class="text-slate-600">·</span>
+          <span>fees <span class="font-semibold text-emerald-400">${fmtUSD(subFees)}</span></span>
+        </span>
+      </div>`;
     section.appendChild(head);
 
-    // 1) Tokens "idle" PRIMERO (expandidos por defecto) — más útil que los pools en
-    // muchos casos. Si no hay tokens, no se renderiza nada.
+    const body = document.createElement("div");
+    body.className = "px-4 pb-4 pt-1";
+
+    // 1) Tokens "idle" primero (expandidos por defecto)
     const idleBlock = idleTokensBlock(r.idleTokens || [], { open: true });
-    if (idleBlock) section.appendChild(idleBlock);
+    if (idleBlock) body.appendChild(idleBlock);
 
     // 2) Posiciones LP / lending de la dirección
     if (!items.length) {
       const empty = document.createElement("div");
-      // ¿el estado del engine indica un problema (auth/red/límite)? → resaltar en ámbar
       const isErr = r.status && /no se pudo|inicia sesión|no está autoriz|límite|error de red|servicio no disponible|api key/i.test(r.status);
-      empty.className = `text-xs mb-4 ${isErr ? "text-amber-400" : "text-slate-500"}`;
+      empty.className = `text-xs ${isErr ? "text-amber-400" : "text-slate-500"}`;
       empty.textContent = r.status && r.status.trim() ? r.status : "Sin posiciones abiertas.";
-      section.appendChild(empty);
+      body.appendChild(empty);
     } else {
       const grid = document.createElement("div");
-      grid.className = "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-4";
+      grid.className = "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3";
       for (const it of items) grid.appendChild(portfolioCard(it, colorOf.get(it)));
-      section.appendChild(grid);
+      body.appendChild(grid);
     }
+    section.appendChild(body);
     els.pfSections.appendChild(section);
   }
 }

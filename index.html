@@ -12,7 +12,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "80";</script>
+  <script>window.APP_VERSION = "81";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -25,6 +25,11 @@
     .scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
     .skeleton { background: linear-gradient(90deg, rgba(255,255,255,.04) 25%, rgba(255,255,255,.09) 50%, rgba(255,255,255,.04) 75%); background-size: 200% 100%; animation: shimmer 1.3s infinite; }
     @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    /* <details> de secciones de dirección: ocultar el marcador nativo y rotar el chevron propio */
+    .pf-section > summary { list-style: none; }
+    .pf-section > summary::-webkit-details-marker { display: none; }
+    .pf-section .pf-chev { transform: rotate(0deg); }
+    .pf-section:not([open]) .pf-chev { transform: rotate(-90deg); }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 flex flex-col min-h-screen">
