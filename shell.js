@@ -23,7 +23,7 @@ const els = {
   encModal: $("enc-modal"), encTitle: $("enc-title"), encDesc: $("enc-desc"),
   encPass: $("enc-pass"), encPass2: $("enc-pass2"), encRemember: $("enc-remember"),
   encWarn: $("enc-warn"), encAck: $("enc-ack"), encErr: $("enc-err"), encSubmit: $("enc-submit"),
-  encCancel: $("enc-cancel"), changePass: $("change-pass"),
+  encCancel: $("enc-cancel"), encForgot: $("enc-forgot"), changePass: $("change-pass"), deleteAccount: $("delete-account"),
   // login — portfolio
   loginGate: $("login-gate"), loginBtn: $("login-btn"), portfolioArea: $("portfolio-area"), gateMsg: $("gate-msg"),
   // login — quick
@@ -319,6 +319,7 @@ function openEncModal(mode) {
     els.encPass2.classList.toggle("hidden", !needsConfirm);
     els.encWarn.classList.toggle("hidden", !needsConfirm);
     els.encCancel.classList.toggle("hidden", mode !== "change"); // cancelar solo en cambio
+    els.encForgot.classList.toggle("hidden", mode !== "unlock"); // "olvidé" solo al desbloquear
     els.encPass.value = ""; els.encPass2.value = ""; els.encErr.classList.add("hidden");
     els.encRemember.checked = false; els.encAck.checked = false;
     els.encModal.dataset.mode = mode;
@@ -362,6 +363,85 @@ async function handleEncSubmit() {
     closeEncModal(key);
   } catch (e) {
     err("Error: " + e.message);
+  }
+}
+
+// "Olvidé mi contraseña" (solo disponible en modo unlock): borra el blob cifrado
+// de Firestore y permite empezar de cero con una contraseña nueva. NO recupera
+// las direcciones — solo evita quedar bloqueado fuera de la app.
+async function handleForgotPassword() {
+  if (!state.user || !fb.db) return;
+  const ok1 = confirm(
+    "⚠️ ¿Seguro que quieres empezar de cero?\n\n" +
+    "Esto BORRARÁ tus direcciones cifradas (no se pueden recuperar sin la contraseña).\n" +
+    "Después podrás definir una nueva contraseña con un portfolio vacío."
+  );
+  if (!ok1) return;
+  const typed = prompt('Escribe "BORRAR" en mayúsculas para confirmar:');
+  if (typed !== "BORRAR") return;
+  try {
+    const ref = fb.fsMod.doc(fb.db, "users", state.user.uid);
+    await fb.fsMod.setDoc(ref, {
+      portfolioEnc: fb.fsMod.deleteField(),
+      encSalt: fb.fsMod.deleteField(),
+    }, { merge: true });
+    forgetKey(state.user.uid);
+    _pendingEnc = null; _legacyPortfolio = null;
+    crypto_.salt = crypto.getRandomValues(new Uint8Array(16));
+    crypto_.key = null;
+    state.portfolio = [];
+    closeEncModal(null); // cierra el unlock actual; abajo abrimos uno nuevo en modo "set"
+    const key = await openEncModal("set");
+    if (!key) { setPfStatus("Define una contraseña para continuar.", "err"); return; }
+    await savePortfolio();
+    renderPortfolioList();
+    setPfStatus("Portfolio reiniciado. Define ya tu nueva contraseña.", "ok");
+  } catch (e) {
+    console.error("forgot-password", e);
+    setPfStatus(`No se pudo reiniciar: ${e.message}`, "err");
+  }
+}
+
+// "Eliminar cuenta": borra el doc Firestore y la cuenta de Firebase Auth.
+// Si Auth pide re-login (token viejo), reintenta tras un signInWithPopup.
+async function handleDeleteAccount() {
+  if (!state.user || !fb.auth || !fb.db) return;
+  const email = state.user.email || "";
+  const ok1 = confirm(
+    "⚠️ ¿Eliminar tu cuenta?\n\n" +
+    "Se borrarán:\n" +
+    "• Tus direcciones cifradas y preferencias\n" +
+    "• Tu cuenta de Firebase Auth\n\n" +
+    "Esta acción es IRREVERSIBLE."
+  );
+  if (!ok1) return;
+  const typed = prompt(`Para confirmar, escribe tu email exactamente:\n${email}`);
+  if ((typed || "").trim().toLowerCase() !== email.toLowerCase()) {
+    alert("Email no coincide. Cancelado.");
+    return;
+  }
+  try {
+    // 1) borra el doc del usuario en Firestore (datos cifrados + prefs)
+    try { await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.db, "users", state.user.uid)); }
+    catch (e) { console.warn("deleteDoc users", e); }
+    // 2) borra la clave recordada en este dispositivo
+    forgetKey(state.user.uid);
+    // 3) borra la cuenta de Firebase Auth (puede requerir reautenticación)
+    try {
+      await fb.authMod.deleteUser(fb.auth.currentUser);
+    } catch (e) {
+      if (e && e.code === "auth/requires-recent-login") {
+        alert("Por seguridad, vuelve a iniciar sesión para confirmar el borrado.");
+        const provider = new fb.authMod.GoogleAuthProvider();
+        await fb.authMod.reauthenticateWithPopup(fb.auth.currentUser, provider);
+        await fb.authMod.deleteUser(fb.auth.currentUser);
+      } else { throw e; }
+    }
+    // 4) onAuthChange(null) se encarga del resto (vuelta al gate)
+    alert("Tu cuenta ha sido eliminada. Hasta pronto 👋");
+  } catch (e) {
+    console.error("delete-account", e);
+    setPfStatus(`No se pudo eliminar la cuenta: ${e.message}`, "err");
   }
 }
 
@@ -1495,6 +1575,8 @@ els.changePass.onclick = () => {
   if (!crypto_.key) { setPfStatus("Desbloquea tu portfolio primero.", "err"); return; }
   openEncModal("change");
 };
+els.encForgot.onclick = handleForgotPassword;
+els.deleteAccount.onclick = handleDeleteAccount;
 els.manageAccess.onclick = openAccessModal;
 els.accessClose.onclick = closeAccessModal;
 els.accessAdd.onclick = addAllowEmail;

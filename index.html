@@ -7,7 +7,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "52";</script>
+  <script>window.APP_VERSION = "53";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -133,6 +133,7 @@
         <button id="enc-cancel" class="hidden px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm">Cancelar</button>
         <button id="enc-submit" class="flex-1 px-3 py-2 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-sm font-semibold">Continuar</button>
       </div>
+      <button id="enc-forgot" class="hidden text-xs text-slate-400 hover:text-rose-300 underline underline-offset-2 mt-1">¿Olvidaste tu contraseña? Empezar de cero (se borrarán tus direcciones)</button>
     </div>
   </div>
 
@@ -160,6 +161,7 @@
             <div class="flex items-center gap-2">
               <button id="manage-access" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Gestionar accesos (admin)">👥 Accesos</button>
               <button id="change-pass" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Cambiar contraseña de cifrado">🔑 Contraseña</button>
+              <button id="delete-account" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/40 border border-slate-700 hover:border-rose-700 text-xs text-rose-300" title="Eliminar permanentemente tu cuenta y todos tus datos">🗑️ Eliminar cuenta</button>
               <button id="pf-csv" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Descargar posiciones en CSV">⬇ CSV</button>
               <button id="analyze-all" class="px-3 py-1.5 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-xs font-semibold">Analizar todo</button>
             </div>
