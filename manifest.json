@@ -1,0 +1,20 @@
+{
+  "name": "Booster Crypto PRO",
+  "short_name": "Booster Crypto",
+  "description": "Analizador de posiciones de liquidez (LP) multi-chain — Uniswap V3, HyperEVM, Revert Lend, Orca, Raydium",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b1220",
+  "theme_color": "#ECE600",
+  "orientation": "any",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

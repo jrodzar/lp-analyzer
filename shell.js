@@ -2180,6 +2180,14 @@ function setupTipTaps(doc) {
   if (els.frameEvm && !els.frameEvm.src) els.frameEvm.src = els.frameEvm.dataset.src + "?v=" + V;
   if (els.frameSol && !els.frameSol.src) els.frameSol.src = els.frameSol.dataset.src + "?v=" + V;
 
+  // Registrar el Service Worker (mínimo, sin caché) → marca la PWA como instalable
+  // en Chrome. Fallos silenciosos (HTTP local sin HTTPS, navegadores muy viejos…).
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch((e) => console.warn("SW register:", e));
+    });
+  }
+
   setupTipTaps(document);
   setTab("quick"); // por defecto, análisis de una dirección (como hasta ahora)
   setMode(state.mode);
