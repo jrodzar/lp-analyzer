@@ -1287,7 +1287,17 @@ function fillSummary(prefix, items, extra = {}) {
   }
   const pctOf = (x) => (totalValue > 0 ? ` (${x >= 0 ? "+" : ""}${((x / totalValue) * 100).toFixed(2)}%)` : "");
 
-  if ($i("value")) $i("value").textContent = fmtUSD(totalValue);
+  // Valor total = DeFi (LPs + lending) + tokens idle de wallet. Subtítulo desglosa.
+  const idleTotalUSD = Number(extra.idleTotalUSD || 0);
+  const totalCombined = totalValue + idleTotalUSD;
+  if ($i("value")) {
+    $i("value").textContent = fmtUSD(totalCombined);
+    if ($i("value-sub")) {
+      $i("value-sub").innerHTML = idleTotalUSD > 0
+        ? `<span class="text-slate-100 font-semibold">${fmtUSD(totalValue)}</span> DeFi · <span class="text-slate-100 font-semibold">${fmtUSD(idleTotalUSD)}</span> idle`
+        : `<span class="text-slate-500">${fmtUSD(totalValue)} en DeFi</span>`;
+    }
+  }
   if ($i("fees")) {
     $i("fees").textContent = fmtUSD(totalFees);
     if ($i("fees-sub")) $i("fees-sub").innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(totalPending)}</span> pendientes · <span class="text-emerald-400 font-semibold">${fmtUSD(totalCollected)}</span> cobradas`;
@@ -1373,12 +1383,13 @@ function clearAnalysisBanner(elem) {
 
 // Resumen del Quick: lo recibe vía postMessage del engine (lp-summary {items}).
 // Misma función (fillSummary) que el Portfolio → consistencia garantizada.
-function renderQuickSummary(items) {
+function renderQuickSummary(items, idleTokens) {
   const wrap = document.getElementById("quick-summary");
   if (!wrap) return;
   if (!items || !items.length) { wrap.classList.add("hidden"); return; }
   wrap.classList.remove("hidden");
-  fillSummary("q", items);
+  const idleTotalUSD = (idleTokens || []).reduce((s, t) => s + (t.valueUSD || 0), 0);
+  fillSummary("q", items, { idleTotalUSD });
 }
 function clearQuickSummary() {
   const wrap = document.getElementById("quick-summary");
@@ -1416,7 +1427,11 @@ function renderPortfolio() {
 
   // resumen global
   els.pfSummary.classList.toggle("hidden", all.length === 0 && state.results.length === 0);
-  fillSummary("g", all, { addresses: state.results.length });
+  // Total de tokens idle de todas las direcciones (saldo en wallet, fuera de LPs).
+  const idleTotalUSD = state.results
+    .flatMap((r) => r.idleTokens || [])
+    .reduce((s, t) => s + (t.valueUSD || 0), 0);
+  fillSummary("g", all, { addresses: state.results.length, idleTotalUSD });
 
   // Banner de resultado del análisis (verde si OK, rojo si hubo errores por chain/protocolo
   // en alguna de las direcciones). Agregamos errores de TODAS las direcciones y prefijamos
@@ -1913,7 +1928,7 @@ window.addEventListener("message", (e) => {
   } else if (d.type === "lp-summary" && (d.app === "evm" || d.app === "sol")) {
     // El engine ha pintado su Quick → renderizamos el mismo resumen aquí encima
     // del iframe, con la misma plantilla que el Portfolio (consistencia garantizada).
-    renderQuickSummary(d.items || []);
+    renderQuickSummary(d.items || [], d.idleTokens || []);
     renderQuickIdleTokens(d.idleTokens || []);
     // Banner verde/rojo con el resultado del análisis (errores por chain/protocolo)
     const status = d.analysisStatus || {};
