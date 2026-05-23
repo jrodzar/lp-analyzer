@@ -33,7 +33,9 @@ const DEFAULT_CHAINS = {
     subgraphId: "Cghf4LfVqPiFw6fp6Y5X5Ubc8UpmUhSfJL82zwiBFLaj",
     explorer: "https://optimistic.etherscan.io",
     nativeUsdField: "ethPriceUSD",
-    blockscoutApi: "https://optimism.blockscout.com/api",
+    // optimism.blockscout.com NO permite CORS desde el navegador → tokens idle no
+    // soportados aquí hasta que enrutemos Blockscout a través del Cloudflare Worker.
+    // blockscoutApi: "https://optimism.blockscout.com/api",
     llamaChain: "optimism",
   },
   polygon: {
@@ -218,7 +220,8 @@ const SNAPSHOTS_QUERY = `
 async function gql(chainKey, query, variables) {
   const chain = state.chains[chainKey];
   if (!chain) throw new Error(`Red desconocida: ${chainKey}`);
-  const isDirectUrl = chain.subgraphId?.startsWith("http");
+  if (!chain.subgraphId) throw new Error(`${chain.name}: sin subgraph configurado (red RPC-only).`);
+  const isDirectUrl = chain.subgraphId.startsWith("http");
   let url;
   if (isDirectUrl) url = chain.subgraphId;
   else if (state.apiKey) url = `${GATEWAY}/${state.apiKey}/subgraphs/id/${chain.subgraphId}`;   // key propia
@@ -467,14 +470,21 @@ function buildLendingTimeline(events, gainsUSD, nowSec) {
 // ============================================================================
 async function fetchIdleTokensEVM(chainKey, address) {
   const c = state.chains[chainKey];
-  if (!c || !c.blockscoutApi) return []; // chain sin soporte (p. ej. BNB hoy)
+  if (!c || !c.blockscoutApi) return []; // chain sin soporte (p. ej. BNB / Optimism)
+  if (c._noIdleSupport) return [];        // ya falló antes (CORS / red) → no reintentamos
   const url = `${c.blockscoutApi}/v2/addresses/${address}/tokens?type=ERC-20`;
   let items;
   try {
     const r = await fetch(url);
     if (!r.ok) return [];
     items = (await r.json()).items || [];
-  } catch (e) { console.warn(`Blockscout tokens (${chainKey}):`, e); return []; }
+  } catch (e) {
+    // CORS o red caída → marcar la chain para no volver a intentar en esta sesión.
+    // (El navegador igualmente loggea el CORS error la primera vez; el flag evita
+    //  el ruido posterior.)
+    c._noIdleSupport = true;
+    return [];
+  }
 
   // Procesar y filtrar tokens sin balance
   const tokens = [];
@@ -1182,6 +1192,10 @@ async function fetchSnapshotsForChart(positions) {
 const _dayPriceCache = new Map(); // `${chain}:${token}:${date}` -> priceUSD | null
 async function fetchTokenDayPrices(chainKey, tokenIds, dates) {
   const out = {};
+  // Si ya sabemos que este subgraph no expone `tokenDayDatas` (p. ej. el de Uniswap
+  // V3 en Arbitrum), no intentamos otra vez en esta sesión → consola limpia.
+  const chain = state.chains[chainKey];
+  if (chain && chain._noTokenDayDatas) return out;
   const toks = tokenIds.filter(Boolean).map((t) => t.toLowerCase());
   const missTok = new Set(), missDate = new Set();
   for (const tok of toks) for (const d of dates) {
@@ -1191,7 +1205,18 @@ async function fetchTokenDayPrices(chainKey, tokenIds, dates) {
   }
   if (missTok.size && missDate.size) {
     const q = `query($t:[String!]!,$d:[Int!]!){ tokenDayDatas(first:1000, where:{ token_in:$t, date_in:$d }){ date token{id} priceUSD } }`;
-    const data = await gql(chainKey, q, { t: [...missTok], d: [...missDate] }); // si falla, propaga (lo captura el llamador)
+    let data;
+    try {
+      data = await gql(chainKey, q, { t: [...missTok], d: [...missDate] });
+    } catch (e) {
+      // El subgraph de esta chain no tiene el tipo `tokenDayDatas` → marcar para no
+      // volver a intentarlo. PnL/IL caerá en valores actuales en lugar de históricos.
+      if (chain && /has no field|tokenDayDatas/i.test(String(e?.message))) {
+        chain._noTokenDayDatas = true;
+        return out;
+      }
+      throw e; // otros errores (auth, rate-limit, red) sí los propagamos
+    }
     for (const r of (data.tokenDayDatas || [])) {
       const tok = (r.token.id || "").toLowerCase(), d = Number(r.date), v = Number(r.priceUSD);
       _dayPriceCache.set(`${chainKey}:${tok}:${d}`, isFinite(v) ? v : null);
