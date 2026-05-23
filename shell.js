@@ -134,6 +134,18 @@ function shortAddr(a) {
 }
 // Divisa de visualización: siempre USD.
 const _fx = { rate: 1, sym: "$" };
+// Decimales muy pequeños SIN notación científica: "0.00000002" en vez de "2.00e-8".
+// Idéntica a la helper de common.js — los engines cargan common.js, el shell no.
+function fmtTiny(n, sig = 3) {
+  if (n === 0 || !isFinite(n)) return "0";
+  const abs = Math.abs(n);
+  if (abs >= 1) return (n < 0 ? "-" : "") + abs.toFixed(sig).replace(/\.?0+$/, "");
+  const pos = -Math.floor(Math.log10(abs));
+  const decimals = pos + sig - 1;
+  let s = n.toFixed(decimals);
+  if (s.includes(".")) s = s.replace(/0+$/, "").replace(/\.$/, "");
+  return s;
+}
 // Formato normal con separador de miles: $8,300.00 (para tarjetas, resúmenes, etc.)
 function fmtUSD(n) {
   if (n == null || !isFinite(n)) return "—";
@@ -142,7 +154,7 @@ function fmtUSD(n) {
   if (abs === 0) return S + "0";
   if (abs >= 1) return `${s}${S}${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   if (abs >= 0.01) return `${s}${S}${abs.toFixed(4)}`;
-  return `${s}${S}${abs.toExponential(2)}`;
+  return `${s}${S}${fmtTiny(abs, 3)}`;
 }
 // Formato compacto: $8.30k / $1.20M (solo para ejes y etiquetas de gráficos)
 function fmtUSDc(n) {
@@ -155,7 +167,7 @@ function fmtUSDc(n) {
   if (abs >= 1) return `${s}${S}${abs.toFixed(2)}`;
   if (abs === 0) return S + "0";
   if (abs >= 0.01) return `${s}${S}${abs.toFixed(4)}`;
-  return `${s}${S}${abs.toExponential(2)}`;
+  return `${s}${S}${fmtTiny(abs, 3)}`;
 }
 function pnlColor(n) { if (!isFinite(n)) return "text-slate-400"; return n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "text-slate-300"; }
 function distinctColor(i) { const h = Math.round((i * 137.508) % 360); return `hsl(${h} 70% 60%)`; }
@@ -1481,7 +1493,7 @@ function idleTokensBlock(tokens, opts = {}) {
   body.className = "mt-2 space-y-1 text-xs";
   const rowFor = (t) => {
     const valStr = t.valueUSD != null ? fmtUSD(t.valueUSD) : `<span class="text-slate-600">sin precio</span>`;
-    const bal = t.balance >= 1 ? t.balance.toFixed(4) : t.balance.toPrecision(4);
+    const bal = t.balance >= 1 ? t.balance.toFixed(4) : fmtTiny(t.balance, 4);
     const chainName = chainDisplayName(t.chain);
     const chainHex = venueColor(chainName) || "#94a3b8";
     const chip = chainName
@@ -1708,7 +1720,7 @@ function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed
   const bandColor = closed ? "rgba(100,116,139,0.35)" : inRange ? "rgba(16,185,129,0.30)" : "rgba(245,158,11,0.28)";
   const borderC = closed ? "rgba(100,116,139,0.5)" : inRange ? "rgba(16,185,129,0.6)" : "rgba(245,158,11,0.6)";
   const fmtP = (v) => v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 })
-                    : v >= 1 ? v.toFixed(3) : v.toPrecision(3);
+                    : v >= 1 ? v.toFixed(3) : fmtTiny(v, 3);
   const marker = pCur != null
     ? `<div class="absolute top-0 bottom-0 w-0.5 bg-slate-100" style="left:${pct(pCur)}%"></div>
        <div class="absolute -top-1 w-2 h-2 rounded-full bg-slate-100" style="left:${pct(pCur)}%;transform:translateX(-50%)"></div>`

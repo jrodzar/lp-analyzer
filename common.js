@@ -12,6 +12,26 @@ var _fx = { rate: 1, sym: "$" };
 function setCurrency(rate, sym) { _fx = { rate: Number(rate) || 1, sym: sym || "$" }; }
 
 // Formato normal con separador de miles: $8,300.00 (tarjetas, resúmenes…)
+// Decimales muy pequeños SIN notación científica: "0.00000002" en vez de "2.00e-8".
+// `sig` = cifras significativas (3 por defecto). Quita ceros sobrantes a la derecha.
+function fmtTiny(n, sig = 3) {
+  if (n === 0 || !isFinite(n)) return "0";
+  const abs = Math.abs(n);
+  if (abs >= 1) {
+    // Para valores >= 1 usamos toFixed normal y quitamos ceros finales.
+    const s = abs.toFixed(sig);
+    return (n < 0 ? "-" : "") + s.replace(/\.?0+$/, "");
+  }
+  // Para valores < 1, calculamos cuántos decimales necesitamos para alcanzar `sig`
+  // cifras significativas: si abs = 0.000…0X (X primer dígito no-cero), llamamos
+  // pos = nº ceros tras el punto + 1; necesitamos pos + sig - 1 decimales.
+  const pos = -Math.floor(Math.log10(abs));
+  const decimals = pos + sig - 1;
+  let s = n.toFixed(decimals);
+  if (s.includes(".")) s = s.replace(/0+$/, "").replace(/\.$/, "");
+  return s;
+}
+
 function fmtUSD(n) {
   if (n === null || n === undefined || !isFinite(n)) return "—";
   n = n * _fx.rate; const S = _fx.sym;
@@ -20,7 +40,7 @@ function fmtUSD(n) {
   if (abs === 0) return S + "0";
   if (abs >= 1) return `${sign}${S}${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   if (abs >= 0.01) return `${sign}${S}${abs.toFixed(4)}`;
-  return `${sign}${S}${abs.toExponential(2)}`;
+  return `${sign}${S}${fmtTiny(abs, 3)}`;
 }
 
 // Formato compacto: $8.30k / $1.20M (solo ejes y etiquetas de gráficos)
@@ -35,7 +55,7 @@ function fmtUSDc(n) {
   if (abs >= 1) return `${sign}${S}${abs.toFixed(2)}`;
   if (abs >= 0.01) return `${sign}${S}${abs.toFixed(4)}`;
   if (abs === 0) return S + "0";
-  return `${sign}${S}${abs.toExponential(2)}`;
+  return `${sign}${S}${fmtTiny(abs, 3)}`;
 }
 
 function fmtToken(n, sym) {
@@ -45,7 +65,7 @@ function fmtToken(n, sym) {
   if (abs >= 1) return `${n.toFixed(4)} ${sym}`;
   if (abs >= 0.0001) return `${n.toFixed(6)} ${sym}`;
   if (abs === 0) return `0 ${sym}`;
-  return `${n.toExponential(2)} ${sym}`;
+  return `${fmtTiny(n, 3)} ${sym}`;
 }
 
 function fmtPct(n) {
@@ -81,7 +101,7 @@ function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed
   const bandColor = closed ? "rgba(100,116,139,0.35)" : inRange ? "rgba(16,185,129,0.30)" : "rgba(245,158,11,0.28)";
   const borderC = closed ? "rgba(100,116,139,0.5)" : inRange ? "rgba(16,185,129,0.6)" : "rgba(245,158,11,0.6)";
   const fmtP = (v) => v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 })
-                    : v >= 1 ? v.toFixed(3) : v.toPrecision(3);
+                    : v >= 1 ? v.toFixed(3) : fmtTiny(v, 3);
   const marker = pCur != null
     ? `<div class="absolute top-0 bottom-0 w-0.5 bg-slate-100" style="left:${pct(pCur)}%"></div>
        <div class="absolute -top-1 w-2 h-2 rounded-full bg-slate-100" style="left:${pct(pCur)}%;transform:translateX(-50%)"></div>`
