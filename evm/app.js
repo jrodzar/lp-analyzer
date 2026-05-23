@@ -233,20 +233,39 @@ async function gql(chainKey, query, variables) {
   else if (state.apiKey) url = `${GATEWAY}/${state.apiKey}/subgraphs/id/${chain.subgraphId}`;   // key propia
   else if (PROXY_BASE) url = `${PROXY_BASE}/graph/${chain.subgraphId}`;                          // proxy compartido
   else throw new Error("Falta API key de The Graph (Settings) o proxy configurado.");
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...proxyAuth(url) },
-    body: JSON.stringify({ query, variables }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`${chain.name}: HTTP ${res.status} ${text.slice(0, 120)}`);
+  // Hasta 3 intentos con backoff progresivo si el upstream/proxy devuelve 429
+  // (rate limit) o 5xx (servicio temporal). Evita que un análisis grande con
+  // varias direcciones × varias chains haga "stampede" y reviente el límite.
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...proxyAuth(url) },
+        body: JSON.stringify({ query, variables }),
+      });
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 2) { await sleep(600 * (attempt + 1)); continue; } else throw e;
+    }
+    if (res.status === 429 || res.status >= 500) {
+      lastErr = new Error(`${chain.name}: HTTP ${res.status}`);
+      if (attempt < 2) { await sleep(800 * (attempt + 1)); continue; }
+      throw lastErr;
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`${chain.name}: HTTP ${res.status} ${text.slice(0, 120)}`);
+    }
+    const json = await res.json();
+    if (json.errors) {
+      throw new Error(`${chain.name}: ${json.errors.map((e) => e.message).join("; ")}`);
+    }
+    return json.data;
   }
-  const json = await res.json();
-  if (json.errors) {
-    throw new Error(`${chain.name}: ${json.errors.map((e) => e.message).join("; ")}`);
-  }
-  return json.data;
+  throw lastErr || new Error(`${chain.name}: agotados los reintentos`);
 }
 
 // ============================================================================

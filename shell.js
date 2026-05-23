@@ -1227,9 +1227,14 @@ async function analyzeAll(opts = {}) {
   // Dos "carriles" en paralelo: EVM y Solana usan iframes distintos (sin colisión de
   // estado). Dentro de cada carril es secuencial (mismo iframe, estado compartido).
   const runLane = async (type) => {
+    let firstInLane = true;
     for (let i = 0; i < n; i++) {
       const entry = state.portfolio[i];
       if (entry.type !== type) continue;
+      // Pequeña pausa entre direcciones consecutivas del mismo carril para no
+      // saturar el rate limit del proxy (429). La primera no espera.
+      if (!firstInLane) await new Promise((r) => setTimeout(r, 400));
+      firstInLane = false;
       const r = await analyzeAddressHeadless(entry.address, entry.type);
       results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [], analysisStatus: r.analysisStatus || null, idleTokens: r.idleTokens || [] };
       done++;
