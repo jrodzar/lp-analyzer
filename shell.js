@@ -416,10 +416,12 @@ async function handleForgotPassword() {
     const ref = fb.fsMod.doc(fb.db, "users", state.user.uid);
     await fb.fsMod.setDoc(ref, {
       portfolioEnc: fb.fsMod.deleteField(),
+      apiKeysEnc: fb.fsMod.deleteField(),
       encSalt: fb.fsMod.deleteField(),
     }, { merge: true });
     forgetKey(state.user.uid);
     _pendingEnc = null; _legacyPortfolio = null;
+    _pendingApiKeysEnc = null; _apiKeys = { graph: "", helius: "", birdeye: "" };
     crypto_.salt = crypto.getRandomValues(new Uint8Array(16));
     crypto_.key = null;
     state.portfolio = [];
@@ -482,12 +484,22 @@ async function handleDeleteAccount() {
   }
 }
 
-// intenta descifrar el portfolio guardado con una key; devuelve true/false (y rellena state.portfolio)
+// intenta descifrar el portfolio guardado con una key; devuelve true/false (y rellena state.portfolio).
+// También descifra (o migra) las API keys aprovechando la misma clave.
 let _pendingEnc = null; // blob cifrado cargado de Firestore pendiente de descifrar
 async function tryDecryptPortfolio(key) {
-  if (!_pendingEnc) { state.portfolio = []; return true; }
-  try { state.portfolio = await decryptJSON(_pendingEnc, key); if (!Array.isArray(state.portfolio)) state.portfolio = []; return true; }
-  catch { return false; }
+  let ok = true;
+  if (!_pendingEnc) { state.portfolio = []; }
+  else {
+    try { state.portfolio = await decryptJSON(_pendingEnc, key); if (!Array.isArray(state.portfolio)) state.portfolio = []; }
+    catch { ok = false; }
+  }
+  if (ok) {
+    // descifrar (o migrar desde localStorage) las API keys y pushear a los engines
+    await tryDecryptApiKeys(key);
+    pushKeysToEngines();
+  }
+  return ok;
 }
 
 // ============================================================================
@@ -708,6 +720,8 @@ async function onAuthChange(user) {
     els.quickContent.classList.add("hidden");
     state.portfolio = [];
     crypto_.key = null; _pendingEnc = null;
+    _pendingApiKeysEnc = null; _apiKeys = { graph: "", helius: "", birdeye: "" };
+    pushKeysToEngines(); // limpiar también las claves en los engines
     setTab("quick"); // sin sesión, mostrar el tab quick con el gate
   }
 }
@@ -739,7 +753,8 @@ function renderAuthArea() {
 let _legacyPortfolio = null; // datos en texto plano de cuentas antiguas (a migrar)
 
 async function loadPortfolio(uid) {
-  _pendingEnc = null; _legacyPortfolio = null; crypto_.key = null;
+  _pendingEnc = null; _legacyPortfolio = null; _pendingApiKeysEnc = null; crypto_.key = null;
+  _apiKeys = { graph: "", helius: "", birdeye: "" };
   try {
     const ref = fb.fsMod.doc(fb.db, "users", uid);
     const snap = await fb.fsMod.getDoc(ref);
@@ -755,6 +770,7 @@ async function loadPortfolio(uid) {
     // salt del usuario (no es secreto) y datos cifrados / legados
     crypto_.salt = data.encSalt ? unb64(data.encSalt) : crypto.getRandomValues(new Uint8Array(16));
     _pendingEnc = data.portfolioEnc || null;
+    _pendingApiKeysEnc = data.apiKeysEnc || null;
     _legacyPortfolio = Array.isArray(data.portfolio) ? data.portfolio : null; // texto plano antiguo
     state.portfolio = [];
   } catch (e) {
@@ -1592,7 +1608,7 @@ window.addEventListener("message", (e) => {
   if (d.type === "lp-ready" && (d.app === "evm" || d.app === "sol")) {
     state.ready[d.app] = true;
     pushTokenToEngines(); // dar al engine recién listo el token actual (si hay sesión)
-    pushKeysToEngines();   // y las API keys que pueda haber configurado el admin
+    if (crypto_.key) pushKeysToEngines(); // y las API keys descifradas, si ya las tenemos
   } else if (d.type === "lp-wallet" && (d.app === "evm" || d.app === "sol")) {
     state.wallet[d.app] = d.address || null;
     if (d.app === state.mode) { renderWalletButton(); if (d.address) els.addr.value = d.address; }
@@ -1745,45 +1761,91 @@ els.addr.addEventListener("keydown", (e) => { if (e.key === "Enter") quickAnalyz
 els.addr.addEventListener("input", () => { const t = detectType(els.addr.value.trim()); if (t && t !== state.mode) setMode(t); });
 els.modeEvm.onclick = () => setMode("evm");
 els.modeSol.onclick = () => setMode("sol");
-// Settings unificados (admin): un único modal en el shell con las 3 API keys
-// (Graph / Helius / Birdeye). Se persisten en localStorage del shell y se envían
-// a ambos engines vía lp-apply-keys para que las usen como override del proxy.
-const _KEY_STORE = "lp:apiKeys"; // { graph, helius, birdeye }
-function loadApiKeys() {
-  try { return JSON.parse(localStorage.getItem(_KEY_STORE) || "{}"); } catch { return {}; }
-}
-function saveApiKeys(keys) {
-  try { localStorage.setItem(_KEY_STORE, JSON.stringify(keys || {})); } catch (e) {}
-}
-function pushKeysToEngines(keys) {
-  const k = keys || loadApiKeys();
+// Settings unificados: modal en el shell con las 3 API keys (Graph / Helius /
+// Birdeye). Se persisten CIFRADAS en Firestore (mismo AES-GCM + clave PBKDF2
+// que el portfolio) → multi-dispositivo y nunca legibles por el servidor.
+// En memoria viven en _apiKeys; el blob cifrado pendiente, en _pendingApiKeysEnc.
+let _apiKeys = { graph: "", helius: "", birdeye: "" };
+let _pendingApiKeysEnc = null;
+
+function pushKeysToEngines() {
+  const k = _apiKeys || {};
   const msgEvm = { type: "lp-apply-keys", app: "evm", graph: k.graph || "" };
   const msgSol = { type: "lp-apply-keys", app: "sol", helius: k.helius || "", birdeye: k.birdeye || "" };
   if (els.frameEvm?.contentWindow) els.frameEvm.contentWindow.postMessage(msgEvm, "*");
   if (els.frameSol?.contentWindow) els.frameSol.contentWindow.postMessage(msgSol, "*");
 }
+
+// Descifrar las API keys con la clave del usuario (la misma que descifra el portfolio).
+// Si no hay blob cifrado y hay datos antiguos en localStorage, migra a Firestore.
+async function tryDecryptApiKeys(key) {
+  if (!_pendingApiKeysEnc) {
+    _apiKeys = { graph: "", helius: "", birdeye: "" };
+    // Migración desde la versión anterior que guardaba en localStorage
+    try {
+      const legacy = JSON.parse(localStorage.getItem("lp:apiKeys") || "null");
+      if (legacy && (legacy.graph || legacy.helius || legacy.birdeye)) {
+        _apiKeys = { graph: legacy.graph || "", helius: legacy.helius || "", birdeye: legacy.birdeye || "" };
+        await saveApiKeysToFirestore(_apiKeys, key).catch((e) => console.warn("migrate apiKeys:", e));
+        localStorage.removeItem("lp:apiKeys");
+      }
+    } catch (e) {}
+    return true;
+  }
+  try {
+    const dec = await decryptJSON(_pendingApiKeysEnc, key);
+    _apiKeys = {
+      graph: typeof dec?.graph === "string" ? dec.graph : "",
+      helius: typeof dec?.helius === "string" ? dec.helius : "",
+      birdeye: typeof dec?.birdeye === "string" ? dec.birdeye : "",
+    };
+    return true;
+  } catch { _apiKeys = { graph: "", helius: "", birdeye: "" }; return false; }
+}
+
+async function saveApiKeysToFirestore(keys, key) {
+  if (!state.user || !fb.db || !key) return;
+  const enc = await encryptJSON(keys, key);
+  const ref = fb.fsMod.doc(fb.db, "users", state.user.uid);
+  await fb.fsMod.setDoc(ref, { apiKeysEnc: enc }, { merge: true });
+  _pendingApiKeysEnc = enc;
+}
+
 function openSettingsModal() {
-  const k = loadApiKeys();
-  els.setGraphKey.value = k.graph || "";
-  els.setHeliusKey.value = k.helius || "";
-  els.setBirdeyeKey.value = k.birdeye || "";
+  if (!crypto_.key) {
+    setPfStatus("Desbloquea tu portfolio primero para gestionar tus API keys.", "err");
+    return;
+  }
+  els.setGraphKey.value = _apiKeys.graph || "";
+  els.setHeliusKey.value = _apiKeys.helius || "";
+  els.setBirdeyeKey.value = _apiKeys.birdeye || "";
   els.settingsStatus.classList.add("hidden");
   els.settingsModal.classList.remove("hidden");
   setTimeout(() => els.setGraphKey.focus(), 50);
 }
 function closeSettingsModal() { els.settingsModal.classList.add("hidden"); }
-function saveSettingsModal() {
+async function saveSettingsModal() {
+  if (!crypto_.key) { setPfStatus("Desbloquea tu portfolio primero.", "err"); return; }
   const keys = {
     graph: (els.setGraphKey.value || "").trim(),
     helius: (els.setHeliusKey.value || "").trim(),
     birdeye: (els.setBirdeyeKey.value || "").trim(),
   };
-  saveApiKeys(keys);
-  pushKeysToEngines(keys);
-  els.settingsStatus.className = "text-[11px] text-emerald-400";
-  els.settingsStatus.textContent = "Guardado. Las claves se aplican en los próximos análisis.";
+  els.settingsStatus.className = "text-[11px] text-slate-300";
+  els.settingsStatus.textContent = "Guardando…";
   els.settingsStatus.classList.remove("hidden");
-  setTimeout(closeSettingsModal, 900);
+  try {
+    await saveApiKeysToFirestore(keys, crypto_.key);
+    _apiKeys = keys;
+    pushKeysToEngines();
+    els.settingsStatus.className = "text-[11px] text-emerald-400";
+    els.settingsStatus.textContent = "Guardado y cifrado en Firestore. Se aplicarán al siguiente análisis.";
+    setTimeout(closeSettingsModal, 1100);
+  } catch (e) {
+    console.error("saveApiKeys", e);
+    els.settingsStatus.className = "text-[11px] text-rose-400";
+    els.settingsStatus.textContent = `No se pudo guardar: ${e.message}`;
+  }
 }
 els.settingsOpen.onclick = openSettingsModal;
 els.settingsClose.onclick = closeSettingsModal;

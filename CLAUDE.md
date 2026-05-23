@@ -87,6 +87,7 @@ variables de entorno y las inyecta server-side. Así las keys nunca están en el
 ```
 users/{uid} → {
   portfolioEnc: { iv, ct },   // portfolio cifrado E2E (AES-GCM); addresses+labels
+  apiKeysEnc:   { iv, ct },   // API keys (graph/helius/birdeye) cifradas con la misma clave
   encSalt,                    // salt PBKDF2 (no secreto)
   prefs:     { chains: [...], protocols: [...] },   // no sensible, en claro
   prefsVersion

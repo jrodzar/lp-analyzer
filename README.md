@@ -38,10 +38,10 @@ En Portfolio hay un botón **"⚙ Settings"** donde cualquier usuario puede pega
 - Si las dejas en blanco → la app usa el **proxy compartido** (lo normal, no tienes que hacer nada).
 - Si pegas tu clave → la app la usa **en vez del proxy** para esa API, consumiendo de tu propia cuota.
 
-Las claves se guardan **únicamente en el `localStorage` de ese navegador**:
-- No se sincronizan a otros dispositivos (las tienes que reintroducir si entras desde otro PC/móvil).
-- No se envían a Firestore ni a ningún servidor del proyecto.
-- Si limpias los datos del navegador, se pierden.
+Las claves se guardan **cifradas en Firestore** con el **mismo cifrado E2E que tus direcciones** (AES-GCM + clave PBKDF2 derivada de tu contraseña). Esto significa:
+- ✅ **Multi-dispositivo**: tus claves te siguen al móvil/PC/tablet sin tener que reintroducirlas.
+- ✅ **Ni el admin ni Firebase pueden leerlas** — solo tu navegador, después de desbloquear el portfolio con tu contraseña.
+- ⚠️ Si pierdes la contraseña de cifrado, también pierdes acceso a las claves (igual que al resto del portfolio).
 
 Útil si ya tienes claves propias, si el proxy se satura, o si prefieres no depender del proxy compartido.
 

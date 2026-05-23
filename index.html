@@ -12,7 +12,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "71";</script>
+  <script>window.APP_VERSION = "72";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -126,8 +126,9 @@
         Por defecto la app usa un <b>proxy compartido</b> (sin que tengas que configurar nada).
         Si quieres usar <b>tus propias claves</b> —porque ya las tienes, para no depender del proxy,
         o porque quieres tu propia cuota— pégalas aquí y se usarán <b>en vez del proxy</b>.
-        Se guardan en el <b>localStorage de este navegador</b>; no se sincronizan a otros equipos
-        ni se envían a ningún sitio. Deja en blanco para volver al proxy compartido.
+        Se guardan <b>cifradas en Firestore</b> con la misma contraseña que tus direcciones, así
+        que te siguen entre dispositivos y nadie (ni el admin) puede leerlas. Deja en blanco para
+        volver al proxy compartido.
       </p>
       <div class="space-y-3">
         <div>
