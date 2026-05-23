@@ -2179,6 +2179,10 @@ function setupTipTaps(doc) {
   const V = window.APP_VERSION || "0";
   if (els.frameEvm && !els.frameEvm.src) els.frameEvm.src = els.frameEvm.dataset.src + "?v=" + V;
   if (els.frameSol && !els.frameSol.src) els.frameSol.src = els.frameSol.dataset.src + "?v=" + V;
+  // Etiqueta de versión en la cabecera (útil al depurar que la versión cargada
+  // es la última publicada — antes había que mirar View Source).
+  const verEl = document.getElementById("app-version");
+  if (verEl) verEl.textContent = "v" + V;
 
   // Registrar el Service Worker (mínimo, sin caché) → marca la PWA como instalable
   // en Chrome. Fallos silenciosos (HTTP local sin HTTPS, navegadores muy viejos…).
