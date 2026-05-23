@@ -406,6 +406,10 @@ async function handleForgotPassword() {
 // Si Auth pide re-login (token viejo), reintenta tras un signInWithPopup.
 async function handleDeleteAccount() {
   if (!state.user || !fb.auth || !fb.db) return;
+  if (isAdminUser()) {
+    alert("La cuenta de administrador no se puede eliminar desde la app.");
+    return;
+  }
   const email = state.user.email || "";
   const ok1 = confirm(
     "⚠️ ¿Eliminar tu cuenta?\n\n" +
@@ -614,6 +618,7 @@ async function onAuthChange(user) {
     }
     els.gateMsg.classList.add("hidden");
     els.manageAccess.classList.toggle("hidden", !isAdminUser());
+    els.deleteAccount.classList.toggle("hidden", isAdminUser()); // admin no puede autoeliminarse
     els.loginGate.classList.add("hidden");
     els.portfolioArea.classList.remove("hidden");
     // Quick tab: ocultar gate, mostrar contenido
