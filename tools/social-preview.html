@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Social Preview — Booster Crypto PRO</title>
+<style>
+  body { background: #0b1220; color: #cbd5e1; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 24px; }
+  h1 { color: #ECE600; margin: 0 0 6px; font-size: 18px; }
+  p  { margin: 0 0 14px; font-size: 13px; color: #94a3b8; max-width: 780px; }
+  .row { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  button {
+    background: #ECE600; color: #0f172a; border: 0; padding: 9px 14px;
+    border-radius: 8px; font-weight: 700; font-size: 14px; cursor: pointer;
+  }
+  button:hover { background: #f5ef4d; }
+  canvas { display: block; max-width: 100%; height: auto; border: 1px solid #1e293b; border-radius: 8px; }
+  .hint { color: #64748b; font-size: 12px; margin-top: 14px; }
+</style>
+</head>
+<body>
+<h1>Social Preview — Booster Crypto PRO</h1>
+<p>
+  Banner para Settings → Social preview de GitHub (formato 1280×640).
+  Pulsa <b>Descargar PNG</b> y súbelo en el repo.
+</p>
+<div class="row">
+  <button id="download">⬇ Descargar PNG (1280×640)</button>
+  <button id="download2x">⬇ Descargar PNG @2x (2560×1280)</button>
+</div>
+<canvas id="c" width="1280" height="640"></canvas>
+<p class="hint">El canvas se pinta solo al cargar. Si cambias colores o textos en el código, recarga la página.</p>
+<script>
+(() => {
+  const c = document.getElementById("c");
+  const ctx = c.getContext("2d");
+  const W = c.width, H = c.height;
+
+  // Fondo: degradado vertical slate-950 → slate-900
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#0b1220");
+  bg.addColorStop(1, "#020617");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Banda amarilla superior (acento de marca, fina)
+  ctx.fillStyle = "#ECE600";
+  ctx.fillRect(0, 0, W, 12);
+
+  // Logo: "Booster Crypto" sobre fondo blanco + chip negro "PRO"
+  const px = 80, py = 110;
+  // chip "Booster Crypto"
+  const padX = 24, padY = 14;
+  ctx.font = "900 64px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto";
+  const txt = "Booster Crypto";
+  const w = ctx.measureText(txt).width;
+  // fondo blanco
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  // rect redondeado manual
+  const rr = (x, y, w, h, r) => {
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y,     x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x,     y + h, r);
+    ctx.arcTo(x,     y + h, x,     y,     r);
+    ctx.arcTo(x,     y,     x + w, y,     r);
+    ctx.closePath();
+  };
+  rr(px, py, w + padX * 2, 96, 6);
+  ctx.fill();
+  // texto Booster Crypto
+  ctx.fillStyle = "#0f172a";
+  ctx.textBaseline = "middle";
+  ctx.fillText(txt, px + padX, py + 48);
+
+  // chip "PRO"
+  const proX = px + w + padX * 2 + 14;
+  const proW = 86, proH = 60;
+  ctx.fillStyle = "#0f172a";
+  ctx.beginPath(); rr(proX, py + 18, proW, proH, 4); ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "900 32px ui-sans-serif, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("PRO", proX + proW / 2, py + 18 + proH / 2);
+  ctx.textAlign = "left";
+
+  // Subtítulo / tagline
+  ctx.fillStyle = "#cbd5e1";
+  ctx.font = "600 30px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("Analizador de posiciones de liquidez multi-cadena", px, py + 160);
+
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "400 22px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("Uniswap V3 · HyperEVM · Revert Lend · Orca · Raydium", px, py + 200);
+
+  // Chips de redes con sus colores de marca (mismos hex que la app)
+  const chains = [
+    { name: "Ethereum", color: "#627EEA" },
+    { name: "Arbitrum", color: "#28A0F0" },
+    { name: "Optimism", color: "#FF0420" },
+    { name: "Polygon",  color: "#8247E5" },
+    { name: "Base",     color: "#0052FF" },
+    { name: "BNB",      color: "#F3BA2F" },
+    { name: "HyperEVM", color: "#97FCE4" },
+    { name: "Solana",   color: "#FFEB3B" },
+  ];
+  ctx.font = "700 18px ui-sans-serif, system-ui, sans-serif";
+  let cx = px;
+  const cy = py + 250;
+  for (const ch of chains) {
+    const tw = ctx.measureText(ch.name).width;
+    const cw = tw + 30, chH = 38;
+    // fondo translúcido del color
+    ctx.fillStyle = ch.color + "20"; // 12% alpha
+    ctx.beginPath(); rr(cx, cy, cw, chH, 8); ctx.fill();
+    // borde
+    ctx.strokeStyle = ch.color + "66";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); rr(cx, cy, cw, chH, 8); ctx.stroke();
+    // texto coloreado
+    ctx.fillStyle = ch.color;
+    ctx.textBaseline = "middle";
+    ctx.fillText(ch.name, cx + 15, cy + chH / 2);
+    cx += cw + 10;
+  }
+
+  // Footer: features compactos + URL
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "500 20px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("🔒 Cifrado E2E   ·   📱 PWA instalable   ·   🌐 Multi-wallet   ·   📊 Histórico real", px, H - 90);
+
+  ctx.fillStyle = "#ECE600";
+  ctx.font = "700 22px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.fillText("jrodzar.github.io/lp-analyzer", px, H - 50);
+
+  // Esquina decorativa
+  ctx.fillStyle = "#ECE600";
+  ctx.beginPath();
+  ctx.moveTo(W, H - 140);
+  ctx.lineTo(W, H);
+  ctx.lineTo(W - 140, H);
+  ctx.closePath();
+  ctx.fill();
+
+  // Descargas
+  function download(scale) {
+    const out = document.createElement("canvas");
+    out.width = 1280 * scale;
+    out.height = 640 * scale;
+    const o = out.getContext("2d");
+    o.imageSmoothingEnabled = true;
+    o.imageSmoothingQuality = "high";
+    o.drawImage(c, 0, 0, out.width, out.height);
+    out.toBlob((blob) => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `booster-crypto-pro-social${scale > 1 ? "-2x" : ""}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }, "image/png");
+  }
+  document.getElementById("download").onclick = () => download(1);
+  document.getElementById("download2x").onclick = () => download(2);
+})();
+</script>
+</body>
+</html>
