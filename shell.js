@@ -191,6 +191,21 @@ function venueColor(venue) {
   }
   return null;
 }
+// Nombre legible de la red a partir del chainKey que envían los engines.
+const CHAIN_DISPLAY = {
+  ethereum: "Ethereum",
+  arbitrum: "Arbitrum",
+  optimism: "Optimism",
+  polygon: "Polygon",
+  base: "Base",
+  bnb: "BNB",
+  hyperevm: "HyperEVM",
+  solana: "Solana",
+};
+function chainDisplayName(chain) {
+  if (!chain) return "";
+  return CHAIN_DISPLAY[chain.toLowerCase()] || chain;
+}
 // Formatea ticks de fecha y omite repetidos consecutivos (evita fechas duplicadas en rangos cortos)
 function dateTick(fmtOpts) {
   return function (value, index, ticks) {
@@ -1444,9 +1459,15 @@ function idleTokensBlock(tokens, opts = {}) {
   const rowFor = (t) => {
     const valStr = t.valueUSD != null ? fmtUSD(t.valueUSD) : `<span class="text-slate-600">sin precio</span>`;
     const bal = t.balance >= 1 ? t.balance.toFixed(4) : t.balance.toPrecision(4);
+    const chainName = chainDisplayName(t.chain);
+    const chainHex = venueColor(chainName) || "#94a3b8";
+    const chip = chainName
+      ? `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0" style="background:${chainHex}22;color:${chainHex};border:1px solid ${chainHex}44">${chainName}</span>`
+      : "";
     return `
       <div class="flex items-center gap-2 bg-slate-950/40 rounded-md px-2 py-1.5">
-        <span class="font-semibold text-slate-200 w-20 truncate">${t.symbol || "?"}</span>
+        ${chip}
+        <span class="font-semibold text-slate-200 w-16 truncate">${t.symbol || "?"}</span>
         <span class="text-slate-500 text-[11px] truncate flex-1">${t.name || ""}</span>
         <span class="font-mono text-[11px] text-slate-400 shrink-0">${bal}</span>
         <span class="font-semibold text-slate-100 shrink-0 w-20 text-right">${valStr}</span>
