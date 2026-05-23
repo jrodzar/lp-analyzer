@@ -553,6 +553,9 @@ async function fetchIdleTokensEVM(chainKey, address) {
     } catch (e) { /* parseInt falló → ignorar nativo */ }
   }
   // 2) Tokens ERC-20
+  // Nota: Blockscout v2 devuelve la dirección del contrato en `token.address` en
+  // unas instancias (eth.blockscout.com, base.blockscout.com…) y en `address_hash`
+  // en otras (Hyperscan / hyperevm). Probamos los dos.
   for (const it of items) {
     const t = it.token || {};
     const raw = it.value != null ? BigInt(it.value) : 0n;
@@ -565,9 +568,10 @@ async function fetchIdleTokensEVM(chainKey, address) {
       if (isFinite(p) && p > 0) priceUSD = p;
     }
     const valueUSD = priceUSD != null ? balance * priceUSD : null;
+    const tokenAddr = (t.address || t.address_hash || "").toLowerCase();
     const obj = {
       chain: chainKey, symbol: t.symbol || "?", name: t.name || "",
-      address: (t.address || "").toLowerCase(), decimals: dec,
+      address: tokenAddr, decimals: dec,
       balance, priceUSD, valueUSD, logo: t.icon_url || null,
     };
     tokens.push(obj);
