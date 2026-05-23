@@ -1714,7 +1714,7 @@ function chartBaseOptions({ time = false } = {}) {
       tooltip: {
         callbacks: {
           title: time
-            ? (items) => items.length ? new Date(items[0].parsed.x).toLocaleString("es-ES", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : ""
+            ? (items) => items.length ? new Date(items[0].parsed.x).toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" }) : ""
             : undefined,
           label: (ctx) => `${ctx.dataset.label}: ${fmtUSD(ctx.parsed.y)}`,
         },

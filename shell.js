@@ -1309,7 +1309,7 @@ function renderFeesTimelineChart() {
         tooltip: {
           mode: "index", intersect: false,
           callbacks: {
-            title: (items) => items.length ? new Date(items[0].parsed.x).toLocaleString("es-ES", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "",
+            title: (items) => items.length ? new Date(items[0].parsed.x).toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" }) : "",
             label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}`,
           },
         },
@@ -1672,7 +1672,7 @@ function renderHistorico() {
         legend: { labels: { color: "#cbd5e1", font: { size: 10 } } },
         tooltip: {
           callbacks: {
-            title: (items) => items.length ? new Date(items[0].parsed.x).toLocaleString("es-ES", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "",
+            title: (items) => items.length ? new Date(items[0].parsed.x).toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" }) : "",
             label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}`,
           },
         },
