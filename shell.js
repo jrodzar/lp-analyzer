@@ -1477,7 +1477,10 @@ function idleTokensBlock(tokens, opts = {}) {
 
   const wrap = document.createElement("details");
   if (opts.open) wrap.open = true;
-  wrap.className = "rounded-xl border border-slate-800 bg-slate-900/40 p-3 mb-4 text-sm";
+  // Borde lateral marrón al estilo "maletín" 💼 (mismo lenguaje visual que el de las
+  // cabeceras de dirección con border-l-4 de color).
+  wrap.className = "rounded-xl border border-slate-800 border-l-4 bg-slate-900/40 p-3 mb-4 text-sm";
+  wrap.style.borderLeftColor = "#92604A";
   const head = document.createElement("summary");
   head.className = "flex items-center gap-2 cursor-pointer select-none text-slate-300";
   head.innerHTML = `
