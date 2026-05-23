@@ -12,7 +12,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "69";</script>
+  <script>window.APP_VERSION = "70";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -115,6 +115,40 @@
     </div>
   </div>
 
+  <!-- Modal: settings unificados (admin) — API keys de Graph / Helius / Birdeye -->
+  <div id="settings-modal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+    <div class="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="text-lg font-semibold">⚙ Settings — API keys</h2>
+        <button id="settings-close" class="text-slate-400 hover:text-slate-100">✕</button>
+      </div>
+      <p class="text-[11px] text-slate-400">
+        Por defecto la app usa el proxy de Cloudflare (sin claves propias). Si pegas tus claves aquí
+        se usarán <b>en vez del proxy</b> para tu cuota personal. Se guardan en este navegador
+        (localStorage), no se envían a ningún sitio. Deja en blanco para volver al proxy.
+      </p>
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs text-slate-300 block mb-1">The Graph API key <span class="text-slate-500">(EVM · Uniswap V3)</span></label>
+          <input id="set-graph-key" type="text" placeholder="api key de The Graph" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono" />
+        </div>
+        <div>
+          <label class="text-xs text-slate-300 block mb-1">Helius API key <span class="text-slate-500">(Solana RPC / DAS)</span></label>
+          <input id="set-helius-key" type="text" placeholder="api key de Helius" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono" />
+        </div>
+        <div>
+          <label class="text-xs text-slate-300 block mb-1">Birdeye API key <span class="text-slate-500">(Solana · histórico para PnL/IL — opcional)</span></label>
+          <input id="set-birdeye-key" type="text" placeholder="api key de Birdeye (opcional)" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono" />
+        </div>
+      </div>
+      <div id="settings-status" class="text-[11px] hidden"></div>
+      <div class="flex gap-2 justify-end">
+        <button id="settings-cancel" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm">Cancelar</button>
+        <button id="settings-save" class="px-3 py-2 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-sm font-semibold">Guardar</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: contraseña de cifrado (E2E) -->
   <div id="enc-modal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
@@ -171,8 +205,7 @@
             </div>
             <div class="flex items-center gap-2">
               <button id="manage-access" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Gestionar accesos (admin)">👥 Accesos</button>
-              <button id="settings-evm" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Settings del motor EVM: subgraphs y override de API key">⚙ EVM</button>
-              <button id="settings-sol" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Settings del motor Solana: override de API keys (Helius / Birdeye)">⚙ Solana</button>
+              <button id="settings-open" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="API keys (admin)">⚙ Settings</button>
               <button id="change-pass" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Cambiar contraseña de cifrado">🔑 Contraseña</button>
               <button id="delete-account" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/40 border border-slate-700 hover:border-rose-700 text-xs text-rose-300" title="Eliminar permanentemente tu cuenta y todos tus datos">🗑️ Eliminar cuenta</button>
               <button id="pf-csv" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Descargar posiciones en CSV">⬇ CSV</button>

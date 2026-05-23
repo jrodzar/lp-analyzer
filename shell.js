@@ -50,7 +50,12 @@ const els = {
   prefChains: $("pref-chains"), prefProtocols: $("pref-protocols"),
   // quick
   modeEvm: $("mode-evm"), modeSol: $("mode-sol"), addr: $("addr"), go: $("go"),
-  wallet: $("wallet"), settingsEvm: $("settings-evm"), settingsSol: $("settings-sol"), hint: $("hint"),
+  wallet: $("wallet"), settingsOpen: $("settings-open"), hint: $("hint"),
+  // settings modal (admin) — API keys que sobrescriben el proxy
+  settingsModal: $("settings-modal"), settingsClose: $("settings-close"),
+  settingsCancel: $("settings-cancel"), settingsSave: $("settings-save"),
+  settingsStatus: $("settings-status"),
+  setGraphKey: $("set-graph-key"), setHeliusKey: $("set-helius-key"), setBirdeyeKey: $("set-birdeye-key"),
   frameEvm: $("frame-evm"), frameSol: $("frame-sol"),
   // histórico
   histEmpty: $("hist-empty"), histContent: $("hist-content"),
@@ -709,8 +714,7 @@ async function onAuthChange(user) {
 
 function renderAuthArea() {
   const isAdmin = state.user?.email === ADMIN_EMAIL;
-  els.settingsEvm.classList.toggle("hidden", !isAdmin);
-  els.settingsSol.classList.toggle("hidden", !isAdmin);
+  els.settingsOpen.classList.toggle("hidden", !isAdmin);
   els.authArea.innerHTML = "";
   if (state.user) {
     const wrap = document.createElement("div");
@@ -1586,6 +1590,7 @@ window.addEventListener("message", (e) => {
   if (d.type === "lp-ready" && (d.app === "evm" || d.app === "sol")) {
     state.ready[d.app] = true;
     pushTokenToEngines(); // dar al engine recién listo el token actual (si hay sesión)
+    pushKeysToEngines();   // y las API keys que pueda haber configurado el admin
   } else if (d.type === "lp-wallet" && (d.app === "evm" || d.app === "sol")) {
     state.wallet[d.app] = d.address || null;
     if (d.app === state.mode) { renderWalletButton(); if (d.address) els.addr.value = d.address; }
@@ -1738,19 +1743,52 @@ els.addr.addEventListener("keydown", (e) => { if (e.key === "Enter") quickAnalyz
 els.addr.addEventListener("input", () => { const t = detectType(els.addr.value.trim()); if (t && t !== state.mode) setMode(t); });
 els.modeEvm.onclick = () => setMode("evm");
 els.modeSol.onclick = () => setMode("sol");
-// Settings de los engines: como el modal de settings vive DENTRO del iframe,
-// abrirlo solo tiene sentido cuando ese iframe es visible → al pulsar desde
-// Portfolio, cambiamos a Quick + modo correcto y disparamos lp-open-settings.
-function openEngineSettings(mode) {
-  if (!isAdminUser()) return; // defensa: solo admin (botones ya ocultos en UI)
-  setTab("quick");
-  setMode(mode);
-  const frame = mode === "evm" ? els.frameEvm : els.frameSol;
-  // damos un breve respiro para que el iframe sea visible antes de abrir el modal
-  setTimeout(() => { if (frame && frame.contentWindow) frame.contentWindow.postMessage({ type: "lp-open-settings" }, "*"); }, 50);
+// Settings unificados (admin): un único modal en el shell con las 3 API keys
+// (Graph / Helius / Birdeye). Se persisten en localStorage del shell y se envían
+// a ambos engines vía lp-apply-keys para que las usen como override del proxy.
+const _KEY_STORE = "lp:apiKeys"; // { graph, helius, birdeye }
+function loadApiKeys() {
+  try { return JSON.parse(localStorage.getItem(_KEY_STORE) || "{}"); } catch { return {}; }
 }
-els.settingsEvm.onclick = () => openEngineSettings("evm");
-els.settingsSol.onclick = () => openEngineSettings("sol");
+function saveApiKeys(keys) {
+  try { localStorage.setItem(_KEY_STORE, JSON.stringify(keys || {})); } catch (e) {}
+}
+function pushKeysToEngines(keys) {
+  const k = keys || loadApiKeys();
+  const msgEvm = { type: "lp-apply-keys", app: "evm", graph: k.graph || "" };
+  const msgSol = { type: "lp-apply-keys", app: "sol", helius: k.helius || "", birdeye: k.birdeye || "" };
+  if (els.frameEvm?.contentWindow) els.frameEvm.contentWindow.postMessage(msgEvm, "*");
+  if (els.frameSol?.contentWindow) els.frameSol.contentWindow.postMessage(msgSol, "*");
+}
+function openSettingsModal() {
+  if (!isAdminUser()) return; // defensa: solo admin (botón ya oculto en UI)
+  const k = loadApiKeys();
+  els.setGraphKey.value = k.graph || "";
+  els.setHeliusKey.value = k.helius || "";
+  els.setBirdeyeKey.value = k.birdeye || "";
+  els.settingsStatus.classList.add("hidden");
+  els.settingsModal.classList.remove("hidden");
+  setTimeout(() => els.setGraphKey.focus(), 50);
+}
+function closeSettingsModal() { els.settingsModal.classList.add("hidden"); }
+function saveSettingsModal() {
+  const keys = {
+    graph: (els.setGraphKey.value || "").trim(),
+    helius: (els.setHeliusKey.value || "").trim(),
+    birdeye: (els.setBirdeyeKey.value || "").trim(),
+  };
+  saveApiKeys(keys);
+  pushKeysToEngines(keys);
+  els.settingsStatus.className = "text-[11px] text-emerald-400";
+  els.settingsStatus.textContent = "Guardado. Las claves se aplican en los próximos análisis.";
+  els.settingsStatus.classList.remove("hidden");
+  setTimeout(closeSettingsModal, 900);
+}
+els.settingsOpen.onclick = openSettingsModal;
+els.settingsClose.onclick = closeSettingsModal;
+els.settingsCancel.onclick = closeSettingsModal;
+els.settingsSave.onclick = saveSettingsModal;
+els.settingsModal.addEventListener("click", (e) => { if (e.target === els.settingsModal) closeSettingsModal(); });
 els.wallet.onclick = () => postToActive({ type: state.wallet[state.mode] ? "lp-disconnect-wallet" : "lp-connect-wallet" });
 
 els.loginBtn.onclick = signInWithGoogle;

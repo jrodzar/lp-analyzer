@@ -1725,6 +1725,16 @@ document.addEventListener("DOMContentLoaded", init);
     } else if (d.type === "lp-set-fx") {
       if (typeof setCurrency === "function") setCurrency(d.rate, d.sym);
       if (typeof renderAll === "function" && (state.positions || []).length) renderAll();
+    } else if (d.type === "lp-apply-keys") {
+      // El shell envía las API keys que configura el admin en su modal de Settings.
+      if (typeof d.helius === "string") {
+        state.heliusKey = d.helius;
+        try { localStorage.setItem("sol:heliusKey", d.helius); } catch (e) {}
+      }
+      if (typeof d.birdeye === "string") {
+        state.birdeyeKey = d.birdeye;
+        try { localStorage.setItem("sol:birdeyeKey", d.birdeye); } catch (e) {}
+      }
     } else if (d.type === "lp-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;

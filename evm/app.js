@@ -2003,6 +2003,13 @@ document.addEventListener("DOMContentLoaded", init);
     } else if (d.type === "lp-set-fx") {
       if (typeof setCurrency === "function") setCurrency(d.rate, d.sym);
       if (typeof renderAll === "function" && (state.positions || []).length) renderAll();
+    } else if (d.type === "lp-apply-keys") {
+      // El shell envía las API keys que configura el admin en su modal de Settings.
+      // Las guardamos como override del proxy (lo que ya hacía openSettings/saveSettings).
+      if (typeof d.graph === "string") {
+        state.apiKey = d.graph;
+        try { localStorage.setItem("lp:apiKey", d.graph); } catch (e) {}
+      }
     } else if (d.type === "lp-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
