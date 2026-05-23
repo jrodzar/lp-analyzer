@@ -12,6 +12,7 @@ Web app para **analizar posiciones de liquidez** (LP) de una o varias wallets, m
 - **EVM** — Uniswap V3 en Ethereum, Arbitrum, Optimism, Polygon, Base y BNB Chain · **HyperEVM** (lectura on-chain directa) · **Revert Lend** (lending vaults ERC-4626).
 - **Solana** — Orca Whirlpools y Raydium CLMM, leídos directamente del programa (sin SDK pesado).
 - Por cada posición: **valor actual**, **fees cobradas vs pendientes**, **APR de fees**, **IL vs HODL**, **PnL neto**, **range bar** visual con tu posición dentro/fuera del rango.
+- **Tokens "idle"**: además de las LPs, cada dirección muestra los tokens que están sueltos en el wallet (fuera de posiciones) con su valor en USD. Solana vía Helius DAS + Jupiter; EVM vía Blockscout + DefiLlama (sin claves extra).
 - **Tres vistas**:
   1. **Quick** — análisis de una wallet.
   2. **Portfolio** — varias wallets agregadas, con drag-and-drop para ordenar.
@@ -84,6 +85,7 @@ Las claves se guardan **cifradas en Firestore** con el **mismo cifrado E2E que t
 | Storage | Firestore (E2E cifrado) |
 | Solana | `@noble/hashes` + `@noble/curves`, base58 + PDA + Borsh manuales |
 | EVM | The Graph subgraphs, JSON-RPC directo, Blockscout para HyperEVM |
+| Tokens idle (EVM) | Blockscout v2 (`/api/v2/addresses/{addr}/tokens`) + DefiLlama Prices para los que falten |
 | Histórico Solana | Birdeye historical_price_unix |
 | Histórico EVM | tokenDayDatas del subgraph |
 | Proxy | Cloudflare Workers (verificación de Firebase ID token + rate-limit por IP + cuota KV diaria) |
@@ -94,6 +96,7 @@ Las claves se guardan **cifradas en Firestore** con el **mismo cifrado E2E que t
 ## Limitaciones honestas
 
 - **PnL no incluye gas.** En EVM se reconstruye con eventos del subgraph; en Solana con las txs enriquecidas de Helius. Es una estimación.
+- **Tokens idle en BNB Chain**: no soportados todavía (BNB no tiene una instancia oficial de Blockscout). Las posiciones LP en BNB sí se analizan normal.
 - **Tokens sin histórico** (RWA, tokens nuevos) se omiten del PnL/IL en Solana porque Birdeye no tiene su precio en la fecha del depósito.
 - **APIs gratuitas** — bajo carga alta pueden saturarse (rate-limits). El proxy aplica retries + rotación de endpoints donde es posible.
 - **Read-only.** No hay funcionalidad para abrir/cerrar/rebalancear posiciones desde la app.

@@ -503,6 +503,58 @@ async function fetchPricesUSD(mints) {
 // Orca position discovery
 // ============================================================================
 
+// Lista los tokens fungibles "sueltos" (idle) de la wallet — los que NO están dentro
+// de posiciones LP. Helius DAS los devuelve junto con precios USD vía Jupiter en
+// `token_info.price_info`. Incluimos también SOL nativo con su balance.
+// Devuelve [{ chain, symbol, name, address, decimals, balance, priceUSD, valueUSD, logo }]
+async function fetchIdleTokens(ownerAddr) {
+  try {
+    const assets = await rpc("getAssetsByOwner", {
+      ownerAddress: ownerAddr,
+      page: 1,
+      limit: 1000,
+      displayOptions: { showFungible: true, showNativeBalance: true },
+    });
+    const out = [];
+    // 1) SOL nativo (no es un mint, viene aparte en nativeBalance)
+    const nb = assets?.nativeBalance;
+    if (nb && nb.lamports && nb.lamports > 0) {
+      const balance = Number(nb.lamports) / 1e9;
+      const priceUSD = typeof nb.price_per_sol === "number" ? nb.price_per_sol : null;
+      out.push({
+        chain: "solana", symbol: "SOL", name: "Solana",
+        address: "So11111111111111111111111111111111111111112", decimals: 9,
+        balance, priceUSD, valueUSD: priceUSD != null ? balance * priceUSD : null,
+        logo: null, native: true,
+      });
+    }
+    // 2) Fungibles SPL
+    for (const a of (assets?.items || [])) {
+      if (a.interface !== "FungibleToken" && a.interface !== "FungibleAsset") continue;
+      const ti = a.token_info || {};
+      const rawBalance = ti.balance != null ? Number(ti.balance) : 0;
+      const decimals = ti.decimals != null ? Number(ti.decimals) : 0;
+      if (!rawBalance) continue;
+      const balance = rawBalance / Math.pow(10, decimals);
+      const priceUSD = ti.price_info?.price_per_token ?? null;
+      const valueUSD = priceUSD != null ? balance * priceUSD : null;
+      out.push({
+        chain: "solana",
+        symbol: ti.symbol || a.content?.metadata?.symbol || a.id?.slice(0, 4),
+        name: a.content?.metadata?.name || ti.symbol || "",
+        address: a.id,
+        decimals,
+        balance, priceUSD, valueUSD,
+        logo: a.content?.links?.image || a.content?.files?.[0]?.uri || null,
+      });
+    }
+    return out.sort((a, b) => (b.valueUSD || 0) - (a.valueUSD || 0));
+  } catch (e) {
+    console.warn("fetchIdleTokens (Solana):", e);
+    return [];
+  }
+}
+
 // Lista NFTs (supply 1) de la wallet vía Helius DAS — compartido entre protocolos.
 async function fetchWalletNftCandidates(ownerAddr) {
   setStatus("Listando NFTs de la wallet vía Helius DAS…", "info");
@@ -1313,6 +1365,10 @@ async function analyze() {
     state.positions = all;
     assignColors(state.positions);
 
+    // Tokens "idle" — los que están en la wallet pero no están metidos en LPs.
+    // Reusa la misma respuesta de Helius (showFungible) + Jupiter via token_info.price_info.
+    state.idleTokens = await fetchIdleTokens(addr).catch(() => []);
+
     // PnL real + IL vs HODL con precios históricos (Birdeye, vía key propia o proxy)
     let beWarn = "";
     let beError = null;
@@ -1770,7 +1826,8 @@ document.addEventListener("DOMContentLoaded", init);
           try {
             const items = (typeof toPortfolioItems === "function") ? toPortfolioItems() : [];
             const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
-            window.parent.postMessage({ type: "lp-summary", app: "sol", items, analysisStatus }, "*");
+            const idleTokens = state.idleTokens || [];
+            window.parent.postMessage({ type: "lp-summary", app: "sol", items, analysisStatus, idleTokens }, "*");
           } catch (e) {}
           try { window.parent.postMessage({ type: "lp-analyze-done", app: "sol" }, "*"); } catch (e) {}
         });
@@ -1802,10 +1859,11 @@ document.addEventListener("DOMContentLoaded", init);
             });
           }
           const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
-          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline, analysisStatus }, "*");
+          const idleTokens = state.idleTokens || [];
+          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline, analysisStatus, idleTokens }, "*");
         })
         .catch((err) => {
-          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err), analysisStatus: { ok: false, errors: [{ source: "Solana", reason: String(err) }] } }, "*");
+          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err), idleTokens: [], analysisStatus: { ok: false, errors: [{ source: "Solana", reason: String(err) }] } }, "*");
         });
     }
   });

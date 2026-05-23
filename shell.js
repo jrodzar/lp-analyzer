@@ -1181,7 +1181,7 @@ async function analyzeAll(opts = {}) {
       const entry = state.portfolio[i];
       if (entry.type !== type) continue;
       const r = await analyzeAddressHeadless(entry.address, entry.type);
-      results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [], analysisStatus: r.analysisStatus || null };
+      results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [], analysisStatus: r.analysisStatus || null, idleTokens: r.idleTokens || [] };
       done++;
       const msg = `Analizando direcciones (${done}/${n})…`;
       if (!silent) { setPfStatus(msg); updateAnalyzingModal(msg, done, n); state.results = results.filter(Boolean); renderPortfolio(); }
@@ -1297,6 +1297,16 @@ function clearQuickSummary() {
   const wrap = document.getElementById("quick-summary");
   if (wrap) wrap.classList.add("hidden");
   clearAnalysisBanner(els.quickBanner);
+  const idle = document.getElementById("quick-idle");
+  if (idle) { idle.classList.add("hidden"); idle.innerHTML = ""; }
+}
+function renderQuickIdleTokens(tokens) {
+  const wrap = document.getElementById("quick-idle");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  const block = idleTokensBlock(tokens || []);
+  if (block) { wrap.appendChild(block); wrap.classList.remove("hidden"); }
+  else wrap.classList.add("hidden");
 }
 
 function renderPortfolio() {
@@ -1379,8 +1389,73 @@ function renderPortfolio() {
       for (const it of items) grid.appendChild(portfolioCard(it, colorOf.get(it)));
       section.appendChild(grid);
     }
+    // Bloque "Tokens en wallet (idle)" — fungibles fuera de LPs
+    const idleBlock = idleTokensBlock(r.idleTokens || []);
+    if (idleBlock) section.appendChild(idleBlock);
     els.pfSections.appendChild(section);
   }
+}
+
+// Render del bloque "💼 Tokens en wallet (idle)" — colapsable, ordenado por valor
+// USD descendente. Por defecto oculta los tokens con valor < $1 para evitar el
+// spam de airdrops, con un toggle para mostrarlos.
+const IDLE_DUST_THRESHOLD = 1;
+function idleTokensBlock(tokens) {
+  if (!Array.isArray(tokens) || !tokens.length) return null;
+  const known = tokens.filter((t) => t.valueUSD != null);
+  const dust = known.filter((t) => t.valueUSD < IDLE_DUST_THRESHOLD);
+  const significant = known.filter((t) => t.valueUSD >= IDLE_DUST_THRESHOLD);
+  const noPrice = tokens.filter((t) => t.valueUSD == null);
+  const totalUSD = known.reduce((s, t) => s + (t.valueUSD || 0), 0);
+  const totalSignificantUSD = significant.reduce((s, t) => s + (t.valueUSD || 0), 0);
+
+  const wrap = document.createElement("details");
+  wrap.className = "rounded-xl border border-slate-800 bg-slate-900/40 p-3 mb-4 text-sm";
+  const head = document.createElement("summary");
+  head.className = "flex items-center gap-2 cursor-pointer select-none text-slate-300";
+  head.innerHTML = `
+    <span class="text-base">💼</span>
+    <span class="font-semibold">Tokens en wallet (idle)</span>
+    <span class="text-[11px] text-slate-500">— fuera de LPs</span>
+    <span class="flex-1"></span>
+    <span class="text-slate-400 text-xs">${significant.length}${dust.length ? ` <span class="text-slate-600">(+${dust.length} polvo)</span>` : ""} · <span class="text-slate-100 font-semibold">${fmtUSD(totalSignificantUSD)}</span></span>
+  `;
+  wrap.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "mt-2 space-y-1 text-xs";
+  const rowFor = (t) => {
+    const valStr = t.valueUSD != null ? fmtUSD(t.valueUSD) : `<span class="text-slate-600">sin precio</span>`;
+    const bal = t.balance >= 1 ? t.balance.toFixed(4) : t.balance.toPrecision(4);
+    return `
+      <div class="flex items-center gap-2 bg-slate-950/40 rounded-md px-2 py-1.5">
+        <span class="font-semibold text-slate-200 w-20 truncate">${t.symbol || "?"}</span>
+        <span class="text-slate-500 text-[11px] truncate flex-1">${t.name || ""}</span>
+        <span class="font-mono text-[11px] text-slate-400 shrink-0">${bal}</span>
+        <span class="font-semibold text-slate-100 shrink-0 w-20 text-right">${valStr}</span>
+      </div>`;
+  };
+  body.innerHTML = significant.map(rowFor).join("");
+  // Sección "polvo" + sin precio, oculta por defecto bajo un toggle
+  if (dust.length || noPrice.length) {
+    const extra = document.createElement("div");
+    extra.className = "mt-2 pt-2 border-t border-slate-800 space-y-1";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "text-[11px] text-slate-500 hover:text-slate-300";
+    toggle.textContent = `▾ Mostrar ${dust.length + noPrice.length} tokens de bajo valor / sin precio`;
+    const dustWrap = document.createElement("div");
+    dustWrap.className = "hidden space-y-1 mt-2";
+    dustWrap.innerHTML = [...dust, ...noPrice].map(rowFor).join("");
+    toggle.onclick = () => {
+      const hidden = dustWrap.classList.toggle("hidden");
+      toggle.textContent = `${hidden ? "▾" : "▴"} ${hidden ? "Mostrar" : "Ocultar"} ${dust.length + noPrice.length} tokens de bajo valor / sin precio`;
+    };
+    extra.appendChild(toggle); extra.appendChild(dustWrap);
+    body.appendChild(extra);
+  }
+  wrap.appendChild(body);
+  return wrap;
 }
 
 function renderPortfolioCharts() {
@@ -1710,7 +1785,7 @@ window.addEventListener("message", (e) => {
   } else if (d.type === "lp-result" && pendingReqs.has(d.reqId)) {
     const resolve = pendingReqs.get(d.reqId);
     pendingReqs.delete(d.reqId);
-    resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [], analysisStatus: d.analysisStatus || null });
+    resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [], analysisStatus: d.analysisStatus || null, idleTokens: d.idleTokens || [] });
   } else if (d.type === "lp-analyze-done") {
     // el engine terminó el análisis de Quick → cerrar el modal de progreso
     clearTimeout(_quickModalTimer);
@@ -1722,6 +1797,7 @@ window.addEventListener("message", (e) => {
     // El engine ha pintado su Quick → renderizamos el mismo resumen aquí encima
     // del iframe, con la misma plantilla que el Portfolio (consistencia garantizada).
     renderQuickSummary(d.items || []);
+    renderQuickIdleTokens(d.idleTokens || []);
     // Banner verde/rojo con el resultado del análisis (errores por chain/protocolo)
     const status = d.analysisStatus || {};
     const items = d.items || [];

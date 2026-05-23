@@ -12,6 +12,8 @@ const DEFAULT_CHAINS = {
     subgraphId: "5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV",
     explorer: "https://etherscan.io",
     nativeUsdField: "ethPriceUSD",
+    blockscoutApi: "https://eth.blockscout.com/api",
+    llamaChain: "ethereum",
   },
   arbitrum: {
     name: "Arbitrum",
@@ -21,6 +23,8 @@ const DEFAULT_CHAINS = {
     explorer: "https://arbiscan.io",
     tickField: "scalar", // tickLower/Upper son BigInt directo
     rpcUrl: "https://arb1.arbitrum.io/rpc",
+    blockscoutApi: "https://arbitrum.blockscout.com/api",
+    llamaChain: "arbitrum",
   },
   optimism: {
     name: "Optimism",
@@ -29,6 +33,8 @@ const DEFAULT_CHAINS = {
     subgraphId: "Cghf4LfVqPiFw6fp6Y5X5Ubc8UpmUhSfJL82zwiBFLaj",
     explorer: "https://optimistic.etherscan.io",
     nativeUsdField: "ethPriceUSD",
+    blockscoutApi: "https://optimism.blockscout.com/api",
+    llamaChain: "optimism",
   },
   polygon: {
     name: "Polygon",
@@ -37,6 +43,8 @@ const DEFAULT_CHAINS = {
     subgraphId: "3hCPRGf4z88VC5rsBKU5AA9FBBq5nF3jbKJG7VZCbhjm",
     explorer: "https://polygonscan.com",
     nativeUsdField: "ethPriceUSD",
+    blockscoutApi: "https://polygon.blockscout.com/api",
+    llamaChain: "polygon",
   },
   base: {
     name: "Base",
@@ -47,6 +55,8 @@ const DEFAULT_CHAINS = {
     schemaVariant: "native", // usa derivedNative / nativePriceUSD
     tickField: "scalar", // tickLower/Upper son Int directo
     rpcUrl: "https://mainnet.base.org",
+    blockscoutApi: "https://base.blockscout.com/api",
+    llamaChain: "base",
   },
   bnb: {
     name: "BNB Chain",
@@ -55,6 +65,8 @@ const DEFAULT_CHAINS = {
     subgraphId: "F85MNzUGYqgSHSHRGgeVMNsdnW1KtZSVgFULumXRZTw2",
     explorer: "https://bscscan.com",
     nativeUsdField: "ethPriceUSD",
+    // BNB no tiene Blockscout oficial → tokens idle no soportados aún
+    llamaChain: "bsc",
   },
   hyperevm: {
     name: "HyperEVM",
@@ -71,6 +83,8 @@ const DEFAULT_CHAINS = {
     stableAddress:     "0x24ac48bf01fd6cb1c3836d08b3edc70a9c4380ca", // USDC en HyperEVM
     // API Blockscout (gratis, sin key, sin límite de 1000 bloques) para histórico
     explorerApi:       "https://www.hyperscan.com/api",
+    blockscoutApi:     "https://www.hyperscan.com/api",
+    llamaChain:        "hyperliquid",
   },
 };
 
@@ -446,6 +460,69 @@ function buildLendingTimeline(events, gainsUSD, nowSec) {
 }
 
 // Devuelve posiciones de lending (una por red con saldo) para un owner
+// ============================================================================
+// Tokens "idle" — los que están en la wallet pero NO están dentro de posiciones LP.
+// Blockscout v2 los devuelve listos con symbol/decimals y un exchange_rate (USD).
+// Cuando exchange_rate falta, hacemos fallback batch a DefiLlama (gratis, sin key).
+// ============================================================================
+async function fetchIdleTokensEVM(chainKey, address) {
+  const c = state.chains[chainKey];
+  if (!c || !c.blockscoutApi) return []; // chain sin soporte (p. ej. BNB hoy)
+  const url = `${c.blockscoutApi}/v2/addresses/${address}/tokens?type=ERC-20`;
+  let items;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return [];
+    items = (await r.json()).items || [];
+  } catch (e) { console.warn(`Blockscout tokens (${chainKey}):`, e); return []; }
+
+  // Procesar y filtrar tokens sin balance
+  const tokens = [];
+  const missingPrice = [];
+  for (const it of items) {
+    const t = it.token || {};
+    const raw = it.value != null ? BigInt(it.value) : 0n;
+    const dec = Number(t.decimals || 0);
+    if (raw === 0n) continue;
+    const balance = bigIntToDecimal(raw, dec);
+    let priceUSD = null;
+    if (t.exchange_rate != null && t.exchange_rate !== "") {
+      const p = Number(t.exchange_rate);
+      if (isFinite(p) && p > 0) priceUSD = p;
+    }
+    const valueUSD = priceUSD != null ? balance * priceUSD : null;
+    const obj = {
+      chain: chainKey, symbol: t.symbol || "?", name: t.name || "",
+      address: (t.address || "").toLowerCase(), decimals: dec,
+      balance, priceUSD, valueUSD, logo: t.icon_url || null,
+    };
+    tokens.push(obj);
+    if (priceUSD == null && obj.address) missingPrice.push(obj);
+  }
+
+  // Fallback de precios via DefiLlama (1 petición batch para todos los faltantes)
+  if (missingPrice.length && c.llamaChain) {
+    try {
+      const coins = missingPrice.map((t) => `${c.llamaChain}:${t.address}`).join(",");
+      const r = await fetch(`https://coins.llama.fi/prices/current/${coins}`);
+      if (r.ok) {
+        const data = await r.json();
+        const prices = data.coins || {};
+        for (const t of missingPrice) {
+          const key = `${c.llamaChain}:${t.address}`;
+          const p = prices[key]?.price;
+          if (typeof p === "number" && p > 0) {
+            t.priceUSD = p;
+            t.valueUSD = t.balance * p;
+          }
+        }
+      }
+    } catch (e) { console.warn("DefiLlama prices:", e); }
+  }
+
+  return tokens.sort((a, b) => (b.valueUSD || 0) - (a.valueUSD || 0));
+}
+
 async function fetchRevertLending(owner) {
   const now = Math.floor(Date.now() / 1000);
   const results = await Promise.all(Object.entries(REVERT_LEND).map(async ([chainKey, c]) => {
@@ -1782,6 +1859,14 @@ async function analyze() {
     } catch (e) { console.warn("Revert Lend:", e); }
     assignColors(state.positions);
 
+    // Tokens "idle" en wallet (no metidos en LPs) — en paralelo por cada red
+    // seleccionada que tenga Blockscout. Fallback de precios via DefiLlama.
+    try {
+      const chainsForIdle = state.selectedChains.filter((k) => state.chains[k]?.blockscoutApi);
+      const tokenLists = await Promise.all(chainsForIdle.map((k) => fetchIdleTokensEVM(k, addr)));
+      state.idleTokens = tokenLists.flat();
+    } catch (e) { console.warn("idle tokens:", e); state.idleTokens = []; }
+
     const skippedNote = skipped.length ? ` (saltadas: ${skipped.map((s) => state.chains[s.chainKey].name).join(", ")})` : "";
     const lendN = state.positions.filter((p) => p._lending).length;
     const lpN = positions.length;
@@ -2044,7 +2129,8 @@ document.addEventListener("DOMContentLoaded", init);
           try {
             const items = (typeof toPortfolioItems === "function") ? toPortfolioItems() : [];
             const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
-            window.parent.postMessage({ type: "lp-summary", app: "evm", items, analysisStatus }, "*");
+            const idleTokens = state.idleTokens || [];
+            window.parent.postMessage({ type: "lp-summary", app: "evm", items, analysisStatus, idleTokens }, "*");
           } catch (e) {}
           try { window.parent.postMessage({ type: "lp-analyze-done", app: "evm" }, "*"); } catch (e) {}
         });
@@ -2089,10 +2175,11 @@ document.addEventListener("DOMContentLoaded", init);
           }
           const status = (document.getElementById("status-msg") || {}).textContent || "";
           const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
-          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline, analysisStatus }, "*");
+          const idleTokens = state.idleTokens || [];
+          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline, analysisStatus, idleTokens }, "*");
         })
         .catch((err) => {
-          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err), analysisStatus: { ok: false, errors: [{ source: "EVM", reason: String(err) }] } }, "*");
+          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err), idleTokens: [], analysisStatus: { ok: false, errors: [{ source: "EVM", reason: String(err) }] } }, "*");
         });
     }
   });
