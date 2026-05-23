@@ -102,6 +102,9 @@ const state = {
   portfolio: [],          // [{ address, type, label }]
   prefs: structuredClone(DEFAULT_PREFS),
   results: [],            // [{ entry, items, status }]
+  // Quién ha pintado lo que se ve actualmente en cada iframe: "quick" | "portfolio" | null.
+  // Si entras a Quick y el iframe lo pintó Portfolio, hay que limpiar.
+  iframeOwnedBy: { evm: null, sol: null },
 };
 
 const fb = { app: null, auth: null, db: null, authMod: null, fsMod: null };
@@ -175,10 +178,24 @@ function setTab(tab) {
   els.tabQuick.classList.toggle("hidden", tab !== "quick");
   els.tabProjection.classList.toggle("hidden", tab !== "projection");
   if (tab === "projection") renderHistorico();
-  // El iframe de Quick se comparte con "Analizar todo" (headless). Si entras a Quick
-  // sin una dirección escrita, limpia los resultados que pudo dejar el portfolio.
-  if (tab === "quick" && !els.addr.value.trim()) {
-    [els.frameEvm, els.frameSol].forEach((f) => { if (f && f.contentWindow) f.contentWindow.postMessage({ type: "lp-clear" }, "*"); });
+  // El iframe de Quick se comparte con "Analizar todo" (headless). Si al entrar a Quick
+  // el iframe activo lo había pintado el Portfolio, hay que limpiar para no enseñar
+  // datos no analizados desde la pestaña Quick.
+  if (tab === "quick") {
+    const mode = state.mode; // "evm" o "sol"
+    if (state.iframeOwnedBy[mode] === "portfolio") {
+      const f = mode === "evm" ? els.frameEvm : els.frameSol;
+      if (f && f.contentWindow) f.contentWindow.postMessage({ type: "lp-clear" }, "*");
+      state.iframeOwnedBy[mode] = null;
+      els.addr.value = "";
+    }
+    // El iframe inactivo también lo limpiamos por si el usuario cambia de modo
+    const other = mode === "evm" ? "sol" : "evm";
+    if (state.iframeOwnedBy[other] === "portfolio") {
+      const f = other === "evm" ? els.frameEvm : els.frameSol;
+      if (f && f.contentWindow) f.contentWindow.postMessage({ type: "lp-clear" }, "*");
+      state.iframeOwnedBy[other] = null;
+    }
   }
 }
 
@@ -257,6 +274,7 @@ function quickAnalyze(opts = {}) {
     clearTimeout(_quickModalTimer);
     _quickModalTimer = setTimeout(closeAnalyzingModal, 90000);
   }
+  state.iframeOwnedBy[t] = "quick"; // marca: lo que aparezca en pantalla viene de un análisis Quick
   const send = async () => { await pushTokenToEngines(); postToActive({ type: "lp-analyze", address: addr }); };
   if (state.ready[state.mode]) send(); else setTimeout(send, 800);
 }
@@ -1073,6 +1091,8 @@ function analyzeAddressHeadless(address, type) {
       if (type === "evm") frame.contentWindow.postMessage({ type: "lp-set-chains", chains: state.prefs.chains }, "*");
       else frame.contentWindow.postMessage({ type: "lp-set-protocols", protocols: state.prefs.protocols }, "*");
       frame.contentWindow.postMessage({ type: "lp-portfolio-analyze", reqId, address }, "*");
+      // El iframe se está pintando con datos del Portfolio; al cambiar a Quick habrá que limpiar
+      state.iframeOwnedBy[type] = "portfolio";
     };
     if (state.ready[type]) send(); else setTimeout(send, 1200);
     setTimeout(() => {

@@ -1632,31 +1632,78 @@ async function updateFeesChart() {
   if (didHist) { renderSummary(); renderPositions(); }
 }
 
+// Series originales (sin filtrar) — el input del umbral re-renderiza desde aquí
+let _feesChartSeries = [];
+
 // Pinta el gráfico de "Fees acumuladas" a partir de series [{label, points:[{ts,feesUSD}]}]
+// + mini-resumen + leyenda ordenada + filtro por umbral configurable + stepped lines.
 function renderFeesChart(series) {
+  if (Array.isArray(series)) _feesChartSeries = series;
+  const all = _feesChartSeries || [];
   const panel = document.getElementById("fees-chart-panel");
-  if (!series || !series.length) { if (panel) panel.classList.add("hidden"); setChartsCols(false); return; }
+  const summaryEl = document.getElementById("fees-chart-summary");
+  if (summaryEl) summaryEl.classList.add("hidden");
+  if (!all.length) { if (panel) panel.classList.add("hidden"); setChartsCols(false); return; }
   if (panel) panel.classList.remove("hidden");
   setChartsCols(true);
-  const datasets = series.map((s, idx) => {
+
+  // Total cobrado por serie (último punto = acumulado final), orden desc
+  const withTotals = all.map((s) => ({
+    series: s,
+    total: s.points && s.points.length ? (s.points[s.points.length - 1].feesUSD || 0) : 0,
+  })).sort((a, b) => b.total - a.total);
+
+  // Umbral configurable persistido en localStorage
+  const inp = document.getElementById("fees-min-threshold");
+  const minThreshold = Math.max(0, Number((inp && inp.value) || 0));
+  const visible = withTotals.filter((x) => x.total >= minThreshold);
+  const hiddenCount = withTotals.length - visible.length;
+
+  // Mini-resumen
+  const grandTotal = withTotals.reduce((s, x) => s + x.total, 0);
+  if (summaryEl && withTotals.length && grandTotal > 0) {
+    const top = withTotals[0];
+    const pct = (top.total / grandTotal) * 100;
+    let html = `📈 <span class="text-slate-200 font-semibold">Pool top:</span> ${top.series.label} → <span class="text-emerald-300">${fmtUSD(top.total)}</span> <span class="text-slate-500">(${pct.toFixed(1)}% del total cobrado · ${fmtUSD(grandTotal)} en ${withTotals.length} ${withTotals.length === 1 ? "pool" : "pools"})</span>`;
+    if (hiddenCount > 0) html += ` <span class="text-slate-500">· ${hiddenCount} ${hiddenCount === 1 ? "pool oculta" : "pools ocultas"} por umbral</span>`;
+    summaryEl.innerHTML = html;
+    summaryEl.classList.remove("hidden");
+  }
+
+  const datasets = visible.map((x, idx) => {
     const c = distinctColor(idx);
     return {
-      label: s.label,
-      data: (s.points || []).map((pt) => ({ x: pt.ts, y: pt.feesUSD || 0 })),
+      label: x.series.label,
+      data: (x.series.points || []).map((pt) => ({ x: pt.ts, y: pt.feesUSD || 0 })),
       borderColor: c.line,
       backgroundColor: c.fill,
-      tension: 0.3,
+      stepped: "after",
       pointRadius: 0,
       borderWidth: 2,
     };
   });
   if (charts.fees) charts.fees.destroy();
+  if (!datasets.length) return; // todo filtrado por umbral
   charts.fees = new Chart(document.getElementById("chart-fees"), {
     type: "line",
     data: { datasets },
     options: chartBaseOptions({ time: true }),
   });
 }
+
+// Wire del input del umbral (una sola vez por carga del iframe)
+(function _wireFeesThreshold() {
+  try {
+    const inp = document.getElementById("fees-min-threshold");
+    if (!inp) return;
+    const saved = localStorage.getItem("lp:feesMinThreshold");
+    if (saved !== null) inp.value = saved;
+    inp.addEventListener("input", () => {
+      localStorage.setItem("lp:feesMinThreshold", String(inp.value || 0));
+      renderFeesChart(null); // re-render con las series ya cargadas
+    });
+  } catch (e) { /* ignore */ }
+})();
 
 function chartBaseOptions({ time = false } = {}) {
   return {
