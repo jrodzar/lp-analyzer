@@ -14,6 +14,7 @@ const DEFAULT_CHAINS = {
     nativeUsdField: "ethPriceUSD",
     blockscoutApi: "https://eth.blockscout.com/api",
     llamaChain: "ethereum",
+    uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
   },
   arbitrum: {
     name: "Arbitrum",
@@ -25,6 +26,7 @@ const DEFAULT_CHAINS = {
     rpcUrl: "https://arb1.arbitrum.io/rpc",
     blockscoutApi: "https://arbitrum.blockscout.com/api",
     llamaChain: "arbitrum",
+    uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
   },
   optimism: {
     name: "Optimism",
@@ -37,6 +39,7 @@ const DEFAULT_CHAINS = {
     // soportados aquí hasta que enrutemos Blockscout a través del Cloudflare Worker.
     // blockscoutApi: "https://optimism.blockscout.com/api",
     llamaChain: "optimism",
+    uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
   },
   polygon: {
     name: "Polygon",
@@ -47,6 +50,7 @@ const DEFAULT_CHAINS = {
     nativeUsdField: "ethPriceUSD",
     blockscoutApi: "https://polygon.blockscout.com/api",
     llamaChain: "polygon",
+    uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
   },
   base: {
     name: "Base",
@@ -59,6 +63,7 @@ const DEFAULT_CHAINS = {
     rpcUrl: "https://mainnet.base.org",
     blockscoutApi: "https://base.blockscout.com/api",
     llamaChain: "base",
+    uniNftManager: "0x03a520b32C04BF3bE5F46762d11A6c3A4ad0C0a4",
   },
   bnb: {
     name: "BNB Chain",
@@ -69,6 +74,7 @@ const DEFAULT_CHAINS = {
     nativeUsdField: "ethPriceUSD",
     // BNB no tiene Blockscout oficial → tokens idle no soportados aún
     llamaChain: "bsc",
+    uniNftManager: "0x7b8A01B39D58278b5DE7e48c8449c9f4F5170613",
   },
   hyperevm: {
     name: "HyperEVM",
@@ -617,6 +623,27 @@ async function fetchPoolFeeGrowthGlobalsRPC(rpcUrl, poolAddress) {
   };
 }
 
+// Lee positions(tokenId) del NFT manager y devuelve los campos relevantes para
+// fees pendientes. Crítico: tokensOwed0/1 acumulan las fees liquidadas pero NO
+// cobradas (suceden tras cualquier increase/decrease liquidity). Si no se suman,
+// el cálculo de feeGrowthInside_delta * liquidity solo refleja las fees acumuladas
+// DESDE la última operación → subestimación. Era la causa de "WBTC sale a 1/3
+// de Uniswap UI / Revert" en posiciones que el usuario había modificado.
+const NFT_POSITIONS_SELECTOR = "0x99fbab88"; // positions(uint256)
+async function fetchNftPositionDataRPC(rpcUrl, nftManager, tokenId) {
+  const calldata = NFT_POSITIONS_SELECTOR + BigInt(tokenId).toString(16).padStart(64, "0");
+  const hex = await rpcEthCall(rpcUrl, nftManager, calldata);
+  // Layout positions(): nonce, operator, token0, token1, fee, tickLower, tickUpper,
+  //   liquidity, feeGrowthInside0Last, feeGrowthInside1Last, tokensOwed0, tokensOwed1.
+  return {
+    liquidity: decU(hex, 7).toString(),
+    feeGrowthInside0LastX128: decU(hex, 8).toString(),
+    feeGrowthInside1LastX128: decU(hex, 9).toString(),
+    tokensOwed0: decU(hex, 10),
+    tokensOwed1: decU(hex, 11),
+  };
+}
+
 /**
  * Para cada posición sin uncollected calculado (chains con tickField scalar),
  * obtenemos los feeGrowthOutside por RPC y recomputamos.
@@ -645,23 +672,39 @@ async function backfillUncollectedFromRPC(positions, onProgress) {
         poolGlobalsCache.set(key, data);
         return data;
       };
+      // Lectura ON-CHAIN completa: ticks outside + pool globals + datos del NFT
+      // (incluye tokensOwed que el subgraph NO refleja en collectedFeesToken).
+      const nftMgr = chain.uniNftManager;
       try {
-        const [lo, up, globals] = await Promise.all([
+        const [lo, up, globals, nftData] = await Promise.all([
           getTick(p.tickLower),
           getTick(p.tickUpper),
           getPoolGlobals(),
+          nftMgr ? fetchNftPositionDataRPC(rpc, nftMgr, p.id) : Promise.resolve(null),
         ]);
         // Parcheamos raw con TODOS los valores frescos del RPC. Crítico: refrescar
-        // también feeGrowthGlobal del pool, no solo los ticks. Si dejamos el global
-        // del subgraph (atrasado), el cálculo subestima las fees ~3× (bug detectado
-        // comparando con Uniswap UI y Revert, que sí coinciden entre sí).
+        // también feeGrowthGlobal del pool y feeGrowthInside_Last del NFT (no solo
+        // los ticks). Si dejamos cualquiera del subgraph (atrasado), el cálculo
+        // subestima las fees — bug detectado comparando con Uniswap UI y Revert.
         p.raw.tickLower = { tickIdx: String(p.tickLower), ...lo };
         p.raw.tickUpper = { tickIdx: String(p.tickUpper), ...up };
         p.raw.pool = { ...p.raw.pool, ...globals };
+        if (nftData) {
+          p.raw.liquidity = nftData.liquidity;
+          p.raw.feeGrowthInside0LastX128 = nftData.feeGrowthInside0LastX128;
+          p.raw.feeGrowthInside1LastX128 = nftData.feeGrowthInside1LastX128;
+        }
         const dec0 = Number(p.token0.decimals);
         const dec1 = Number(p.token1.decimals);
         const uc = computeUncollectedFees(p.raw, dec0, dec1);
         if (uc) {
+          // Sumar tokensOwed (fees liquidadas tras un increase/decrease previo que
+          // aún no se han cobrado). Sin esto se subestiman fees en posiciones que
+          // han sido modificadas: el feeGrowthInside_delta solo cuenta lo nuevo.
+          if (nftData) {
+            uc.amount0 += bigIntToDecimal(nftData.tokensOwed0, dec0);
+            uc.amount1 += bigIntToDecimal(nftData.tokensOwed1, dec1);
+          }
           p.uncollected = uc;
           p.uncollectedUSD = uc.amount0 * p.token0.priceUSD + uc.amount1 * p.token1.priceUSD;
           p.feesTotalUSD = p.feesUSD + p.uncollectedUSD;
