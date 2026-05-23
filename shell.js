@@ -2205,7 +2205,15 @@ function setupTipTaps(doc) {
   renderPortfolioList();
   renderPrefs();
 
-  // intervalo de auto-actualización: el guardado, o 15 min por defecto
+  // intervalo de auto-actualización: el guardado, o 15 min por defecto.
+  // Migración v2: forzar 15 min en todos los usuarios (incluidos los que tenían el
+  // 5 min del default antiguo). Solo se aplica una vez; si después el usuario lo
+  // cambia voluntariamente, su elección se respeta. Bump del número para reaplicar.
+  const AUTO_REFRESH_MIGRATION = "2";
+  if (localStorage.getItem("lp:autoRefreshMigration") !== AUTO_REFRESH_MIGRATION) {
+    localStorage.setItem("lp:autoRefresh", "900000");
+    localStorage.setItem("lp:autoRefreshMigration", AUTO_REFRESH_MIGRATION);
+  }
   els.autoRefresh.value = localStorage.getItem("lp:autoRefresh") || "900000";
   applyAutoRefresh();
 
