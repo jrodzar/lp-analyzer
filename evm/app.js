@@ -591,13 +591,30 @@ async function fetchTickOutsideRPC(rpcUrl, poolAddress, tickIdx) {
   };
 }
 
+// Lee feeGrowthGlobal0/1X128 del Pool on-chain. Necesario porque el subgraph va
+// retrasado y mezclar global atrasado + ticks outside frescos produce fees
+// subestimadas (síntoma: la app marcaba ~30% de lo que reportan Uniswap UI / Revert).
+const FEE_GROWTH_GLOBAL0_SELECTOR = "0xf3058399"; // feeGrowthGlobal0X128()
+const FEE_GROWTH_GLOBAL1_SELECTOR = "0x46141319"; // feeGrowthGlobal1X128()
+async function fetchPoolFeeGrowthGlobalsRPC(rpcUrl, poolAddress) {
+  const [hex0, hex1] = await Promise.all([
+    rpcEthCall(rpcUrl, poolAddress, FEE_GROWTH_GLOBAL0_SELECTOR),
+    rpcEthCall(rpcUrl, poolAddress, FEE_GROWTH_GLOBAL1_SELECTOR),
+  ]);
+  return {
+    feeGrowthGlobal0X128: BigInt(hex0).toString(),
+    feeGrowthGlobal1X128: BigInt(hex1).toString(),
+  };
+}
+
 /**
  * Para cada posición sin uncollected calculado (chains con tickField scalar),
  * obtenemos los feeGrowthOutside por RPC y recomputamos.
  */
 async function backfillUncollectedFromRPC(positions, onProgress) {
-  // agrupamos por pool para cachear ticks repetidos
-  const tickCache = new Map(); // key: chain|pool|tickIdx → outside data
+  // agrupamos por pool para cachear ticks + feeGrowthGlobal repetidos
+  const tickCache = new Map();          // key: chain|pool|tickIdx → outside data
+  const poolGlobalsCache = new Map();   // key: chain|pool → { feeGrowthGlobal0X128, feeGrowthGlobal1X128 }
   let done = 0;
   const tasks = positions
     .filter((p) => p.uncollected === null && !p.closed && state.chains[p.chainKey]?.rpcUrl)
@@ -611,11 +628,26 @@ async function backfillUncollectedFromRPC(positions, onProgress) {
         tickCache.set(key, data);
         return data;
       };
+      const getPoolGlobals = async () => {
+        const key = `${p.chainKey}|${p.poolId}`;
+        if (poolGlobalsCache.has(key)) return poolGlobalsCache.get(key);
+        const data = await fetchPoolFeeGrowthGlobalsRPC(rpc, p.poolId);
+        poolGlobalsCache.set(key, data);
+        return data;
+      };
       try {
-        const [lo, up] = await Promise.all([getTick(p.tickLower), getTick(p.tickUpper)]);
-        // parcheamos raw a la forma "object variant" y recomputamos
+        const [lo, up, globals] = await Promise.all([
+          getTick(p.tickLower),
+          getTick(p.tickUpper),
+          getPoolGlobals(),
+        ]);
+        // Parcheamos raw con TODOS los valores frescos del RPC. Crítico: refrescar
+        // también feeGrowthGlobal del pool, no solo los ticks. Si dejamos el global
+        // del subgraph (atrasado), el cálculo subestima las fees ~3× (bug detectado
+        // comparando con Uniswap UI y Revert, que sí coinciden entre sí).
         p.raw.tickLower = { tickIdx: String(p.tickLower), ...lo };
         p.raw.tickUpper = { tickIdx: String(p.tickUpper), ...up };
+        p.raw.pool = { ...p.raw.pool, ...globals };
         const dec0 = Number(p.token0.decimals);
         const dec1 = Number(p.token1.decimals);
         const uc = computeUncollectedFees(p.raw, dec0, dec1);
