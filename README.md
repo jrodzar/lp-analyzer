@@ -24,6 +24,29 @@ Web app para **analizar posiciones de liquidez** (LP) de una o varias wallets, m
 
 ---
 
+## Instalar como app (PWA)
+
+La app es una **Progressive Web App** — se puede "instalar" desde el navegador y queda como un icono más en el escritorio / pantalla de inicio, abre en ventana propia sin barra de URL.
+
+### 🖥️ Chrome / Edge (Windows, Mac, Linux)
+- Abre la app, busca el icono **"Instalar"** en la barra de URL (o menú ⋮ → "Instalar Booster Crypto PRO").
+- Aparece en el menú "Apps" del sistema; se puede anclar al dock/escritorio.
+
+### 📱 Android (Chrome)
+- Banner automático "Añadir a pantalla de inicio", o desde el menú ⋮ → "Instalar app".
+- Funciona como app nativa: icono en el escritorio, ventana propia, splash al arrancar.
+
+### 🍎 iPhone / iPad (Safari)
+- **Tiene que ser Safari**, no Chrome iOS (limitación de Apple).
+- Botón **Compartir** 📤 → bajar y pulsar **"Añadir a pantalla de inicio"** → Añadir.
+- Una vez instalada se abre a pantalla completa, sin barra de URL.
+- ⚠ iOS puede limpiar el `localStorage` si no abres la app en 7+ días: tendrías que **reintroducir la contraseña de cifrado** (las direcciones y API keys cifradas siguen en Firestore, no se pierden).
+
+### Modo offline
+**No funciona sin red** — la app necesita llamar a las APIs (Helius, The Graph, Blockscout, Birdeye, Jupiter, DefiLlama) en cada análisis. El Service Worker es deliberadamente mínimo (sin cache) para evitar quedarse pegado en versiones viejas.
+
+---
+
 ## Privacidad y seguridad
 
 - 🔒 **Cifrado E2E** — tu portfolio (las direcciones que añades) se cifra en el navegador con **AES-GCM** + clave derivada por **PBKDF2** de una contraseña que solo tú conoces. Lo que se almacena en Firestore es opaco; ni el admin del proyecto puede leer tus wallets.
