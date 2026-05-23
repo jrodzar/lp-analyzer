@@ -14,6 +14,7 @@ const DEFAULT_CHAINS = {
     nativeUsdField: "ethPriceUSD",
     blockscoutApi: "https://eth.blockscout.com/api",
     llamaChain: "ethereum",
+    dexscreenerChain: "ethereum",
     uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
     nativeSymbol: "ETH", nativeName: "Ethereum", nativeCoingecko: "ethereum",
   },
@@ -27,6 +28,7 @@ const DEFAULT_CHAINS = {
     rpcUrl: "https://arb1.arbitrum.io/rpc",
     blockscoutApi: "https://arbitrum.blockscout.com/api",
     llamaChain: "arbitrum",
+    dexscreenerChain: "arbitrum",
     uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
     nativeSymbol: "ETH", nativeName: "Ethereum", nativeCoingecko: "ethereum",
   },
@@ -41,6 +43,7 @@ const DEFAULT_CHAINS = {
     // soportados aquí hasta que enrutemos Blockscout a través del Cloudflare Worker.
     // blockscoutApi: "https://optimism.blockscout.com/api",
     llamaChain: "optimism",
+    dexscreenerChain: "optimism",
     uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
     nativeSymbol: "ETH", nativeName: "Ethereum", nativeCoingecko: "ethereum",
   },
@@ -53,6 +56,7 @@ const DEFAULT_CHAINS = {
     nativeUsdField: "ethPriceUSD",
     blockscoutApi: "https://polygon.blockscout.com/api",
     llamaChain: "polygon",
+    dexscreenerChain: "polygon",
     uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
     nativeSymbol: "POL", nativeName: "Polygon", nativeCoingecko: "matic-network",
   },
@@ -67,6 +71,7 @@ const DEFAULT_CHAINS = {
     rpcUrl: "https://mainnet.base.org",
     blockscoutApi: "https://base.blockscout.com/api",
     llamaChain: "base",
+    dexscreenerChain: "base",
     uniNftManager: "0x03a520b32C04BF3bE5F46762d11A6c3A4ad0C0a4",
     nativeSymbol: "ETH", nativeName: "Ethereum", nativeCoingecko: "ethereum",
   },
@@ -79,6 +84,7 @@ const DEFAULT_CHAINS = {
     nativeUsdField: "ethPriceUSD",
     // BNB no tiene Blockscout oficial → tokens idle no soportados aún
     llamaChain: "bsc",
+    dexscreenerChain: "bsc",
     uniNftManager: "0x7b8A01B39D58278b5DE7e48c8449c9f4F5170613",
     nativeSymbol: "BNB", nativeName: "BNB", nativeCoingecko: "binancecoin",
   },
@@ -99,6 +105,7 @@ const DEFAULT_CHAINS = {
     explorerApi:       "https://www.hyperscan.com/api",
     blockscoutApi:     "https://www.hyperscan.com/api",
     llamaChain:        "hyperliquid",
+    dexscreenerChain: "hyperevm",
     nativeSymbol: "HYPE", nativeName: "Hyperliquid", nativeCoingecko: "hyperliquid",
   },
 };
@@ -586,13 +593,46 @@ async function fetchIdleTokensEVM(chainKey, address) {
               t.priceUSD = p;
               t.valueUSD = t.balance * p;
             }
-            delete t._coingeckoSlug; // limpiar marca interna antes de devolver
           }
         }
       }
     } catch (e) { console.warn("DefiLlama prices:", e); }
   }
 
+  // 2º fallback: DexScreener para los ERC-20 que DefiLlama no indexa todavía
+  // (típico de tokens nuevos de HyperEVM como UBTC, UETH, USDT0…). DexScreener
+  // tiene precios de cualquier token con pool DEX listado, gratis y sin key.
+  // Endpoint batch: /tokens/v1/{chain}/{addr1,addr2,...}
+  const stillMissing = tokens.filter((t) =>
+    t.priceUSD == null && !t.native && t.address && t.address !== "0x0000000000000000000000000000000000000000"
+  );
+  if (stillMissing.length && c.dexscreenerChain) {
+    try {
+      const addrs = stillMissing.map((t) => t.address).join(",");
+      const r = await fetch(`https://api.dexscreener.com/tokens/v1/${c.dexscreenerChain}/${addrs}`);
+      if (r.ok) {
+        const pairs = await r.json();
+        // Cada par tiene baseToken.address y priceUsd. Si un token aparece en varios pares,
+        // nos quedamos con el de más liquidez USD.
+        const bestByAddr = new Map();
+        for (const pair of (Array.isArray(pairs) ? pairs : [])) {
+          const addr = pair?.baseToken?.address?.toLowerCase();
+          const p = Number(pair?.priceUsd);
+          const liq = Number(pair?.liquidity?.usd || 0);
+          if (!addr || !isFinite(p) || p <= 0) continue;
+          const cur = bestByAddr.get(addr);
+          if (!cur || liq > cur.liq) bestByAddr.set(addr, { price: p, liq });
+        }
+        for (const t of stillMissing) {
+          const v = bestByAddr.get(t.address.toLowerCase());
+          if (v) { t.priceUSD = v.price; t.valueUSD = t.balance * v.price; }
+        }
+      }
+    } catch (e) { console.warn("DexScreener prices:", e); }
+  }
+
+  // Limpiar marcas internas antes de devolver
+  for (const t of tokens) delete t._coingeckoSlug;
   return tokens.sort((a, b) => (b.valueUSD || 0) - (a.valueUSD || 0));
 }
 

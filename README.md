@@ -109,7 +109,7 @@ Las claves se guardan **cifradas en Firestore** con el **mismo cifrado E2E que t
 | Storage | Firestore (E2E cifrado) |
 | Solana | `@noble/hashes` + `@noble/curves`, base58 + PDA + Borsh manuales |
 | EVM | The Graph subgraphs, JSON-RPC directo, Blockscout para HyperEVM |
-| Tokens idle (EVM) | Blockscout v2 (`/api/v2/addresses/{addr}/tokens`) + DefiLlama Prices para los que falten |
+| Tokens idle (EVM) | Blockscout v2 (`/api/v2/addresses/{addr}/tokens` + `/api/v2/addresses/{addr}` para el nativo) + DefiLlama Prices + DexScreener (fallback para tokens no indexados por DefiLlama, p. ej. los nuevos de HyperEVM) |
 | Histórico Solana | Birdeye historical_price_unix |
 | Histórico EVM | tokenDayDatas del subgraph |
 | Proxy | Cloudflare Workers (verificación de Firebase ID token + rate-limit por IP + cuota KV diaria) |
