@@ -1600,9 +1600,26 @@ function distinctColor(i) {
   return { line: `hsl(${hue} 70% 60%)`, fill: `hsl(${hue} 70% 60% / 0.15)` };
 }
 
-// Asigna un color estable a cada posición (mismo color en tarjetas y gráficos)
+// Convierte un HEX a un objeto { line, fill } compatible con el resto del código.
+// fill = mismo color con 15 % alpha. Tolera tanto #RGB como #RRGGBB.
+function hexToColorObj(hex) {
+  let h = String(hex || "").replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  if (h.length !== 6) return null;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return { line: `rgb(${r} ${g} ${b})`, fill: `rgb(${r} ${g} ${b} / 0.15)` };
+}
+
+// Asigna un color estable a cada posición. Mismo color para todas las posiciones de
+// la MISMA red (Ethereum siempre azul morado, Arbitrum azul claro, etc.). Los lending
+// (Revert) van con su color de chain igualmente. Si no hay chain → fallback rotativo.
 function assignColors(list) {
-  list.forEach((p, i) => { p.color = distinctColor(i); });
+  list.forEach((p, i) => {
+    const chain = p.chainKey && state.chains[p.chainKey];
+    p.color = (chain && hexToColorObj(chain.color)) || distinctColor(i);
+  });
 }
 
 // Construye las series de fees acumuladas (igual que el portfolio): snapshots del

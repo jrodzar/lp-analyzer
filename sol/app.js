@@ -1100,8 +1100,22 @@ function distinctColor(i) {
   const hue = Math.round((i * 137.508) % 360);
   return { line: `hsl(${hue} 70% 60%)`, fill: `hsl(${hue} 70% 60% / 0.15)` };
 }
+function hexToColorObj(hex) {
+  let h = String(hex || "").replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  if (h.length !== 6) return null;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return { line: `rgb(${r} ${g} ${b})`, fill: `rgb(${r} ${g} ${b} / 0.15)` };
+}
+// Mismo color para todas las posiciones del MISMO protocolo (Orca amarillo, Raydium
+// magenta). Si no hay protocolo conocido → fallback rotativo.
 function assignColors(list) {
-  list.forEach((p, i) => { p.color = distinctColor(i); });
+  list.forEach((p, i) => {
+    const proto = p.protocol && PROTOCOLS[p.protocol];
+    p.color = (proto && hexToColorObj(proto.color)) || distinctColor(i);
+  });
 }
 
 function renderAll() {

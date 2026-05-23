@@ -159,6 +159,38 @@ function fmtUSDc(n) {
 }
 function pnlColor(n) { if (!isFinite(n)) return "text-slate-400"; return n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "text-slate-300"; }
 function distinctColor(i) { const h = Math.round((i * 137.508) % 360); return `hsl(${h} 70% 60%)`; }
+
+// Color por red/protocolo. Una posición es de una sola red (EVM chain o protocolo
+// Solana o lending de una chain), así que mapeamos `venue` (el campo que envía el
+// engine como label, p. ej. "Ethereum", "HyperEVM", "Orca Whirlpools", "Revert Lend ·
+// Base") al color asociado a esa red. Mantiene consistencia visual: TODAS las
+// posiciones de Ethereum salen del mismo azul morado, todas las de Arbitrum del
+// mismo azul, etc.
+const VENUE_COLORS = {
+  // EVM (matchea el venue que envía evm/app.js → state.chains[key].name)
+  "ethereum":   "#627EEA",
+  "arbitrum":   "#28A0F0",
+  "optimism":   "#FF0420",
+  "polygon":    "#8247E5",
+  "base":       "#0052FF",
+  "bnb chain":  "#F3BA2F",
+  "bnb":        "#F3BA2F",
+  "hyperevm":   "#97FCE4",
+  // Solana
+  "orca":       "#FFD15C",
+  "raydium":    "#C200FB",
+};
+function venueColor(venue) {
+  if (!venue) return null;
+  const v = String(venue).toLowerCase();
+  // Match directo
+  if (VENUE_COLORS[v]) return VENUE_COLORS[v];
+  // Match parcial: el venue puede ser "Revert Lend · Base" o "Orca Whirlpools" etc.
+  for (const [key, color] of Object.entries(VENUE_COLORS)) {
+    if (v.includes(key)) return color;
+  }
+  return null;
+}
 // Formatea ticks de fecha y omite repetidos consecutivos (evita fechas duplicadas en rangos cortos)
 function dateTick(fmtOpts) {
   return function (value, index, ticks) {
@@ -1271,10 +1303,16 @@ function renderPortfolio() {
   // ocultamos las posiciones cerradas en toda la vista de portfolio
   const visItems = (r) => (r.items || []).filter((it) => !it.closed);
   const all = state.results.flatMap(visItems);
-  // colores globales estables por posición
+  // colores estables por red/protocolo. TODAS las posiciones de la misma red usan
+  // el mismo color (Ethereum siempre azul, Arbitrum azul claro, …). Para posiciones
+  // de redes sin color definido, fallback al color rotativo por índice.
   let colorIdx = 0;
   const colorOf = new Map();
-  for (const r of state.results) for (const it of visItems(r)) colorOf.set(it, distinctColor(colorIdx++));
+  for (const r of state.results) {
+    for (const it of visItems(r)) {
+      colorOf.set(it, venueColor(it.venue) || distinctColor(colorIdx++));
+    }
+  }
 
   // ocultar CTA en cuanto haya resultados
   if (state.results.length > 0) els.pfCta.classList.add("hidden");
