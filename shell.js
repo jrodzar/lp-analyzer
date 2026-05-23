@@ -508,6 +508,17 @@ async function handleDeleteAccount() {
     return;
   }
   try {
+    // 0) Marca la entrada de allowlist con deletedAt. NO la borramos: el admin
+    //    quiere conservar el histórico de a quién dio acceso. El chip cambiará
+    //    a "🚪 Dado de baja" en el modal Accesos.
+    if (email && email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+      try {
+        await fb.fsMod.setDoc(
+          fb.fsMod.doc(fb.db, "allowlist", email.toLowerCase()),
+          { deletedAt: Date.now() }, { merge: true }
+        );
+      } catch (e) { console.warn("mark deletedAt in allowlist:", e); }
+    }
     // 1) borra el doc del usuario en Firestore (datos cifrados + prefs)
     try { await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.db, "users", state.user.uid)); }
     catch (e) { console.warn("deleteDoc users", e); }
@@ -642,9 +653,18 @@ async function renderAllowlist() {
     if (r.email === ADMIN_EMAIL.toLowerCase()) continue;
     const row = document.createElement("div");
     row.className = "flex items-center justify-between gap-2 bg-slate-950/40 rounded-lg px-3 py-2";
-    const reg = r.registeredAt
-      ? `<span class="chip bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0" title="Registrado en la app el ${new Date(r.registeredAt).toLocaleString()}">✓ Registrado</span>`
-      : `<span class="chip bg-slate-700/40 text-slate-400 border border-slate-700 shrink-0" title="Aún no ha iniciado sesión en la app">Pendiente</span>`;
+    // Estado: Pendiente → Registrado → (Dado de baja si deletedAt > registeredAt)
+    // Si vuelve a entrar después, markAllowEntryRegistered actualiza registeredAt
+    // y queda como "Registrado" otra vez (la lógica usa el timestamp más reciente).
+    const isDeleted = r.deletedAt && (!r.registeredAt || r.deletedAt > r.registeredAt);
+    let reg;
+    if (isDeleted) {
+      reg = `<span class="chip bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0" title="Se dio de baja el ${new Date(r.deletedAt).toLocaleString()}. La entrada se mantiene en la lista para histórico.">🚪 Dado de baja</span>`;
+    } else if (r.registeredAt) {
+      reg = `<span class="chip bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0" title="Registrado en la app el ${new Date(r.registeredAt).toLocaleString()}">✓ Registrado</span>`;
+    } else {
+      reg = `<span class="chip bg-slate-700/40 text-slate-400 border border-slate-700 shrink-0" title="Aún no ha iniciado sesión en la app">Pendiente</span>`;
+    }
     row.innerHTML = `
       <div class="flex items-center gap-2 min-w-0 flex-1">
         <span class="font-mono text-xs truncate">${r.email}</span>
@@ -685,7 +705,10 @@ async function markAllowEntryRegistered(email) {
     const ref = fb.fsMod.doc(fb.db, "allowlist", e);
     const snap = await fb.fsMod.getDoc(ref);
     const data = snap.exists() ? snap.data() : null;
-    if (data && data.registeredAt) return; // ya estaba marcado
+    // Ya marcado y NO se ha dado de baja después → nada que hacer.
+    if (data && data.registeredAt && !(data.deletedAt && data.deletedAt > data.registeredAt)) return;
+    // Re-registro tras baja: actualizamos registeredAt (deletedAt antiguo se queda
+    // como histórico, pero la lógica del chip usa "el más reciente gana").
     await fb.fsMod.setDoc(ref, { registeredAt: Date.now() }, { merge: true });
   } catch (e2) {
     console.warn("markAllowEntryRegistered:", e2.message);
