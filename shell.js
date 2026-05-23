@@ -1301,6 +1301,30 @@ function fillSummary(prefix, items, extra = {}) {
       `${inRange} en rango · ${lp.length - inRange} fuera` +
       (lending.length ? ` · ${lending.length} préstamo${lending.length > 1 ? "s" : ""}` : "");
   }
+  // Rentabilidad fees: APR anual ponderado por valor LP (solo posiciones con apr
+  // calculado). Mensual = anual × 30/365. No descuenta IL — el tooltip aclara.
+  if ($i("yield")) {
+    let wApr = 0, wTotal = 0, n = 0;
+    for (const it of lp) {
+      if (typeof it.apr === "number" && isFinite(it.apr) && it.valueUSD > 0) {
+        wApr += it.apr * it.valueUSD;
+        wTotal += it.valueUSD;
+        n++;
+      }
+    }
+    if (wTotal > 0) {
+      const aprAnual = wApr / wTotal;
+      const aprMensual = aprAnual * 30 / 365;
+      const color = aprAnual >= 0 ? "text-emerald-400" : "text-rose-400";
+      $i("yield").className = "text-xl font-bold mt-1 " + color;
+      $i("yield").innerHTML = `${aprMensual >= 0 ? "+" : ""}${aprMensual.toFixed(2)}% <span class="text-[11px] text-slate-400 font-normal">mensual</span>`;
+      if ($i("yield-sub")) $i("yield-sub").innerHTML = `<span class="${color} font-semibold">${aprAnual >= 0 ? "+" : ""}${aprAnual.toFixed(2)}%</span> anual · ${n}/${lp.length} pos.`;
+    } else {
+      $i("yield").className = "text-xl font-bold mt-1";
+      $i("yield").textContent = "—";
+      if ($i("yield-sub")) $i("yield-sub").textContent = "requiere histórico (EVM / Birdeye en Solana)";
+    }
+  }
   if ($i("addresses") && typeof extra.addresses === "number") $i("addresses").textContent = extra.addresses;
 }
 

@@ -20,7 +20,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "103";</script>
+  <script>window.APP_VERSION = "104";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -316,6 +316,11 @@
               <div id="g-positions-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
             </div>
             <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+              <div class="text-[11px] uppercase tracking-wide text-slate-400">Rentabilidad fees <span class="cursor-help text-slate-500" title="APR de fees (cobradas + pendientes) sobre el valor LP, anualizado por la edad de cada posición y ponderado por valor. No descuenta IL — para la rentabilidad neta vs HODL mira PnL neto.">ⓘ</span></div>
+              <div id="g-yield" class="text-xl font-bold mt-1">—</div>
+              <div id="g-yield-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
+            </div>
+            <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
               <div class="text-[11px] uppercase tracking-wide text-slate-400">Direcciones</div>
               <div id="g-addresses" class="text-xl font-bold mt-1">—</div>
             </div>
@@ -405,7 +410,7 @@
            del engine y se oculta al limpiar). -->
       <section id="quick-summary" class="hidden mb-4">
         <h2 class="text-lg font-semibold mb-3">Resumen</h2>
-        <div class="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div class="grid grid-cols-2 lg:grid-cols-3 gap-3">
           <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <div class="text-[11px] uppercase tracking-wide text-slate-400">Valor total LP</div>
             <div id="q-value" class="text-xl font-bold mt-1">—</div>
@@ -429,6 +434,11 @@
             <div class="text-[11px] uppercase tracking-wide text-slate-400">Posiciones</div>
             <div id="q-positions" class="text-xl font-bold mt-1">—</div>
             <div id="q-positions-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
+          </div>
+          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">Rentabilidad fees <span class="cursor-help text-slate-500" title="APR de fees (cobradas + pendientes) sobre el valor LP, anualizado por la edad de cada posición y ponderado por valor. No descuenta IL — para la rentabilidad neta vs HODL mira PnL neto.">ⓘ</span></div>
+            <div id="q-yield" class="text-xl font-bold mt-1">—</div>
+            <div id="q-yield-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
           </div>
         </div>
       </section>
