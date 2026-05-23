@@ -480,32 +480,35 @@ async function initFirebase(config) {
   authMod.onAuthStateChanged(fb.auth, onAuthChange);
 }
 
+// Mensajes en los gates de login (portfolio y quick). style: "plain" | "denied".
+const _GATE_BASE_CLS = "text-sm text-rose-400 mt-4 max-w-md mx-auto";
+const _GATE_DENIED_CLS = "rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200 mt-4 max-w-md mx-auto text-left";
+function setGateMsg(el, text, style = "plain") {
+  if (!el) return;
+  if (!text) { el.className = "hidden " + _GATE_BASE_CLS; el.textContent = ""; return; }
+  el.className = style === "denied" ? _GATE_DENIED_CLS : _GATE_BASE_CLS;
+  if (style === "denied") el.innerHTML = text; else el.textContent = text;
+}
+function clearGateMsgs() { setGateMsg(els.gateMsg, ""); setGateMsg(els.quickGateMsg, ""); }
+
 async function signInWithGoogle() {
   if (!fb.auth) {
     // Firebase todavía cargando (import async de CDN); esperar hasta 5 s
     const msgEl = state.tab === "quick" ? els.quickGateMsg : els.gateMsg;
-    if (msgEl) { msgEl.textContent = "Conectando con Firebase, espera un momento…"; msgEl.classList.remove("hidden"); }
+    setGateMsg(msgEl, "Conectando con Firebase, espera un momento…");
     let waited = 0;
     while (!fb.auth && waited < 5000) { await new Promise(r => setTimeout(r, 200)); waited += 200; }
-    if (!fb.auth) {
-      if (msgEl) { msgEl.textContent = "No se pudo conectar con Firebase. Recarga la página."; msgEl.classList.remove("hidden"); }
-      return;
-    }
-    if (msgEl) msgEl.classList.add("hidden");
+    if (!fb.auth) { setGateMsg(msgEl, "No se pudo conectar con Firebase. Recarga la página."); return; }
+    setGateMsg(msgEl, "");
   }
-  if (els.gateMsg) els.gateMsg.classList.add("hidden");
-  if (els.quickGateMsg) els.quickGateMsg.classList.add("hidden");
+  clearGateMsgs();
   try {
     const provider = new fb.authMod.GoogleAuthProvider();
     await fb.authMod.signInWithPopup(fb.auth, provider);
   } catch (e) {
     console.error(e);
-    if (state.tab === "quick" && els.quickGateMsg) {
-      els.quickGateMsg.textContent = `Error de login: ${e.message}`;
-      els.quickGateMsg.classList.remove("hidden");
-    } else {
-      setPfStatus(`Error de login: ${e.message}`, "err");
-    }
+    if (state.tab === "quick") setGateMsg(els.quickGateMsg, `Error de login: ${e.message}`);
+    else setPfStatus(`Error de login: ${e.message}`, "err");
   }
 }
 
@@ -635,16 +638,20 @@ async function onAuthChange(user) {
     // Control de acceso: solo emails autorizados pueden entrar
     const allowed = await checkAllowed(user);
     if (!allowed) {
-      els.gateMsg.textContent = `El email ${user.email} no está autorizado. Pide acceso al administrador (${ADMIN_EMAIL}).`;
-      els.gateMsg.classList.remove("hidden");
+      const safeEmail = String(user.email).replace(/[<&>]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
+      const html = `<div class="font-semibold mb-1">⛔ Acceso denegado</div>` +
+        `El email <code class="font-mono text-rose-100">${safeEmail}</code> no está en la lista de acceso autorizados.<br>` +
+        `Pide acceso al administrador (<code class="font-mono text-rose-100">${ADMIN_EMAIL}</code>) para que te añada.`;
+      setGateMsg(els.gateMsg, html, "denied");
+      setGateMsg(els.quickGateMsg, html, "denied");
       els.loginGate.classList.remove("hidden");
       els.portfolioArea.classList.add("hidden");
-      await signOutUser(); // dispara onAuthChange(null); el mensaje permanece
+      await signOutUser(); // dispara onAuthChange(null); el mensaje permanece en ambos gates
       return;
     }
     // Marcar que este email se ha registrado en la app (para indicador del admin)
     markAllowEntryRegistered(user.email).catch(() => {});
-    els.gateMsg.classList.add("hidden");
+    clearGateMsgs();
     els.manageAccess.classList.toggle("hidden", !isAdminUser());
     els.deleteAccount.classList.toggle("hidden", isAdminUser()); // admin no puede autoeliminarse
     els.loginGate.classList.add("hidden");
