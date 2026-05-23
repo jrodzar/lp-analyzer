@@ -1304,7 +1304,7 @@ function renderQuickIdleTokens(tokens) {
   const wrap = document.getElementById("quick-idle");
   if (!wrap) return;
   wrap.innerHTML = "";
-  const block = idleTokensBlock(tokens || []);
+  const block = idleTokensBlock(tokens || [], { open: true });
   if (block) { wrap.appendChild(block); wrap.classList.remove("hidden"); }
   else wrap.classList.add("hidden");
 }
@@ -1357,17 +1357,22 @@ function renderPortfolio() {
     const section = document.createElement("section");
     const subVal = items.reduce((s, it) => s + (it.valueUSD || 0), 0);
     const subFees = items.reduce((s, it) => s + (it.feesPendingUSD || 0) + (it.feesUSD || 0), 0);
-    const badge = r.entry.type === "evm"
-      ? `<span class="chip bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30">EVM</span>`
-      : `<span class="chip bg-purple-500/15 text-purple-300 border border-purple-500/30">SOL</span>`;
+    // Cabecera de dirección — más visual: border-left de color según red, fondo
+    // suave, label grande. Se distingue claramente al hacer scroll por el portfolio.
+    const isEvm = r.entry.type === "evm";
+    const borderCls = isEvm ? "border-l-fuchsia-500" : "border-l-purple-500";
+    const bgCls = isEvm ? "bg-fuchsia-500/[0.04]" : "bg-purple-500/[0.04]";
+    const badgeCls = isEvm
+      ? "bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30"
+      : "bg-purple-500/15 text-purple-300 border border-purple-500/30";
     const head = document.createElement("div");
-    head.className = "flex items-center gap-2 mb-2 flex-wrap";
+    head.className = `rounded-lg border border-slate-800 border-l-4 ${borderCls} ${bgCls} px-4 py-3 mb-3 flex items-center gap-3 flex-wrap`;
     head.innerHTML = `
-      ${badge}
-      <span class="font-semibold text-base">${r.entry.label || shortAddr(r.entry.address)}</span>
+      <span class="chip ${badgeCls} text-xs font-semibold">${isEvm ? "EVM" : "SOL"}</span>
+      <h3 class="font-bold text-lg text-slate-100">${r.entry.label || shortAddr(r.entry.address)}</h3>
       <span class="font-mono text-[11px] text-slate-500">${shortAddr(r.entry.address)}</span>
       <span class="flex-1"></span>
-      <span class="text-sm text-slate-300 flex items-center gap-2">
+      <span class="text-sm text-slate-300 flex items-center gap-2 flex-wrap">
         <span><span class="font-semibold text-slate-100">${items.length}</span> pos</span>
         <span class="text-slate-600">·</span>
         <span class="font-semibold text-slate-100">${fmtUSD(subVal)}</span>
@@ -1376,6 +1381,12 @@ function renderPortfolio() {
       </span>`;
     section.appendChild(head);
 
+    // 1) Tokens "idle" PRIMERO (expandidos por defecto) — más útil que los pools en
+    // muchos casos. Si no hay tokens, no se renderiza nada.
+    const idleBlock = idleTokensBlock(r.idleTokens || [], { open: true });
+    if (idleBlock) section.appendChild(idleBlock);
+
+    // 2) Posiciones LP / lending de la dirección
     if (!items.length) {
       const empty = document.createElement("div");
       // ¿el estado del engine indica un problema (auth/red/límite)? → resaltar en ámbar
@@ -1389,9 +1400,6 @@ function renderPortfolio() {
       for (const it of items) grid.appendChild(portfolioCard(it, colorOf.get(it)));
       section.appendChild(grid);
     }
-    // Bloque "Tokens en wallet (idle)" — fungibles fuera de LPs
-    const idleBlock = idleTokensBlock(r.idleTokens || []);
-    if (idleBlock) section.appendChild(idleBlock);
     els.pfSections.appendChild(section);
   }
 }
@@ -1400,7 +1408,7 @@ function renderPortfolio() {
 // USD descendente. Por defecto oculta los tokens con valor < $1 para evitar el
 // spam de airdrops, con un toggle para mostrarlos.
 const IDLE_DUST_THRESHOLD = 1;
-function idleTokensBlock(tokens) {
+function idleTokensBlock(tokens, opts = {}) {
   if (!Array.isArray(tokens) || !tokens.length) return null;
   const known = tokens.filter((t) => t.valueUSD != null);
   const dust = known.filter((t) => t.valueUSD < IDLE_DUST_THRESHOLD);
@@ -1410,6 +1418,7 @@ function idleTokensBlock(tokens) {
   const totalSignificantUSD = significant.reduce((s, t) => s + (t.valueUSD || 0), 0);
 
   const wrap = document.createElement("details");
+  if (opts.open) wrap.open = true;
   wrap.className = "rounded-xl border border-slate-800 bg-slate-900/40 p-3 mb-4 text-sm";
   const head = document.createElement("summary");
   head.className = "flex items-center gap-2 cursor-pointer select-none text-slate-300";
