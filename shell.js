@@ -1465,7 +1465,7 @@ function renderPortfolio() {
 // Render del bloque "💼 Tokens en wallet (idle)" — colapsable, ordenado por valor
 // USD descendente. Por defecto oculta los tokens con valor < $1 para evitar el
 // spam de airdrops, con un toggle para mostrarlos.
-const IDLE_DUST_THRESHOLD = 1;
+const IDLE_DUST_THRESHOLD = 0.1;
 function idleTokensBlock(tokens, opts = {}) {
   if (!Array.isArray(tokens) || !tokens.length) return null;
   const known = tokens.filter((t) => t.valueUSD != null);
