@@ -46,6 +46,7 @@ const els = {
   pfCharts: $("pf-charts"), chartByAddress: $("chart-by-address"), chartByVenue: $("chart-by-venue"), chartByFees: $("chart-by-fees"),
   pfFeesTimeline: $("pf-fees-timeline"), chartFeesTimeline: $("chart-fees-timeline"),
   pfFeesTimelineTotal: $("pf-fees-timeline-total"), chartFeesTimelineTotal: $("chart-fees-timeline-total"),
+  feesMinThreshold: $("fees-min-threshold"), pfFeesSummary: $("pf-fees-summary"),
   prefChains: $("pref-chains"), prefProtocols: $("pref-protocols"),
   // quick
   modeEvm: $("mode-evm"), modeSol: $("mode-sol"), addr: $("addr"), go: $("go"),
@@ -1236,16 +1237,44 @@ function renderPortfolioCharts() {
 
 function renderFeesTimelineChart() {
   if (pfCharts.timeline) { pfCharts.timeline.destroy(); pfCharts.timeline = null; }
+  els.pfFeesSummary.classList.add("hidden");
   // Recoger todas las series por posición de todas las direcciones
   const allSeries = state.results.flatMap((r) => r.timeline || []);
   els.pfFeesTimeline.classList.toggle("hidden", allSeries.length === 0);
   if (!allSeries.length || typeof Chart === "undefined") return;
-  const datasets = allSeries.map((s, i) => ({
-    label: s.label,
-    data: s.points.map((pt) => ({ x: pt.ts, y: pt.feesUSD })),
+
+  // Total cobrado por serie (último punto = acumulado final)
+  const withTotals = allSeries.map((s) => ({
+    series: s,
+    total: s.points.length ? s.points[s.points.length - 1].feesUSD : 0,
+  }));
+  // Ordenar de mayor a menor para que la leyenda muestre primero las relevantes
+  withTotals.sort((a, b) => b.total - a.total);
+
+  // Umbral configurable: ocultar pools con menos de X$ cobrados
+  const minThreshold = Math.max(0, Number(els.feesMinThreshold.value) || 0);
+  const visible = withTotals.filter((x) => x.total >= minThreshold);
+  const hiddenCount = withTotals.length - visible.length;
+
+  // Mini-resumen: top pool + % del total, y nº de pools ocultas por umbral
+  const grandTotal = withTotals.reduce((s, x) => s + x.total, 0);
+  if (withTotals.length && grandTotal > 0) {
+    const top = withTotals[0];
+    const pct = (top.total / grandTotal) * 100;
+    let html = `📈 <span class="text-slate-200 font-semibold">Pool top:</span> ${top.series.label} → <span class="text-emerald-300">${fmtUSD(top.total)}</span> <span class="text-slate-500">(${pct.toFixed(1)}% del total cobrado · ${fmtUSD(grandTotal)} en ${withTotals.length} ${withTotals.length === 1 ? "pool" : "pools"})</span>`;
+    if (hiddenCount > 0) html += ` <span class="text-slate-500">· ${hiddenCount} ${hiddenCount === 1 ? "pool oculta" : "pools ocultas"} por umbral</span>`;
+    els.pfFeesSummary.innerHTML = html;
+    els.pfFeesSummary.classList.remove("hidden");
+  }
+
+  if (!visible.length) return; // todo filtrado por umbral
+
+  const datasets = visible.map((x, i) => ({
+    label: x.series.label,
+    data: x.series.points.map((pt) => ({ x: pt.ts, y: pt.feesUSD })),
     borderColor: distinctColor(i),
     backgroundColor: "transparent",
-    tension: 0.3,
+    stepped: "after",      // honesto: cada Collect es un escalón, sin curva interpolada
     pointRadius: 0,
     borderWidth: 1.5,
   }));
@@ -1307,7 +1336,7 @@ function renderFeesTimelineTotalChart() {
   };
   pfCharts.timelineTotal = new Chart(els.chartFeesTimelineTotal, {
     type: "line",
-    data: { datasets: [{ label: "Total fees", data, borderColor: "#10b981", backgroundColor: "rgba(16,185,129,0.08)", fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 }] },
+    data: { datasets: [{ label: "Total fees", data, borderColor: "#10b981", backgroundColor: "rgba(16,185,129,0.08)", fill: true, stepped: "after", pointRadius: 0, borderWidth: 2 }] },
     options: lineOptions,
   });
 }
@@ -1662,6 +1691,12 @@ els.addPhantom.onclick = () => addConnectedWallet("sol");
 els.autoRefresh.onchange = applyAutoRefresh;
 els.refreshNow.onclick = refreshActiveTab;
 els.pfManageToggle.onclick = togglePfManage;
+els.feesMinThreshold.addEventListener("input", () => {
+  localStorage.setItem("lp:feesMinThreshold", String(els.feesMinThreshold.value || 0));
+  renderFeesTimelineChart();
+});
+// restaurar umbral guardado
+{ const v = localStorage.getItem("lp:feesMinThreshold"); if (v !== null) els.feesMinThreshold.value = v; }
 
 // ============================================================================
 // Init

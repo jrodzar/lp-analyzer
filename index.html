@@ -7,7 +7,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "58";</script>
+  <script>window.APP_VERSION = "59";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -271,7 +271,19 @@
 
         <!-- Línea temporal de fees por pool -->
         <section id="pf-fees-timeline" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
-          <h3 class="text-sm font-semibold mb-3">Fees cobradas acumuladas por pool</h3>
+          <div class="flex items-start justify-between gap-2 flex-wrap mb-3">
+            <div class="flex items-center gap-1.5">
+              <h3 class="text-sm font-semibold">Fees cobradas acumuladas por pool</h3>
+              <span class="cursor-help text-slate-400 hover:text-slate-200 text-xs" title="Cada línea es una posición. El eje Y es el total de fees YA RECLAMADAS (no incluye pendientes). Las subidas son eventos de Collect; los tramos planos significan que no reclamaste en ese intervalo. Pendiente constante = pool que produce parejo. Una línea muy por encima del resto = esa pool concentra casi todo tu yield. Haz clic en la leyenda para aislar/ocultar una pool.">ⓘ</span>
+            </div>
+            <label class="flex items-center gap-1.5 text-[11px] text-slate-400">
+              <span>Ocultar pools con &lt;</span>
+              <span class="text-slate-300">$</span>
+              <input id="fees-min-threshold" type="number" min="0" step="1" value="1" class="w-16 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-200 text-[11px]" />
+              <span>cobrados</span>
+            </label>
+          </div>
+          <div id="pf-fees-summary" class="text-[11px] text-slate-400 mb-2 hidden"></div>
           <div class="relative h-64"><canvas id="chart-fees-timeline"></canvas></div>
         </section>
 
