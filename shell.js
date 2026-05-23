@@ -1742,6 +1742,7 @@ els.modeSol.onclick = () => setMode("sol");
 // abrirlo solo tiene sentido cuando ese iframe es visible → al pulsar desde
 // Portfolio, cambiamos a Quick + modo correcto y disparamos lp-open-settings.
 function openEngineSettings(mode) {
+  if (!isAdminUser()) return; // defensa: solo admin (botones ya ocultos en UI)
   setTab("quick");
   setMode(mode);
   const frame = mode === "evm" ? els.frameEvm : els.frameSol;
