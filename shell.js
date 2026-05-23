@@ -1407,6 +1407,7 @@ function renderPortfolio() {
     const items = visItems(r);
     const subVal = items.reduce((s, it) => s + (it.valueUSD || 0), 0);
     const subFees = items.reduce((s, it) => s + (it.feesPendingUSD || 0) + (it.feesUSD || 0), 0);
+    const subIdle = (r.idleTokens || []).reduce((s, t) => s + (t.valueUSD || 0), 0);
     const isEvm = r.entry.type === "evm";
     const borderCls = isEvm ? "border-l-fuchsia-500" : "border-l-purple-500";
     const bgCls = isEvm ? "bg-fuchsia-500/[0.04]" : "bg-purple-500/[0.04]";
@@ -1430,7 +1431,7 @@ function renderPortfolio() {
         <span class="text-sm text-slate-300 flex items-center gap-2 flex-wrap">
           <span><span class="font-semibold text-slate-100">${items.length}</span> pos</span>
           <span class="text-slate-600">·</span>
-          <span class="font-semibold text-slate-100">${fmtUSD(subVal)}</span>
+          <span class="font-semibold text-slate-100">${fmtUSD(subVal)}</span><span class="text-slate-500 text-[11px] ml-1">DeFi</span>${subIdle > 0 ? ` <span class="text-slate-600">+</span> <span class="font-semibold text-slate-100">${fmtUSD(subIdle)}</span><span class="text-slate-500 text-[11px] ml-1">idle</span>` : ""}
           <span class="text-slate-600">·</span>
           <span>fees <span class="font-semibold text-emerald-400">${fmtUSD(subFees)}</span></span>
         </span>
