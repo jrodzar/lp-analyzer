@@ -1273,9 +1273,14 @@ function fillSummary(prefix, items, extra = {}) {
   const lp = items.filter((it) => !it.lending);
   const lending = items.filter((it) => it.lending);
   const inRange = lp.filter((it) => it.inRange).length;
+  // IL solo aplica a LPs (un lending no tiene impermanent loss → ilUSD: null).
+  // PnL y rentabilidad SÍ incluyen el lending: la card de Revert Lend tiene
+  // gains/apr propios y deben sumar al total agregado del portfolio.
   let ilSum = 0, ilN = 0, pnlSum = 0, pnlN = 0;
   for (const it of lp) {
     if (it.ilUSD != null && isFinite(it.ilUSD)) { ilSum += it.ilUSD; ilN++; }
+  }
+  for (const it of items) { // todos: LPs + lending
     if (it.pnlUSD != null && isFinite(it.pnlUSD)) { pnlSum += it.pnlUSD; pnlN++; }
   }
   const pctOf = (x) => (totalValue > 0 ? ` (${x >= 0 ? "+" : ""}${((x / totalValue) * 100).toFixed(2)}%)` : "");
@@ -1293,7 +1298,7 @@ function fillSummary(prefix, items, extra = {}) {
   if ($i("pnl")) {
     $i("pnl").textContent = pnlN ? fmtUSD(pnlSum) + pctOf(pnlSum) : "—";
     $i("pnl").className = "text-xl font-bold mt-1 " + (pnlN ? pnlColor(pnlSum) : "");
-    if ($i("pnl-sub")) $i("pnl-sub").textContent = pnlN ? `${pnlN}/${lp.length} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
+    if ($i("pnl-sub")) $i("pnl-sub").textContent = pnlN ? `${pnlN}/${items.length} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
   }
   if ($i("positions")) {
     $i("positions").textContent = items.length;
@@ -1301,11 +1306,11 @@ function fillSummary(prefix, items, extra = {}) {
       `${inRange} en rango · ${lp.length - inRange} fuera` +
       (lending.length ? ` · ${lending.length} préstamo${lending.length > 1 ? "s" : ""}` : "");
   }
-  // Rentabilidad fees: APR anual ponderado por valor LP (solo posiciones con apr
-  // calculado). Mensual = anual × 30/365. No descuenta IL — el tooltip aclara.
+  // Rentabilidad fees: APR anual ponderado por valor (LPs + lending — ambos tienen
+  // apr/valor). Mensual = anual × 30/365. No descuenta IL — el tooltip aclara.
   if ($i("yield")) {
     let wApr = 0, wTotal = 0, n = 0;
-    for (const it of lp) {
+    for (const it of items) { // todos: LPs + lending
       if (typeof it.apr === "number" && isFinite(it.apr) && it.valueUSD > 0) {
         wApr += it.apr * it.valueUSD;
         wTotal += it.valueUSD;
@@ -1318,7 +1323,7 @@ function fillSummary(prefix, items, extra = {}) {
       const color = aprAnual >= 0 ? "text-emerald-400" : "text-rose-400";
       $i("yield").className = "text-xl font-bold mt-1 " + color;
       $i("yield").innerHTML = `${aprMensual >= 0 ? "+" : ""}${aprMensual.toFixed(2)}% <span class="text-[11px] text-slate-400 font-normal">mensual</span>`;
-      if ($i("yield-sub")) $i("yield-sub").innerHTML = `<span class="${color} font-semibold">${aprAnual >= 0 ? "+" : ""}${aprAnual.toFixed(2)}%</span> anual · ${n}/${lp.length} pos.`;
+      if ($i("yield-sub")) $i("yield-sub").innerHTML = `<span class="${color} font-semibold">${aprAnual >= 0 ? "+" : ""}${aprAnual.toFixed(2)}%</span> anual · ${n}/${items.length} pos.`;
     } else {
       $i("yield").className = "text-xl font-bold mt-1";
       $i("yield").textContent = "—";
