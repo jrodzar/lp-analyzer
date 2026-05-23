@@ -34,6 +34,7 @@ const els = {
   // portfolio crud
   pfLabel: $("pf-label"), pfAddress: $("pf-address"), pfAdd: $("pf-add"), pfAddErr: $("pf-add-err"),
   pfList: $("pf-list"), analyzeAll: $("analyze-all"), pfStatus: $("pf-status"), pfCsv: $("pf-csv"),
+  pfManageToggle: $("pf-manage-toggle"), pfManageBody: $("pf-manage-body"), pfManageChev: $("pf-manage-chev"), pfCount: $("pf-count"),
   pfCta: $("pf-cta"), pfCtaBtn: $("pf-cta-btn"),
   addRabby: $("add-rabby"), addPhantom: $("add-phantom"),
   analyzingModal: $("analyzing-modal"), analyzingMsg: $("analyzing-msg"), analyzingBar: $("analyzing-bar"),
@@ -814,8 +815,39 @@ function reorderPortfolio(from, to) {
   savePortfolio();
 }
 
+function updatePfCount() {
+  const n = state.portfolio.length;
+  const ev = state.portfolio.filter(p => p.type === "evm").length;
+  const so = n - ev;
+  if (!n) {
+    els.pfCount.classList.add("hidden");
+  } else {
+    els.pfCount.classList.remove("hidden");
+    els.pfCount.textContent = `${n} · ${ev} EVM · ${so} SOL`;
+  }
+}
+function setPfManageOpen(open, persist = true) {
+  els.pfManageBody.classList.toggle("hidden", !open);
+  els.pfManageChev.textContent = open ? "▾" : "▸";
+  if (persist) localStorage.setItem("lp:pfManageOpen", open ? "1" : "0");
+}
+function togglePfManage() {
+  const open = els.pfManageBody.classList.contains("hidden"); // si estaba oculto, lo abrimos
+  setPfManageOpen(open, true);
+}
+// Aplica el estado según la preferencia del usuario; si no hay pref guardada,
+// se abre cuando el portfolio está vacío y se pliega cuando ya hay direcciones.
+function applyPfManagePref() {
+  const saved = localStorage.getItem("lp:pfManageOpen");
+  if (saved === "1") setPfManageOpen(true, false);
+  else if (saved === "0") setPfManageOpen(false, false);
+  else setPfManageOpen(state.portfolio.length === 0, false);
+}
+
 function renderPortfolioList() {
   els.pfList.innerHTML = "";
+  updatePfCount();
+  applyPfManagePref();
   if (!state.portfolio.length) {
     els.pfList.innerHTML = `<div class="text-xs text-slate-500">Aún no hay direcciones. Añade una arriba.</div>`;
     els.pfCta.classList.add("hidden");
@@ -1595,6 +1627,7 @@ els.addRabby.onclick = () => addConnectedWallet("evm");
 els.addPhantom.onclick = () => addConnectedWallet("sol");
 els.autoRefresh.onchange = applyAutoRefresh;
 els.refreshNow.onclick = refreshActiveTab;
+els.pfManageToggle.onclick = togglePfManage;
 
 // ============================================================================
 // Init
