@@ -55,7 +55,7 @@ const els = {
   // settings modal (admin) — API keys que sobrescriben el proxy
   settingsModal: $("settings-modal"), settingsClose: $("settings-close"),
   settingsCancel: $("settings-cancel"), settingsSave: $("settings-save"),
-  settingsStatus: $("settings-status"),
+  settingsTest: $("settings-test"), settingsStatus: $("settings-status"),
   setGraphKey: $("set-graph-key"), setHeliusKey: $("set-helius-key"), setBirdeyeKey: $("set-birdeye-key"),
   frameEvm: $("frame-evm"), frameSol: $("frame-sol"),
   // histórico
@@ -2178,10 +2178,65 @@ async function saveSettingsModal() {
     els.settingsStatus.textContent = `No se pudo guardar: ${e.message}`;
   }
 }
+// "Probar mis keys": hace una petición real al provider con la key escrita en el
+// campo (NO usa el proxy). Sirve para descartar typos y confirmar que el provider
+// la acepta. Si el campo está vacío, deja un mensaje neutro indicando que esa
+// API tirará del proxy compartido.
+async function testGraphKey(k) {
+  const url = `https://gateway.thegraph.com/api/${k}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV`;
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: "{ _meta { block { number } } }" }) });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const j = await r.json();
+  if (j.errors) throw new Error(j.errors[0]?.message || "error gql");
+  return j.data?._meta?.block?.number ? `bloque ${j.data._meta.block.number}` : "ok";
+}
+async function testHeliusKey(k) {
+  const r = await fetch(`https://mainnet.helius-rpc.com/?api-key=${k}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getSlot" }) });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message || "error rpc");
+  return j.result ? `slot ${j.result}` : "ok";
+}
+async function testBirdeyeKey(k) {
+  const r = await fetch("https://public-api.birdeye.so/defi/price?address=So11111111111111111111111111111111111111112", { headers: { "accept": "application/json", "X-API-KEY": k, "x-chain": "solana" } });
+  if (r.status === 401 || r.status === 403) throw new Error(`HTTP ${r.status} (key inválida / sin permisos)`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const j = await r.json();
+  if (j.success === false) throw new Error(j.message || "rechazada");
+  return j.data?.value ? `SOL=$${j.data.value.toFixed(2)}` : "ok";
+}
+async function runApiKeyTests() {
+  const tests = [
+    { id: "set-graph-status",   key: els.setGraphKey.value.trim(),   label: "The Graph", fn: testGraphKey },
+    { id: "set-helius-status",  key: els.setHeliusKey.value.trim(),  label: "Helius",    fn: testHeliusKey },
+    { id: "set-birdeye-status", key: els.setBirdeyeKey.value.trim(), label: "Birdeye",   fn: testBirdeyeKey },
+  ];
+  // Marcar todos como "probando"
+  for (const t of tests) {
+    const el = document.getElementById(t.id); if (!el) continue;
+    if (!t.key) { el.className = "text-[10px] mt-1 text-slate-500"; el.textContent = "🌐 Sin key → usa el proxy compartido"; continue; }
+    el.className = "text-[10px] mt-1 text-slate-300"; el.textContent = "⏳ Probando…";
+  }
+  // Lanzar en paralelo solo las que tienen key
+  await Promise.all(tests.map(async (t) => {
+    if (!t.key) return;
+    const el = document.getElementById(t.id); if (!el) return;
+    try {
+      const detail = await t.fn(t.key);
+      el.className = "text-[10px] mt-1 text-emerald-400";
+      el.textContent = `✓ ${t.label} responde con tu key (${detail})`;
+    } catch (e) {
+      el.className = "text-[10px] mt-1 text-rose-400";
+      el.textContent = `✗ ${t.label} rechazó tu key: ${e.message}`;
+    }
+  }));
+}
+
 els.settingsOpen.onclick = openSettingsModal;
 els.settingsClose.onclick = closeSettingsModal;
 els.settingsCancel.onclick = closeSettingsModal;
 els.settingsSave.onclick = saveSettingsModal;
+els.settingsTest.onclick = runApiKeyTests;
 els.settingsModal.addEventListener("click", (e) => { if (e.target === els.settingsModal) closeSettingsModal(); });
 // Indicador en vivo: al teclear en cualquier campo, refrescar los badges.
 for (const id of ["set-graph-key", "set-helius-key", "set-birdeye-key"]) {

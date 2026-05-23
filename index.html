@@ -20,7 +20,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "110";</script>
+  <script>window.APP_VERSION = "111";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -171,7 +171,8 @@
         </div>
       </div>
       <div id="settings-status" class="text-[11px] hidden"></div>
-      <div class="flex gap-2 justify-end">
+      <div class="flex gap-2 justify-end flex-wrap">
+        <button id="settings-test" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm" title="Hace una petición de prueba a cada provider con tu key">Probar mis keys</button>
         <button id="settings-cancel" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm">Cancelar</button>
         <button id="settings-save" class="px-3 py-2 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-sm font-semibold">Guardar</button>
       </div>
