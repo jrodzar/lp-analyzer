@@ -1390,17 +1390,20 @@ function positionCard(p) {
         <div class="text-[10px] text-slate-400">${fmtToken(p.feesA, p.token0.symbol)}</div>
         <div class="text-[10px] text-slate-400">${fmtToken(p.feesB, p.token1.symbol)}</div>
       </div>
-      ${p.pnlBasis === "birdeye" ? `
+      ${p.pnlBasis === "birdeye" ? (() => {
+        const src = p.pnlUsedYahoo ? "Birdeye + Yahoo Finance (fallback xStocks)" : "Birdeye";
+        return `
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL <span class="cursor-help" title="Valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Estimación con precios históricos de Birdeye; no incluye gas.">ⓘ</span></div>
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL <span class="cursor-help" title="Valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Estimación con precios históricos de ${src}; no incluye gas.">ⓘ</span></div>
         <div class="font-semibold ${pnlColor(p.ilUSD)}">${fmtUSD(p.ilUSD)}</div>
         <div class="text-[10px] ${pnlColor(p.ilUSD)} mt-0.5">${fmtPct(p.ilPct)}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto <span class="cursor-help" title="Valor actual + retirado + fees − depositado, con precios históricos de Birdeye. Estimación: fees y retiros se separan por heurística y NO incluye gas.">ⓘ</span></div>
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto <span class="cursor-help" title="Valor actual + retirado + fees − depositado, con precios históricos de ${src}. Estimación: fees y retiros se separan por heurística y NO incluye gas.">ⓘ</span></div>
         <div class="font-semibold ${pnlColor(p.pnlUSD)}">${fmtUSD(p.pnlUSD)}</div>
         <div class="text-[10px] text-slate-400 mt-0.5">depo ${fmtUSD(p.depositedUSD)}</div>
-      </div>` : ""}
+      </div>`;
+      })() : ""}
     </div>
 
     <details class="text-xs">
@@ -1415,7 +1418,9 @@ function positionCard(p) {
         <div class="pt-1 mt-1 border-t border-slate-800">Depositado (coste): ${fmtUSD(p.depositedUSD)}</div>
         <div>Retirado: ${fmtUSD(p.withdrawnUSD)} · Fees cobradas: ${fmtUSD(p.feesCollectedUSD)}</div>
         <div>Valor HODL hoy: ${fmtUSD(p.hodlUSD)}</div>
-        <div class="text-[10px] text-slate-500">PnL/IL con precios históricos de Birdeye (estimación; fees vs retiros por heurística).</div>` : ""}
+        <div class="text-[10px] text-slate-500">PnL/IL con precios históricos de ${p.pnlUsedYahoo
+          ? `Birdeye + <span class="text-amber-300">Yahoo Finance</span> (fallback xStocks: la acción subyacente como proxy del xToken)`
+          : "Birdeye"} (estimación; fees vs retiros por heurística).</div>` : ""}
       </div>
     </details>
   `;
@@ -1535,7 +1540,7 @@ async function analyze() {
         beWarn = " ⚠ No se pudo obtener histórico de Birdeye: PnL/IL no disponible.";
         beError = "error de petición";
       } else if (st.partial > 0) {
-        beWarn = ` ⚠ ${st.partial} posición(es) sin histórico completo en Birdeye (p. ej. tokens RWA): PnL/IL omitido en ellas.`;
+        beWarn = ` ⚠ ${st.partial} posición(es) sin histórico completo (ni en Birdeye ni en Yahoo Finance — típico de tokens nuevos o depósitos pre-IPO): PnL/IL omitido en ellas.`;
       }
     }
 
@@ -1757,7 +1762,8 @@ async function birdeyePriceAt(mint, unixSec) {
     }
   }
   // Fallback xStocks: si Birdeye no lo tiene y el token parece xStock (TSLAx,
-  // MSTRx…), usa el precio histórico de la acción subyacente vía Stooq.
+  // MSTRx, NVDAx, CRCLx…), usa el precio histórico de la acción subyacente
+  // vía Yahoo Finance (proxy /stock).
   if (price == null) {
     const meta = state.tokenList && state.tokenList.get(mint);
     const ticker = detectXStockTicker(meta);
@@ -1768,6 +1774,10 @@ async function birdeyePriceAt(mint, unixSec) {
         // Contamos como "ok" para que los banners de PnL no se disparen por
         // un fallo de Birdeye que sí resolvió la fuente alternativa.
         state._beStats.ok++;
+        // Track per mint para que la card refleje "Birdeye + Yahoo fallback"
+        // en lugar de solo "Birdeye". Visible al usuario en el details note.
+        if (!state._yahooFallbackMints) state._yahooFallbackMints = new Set();
+        state._yahooFallbackMints.add(mint);
       }
     }
   }
@@ -1779,6 +1789,7 @@ async function birdeyePriceAt(mint, unixSec) {
 // Reconstruye el coste base a partir de las transferencias depósito/retiro/fee.
 async function enrichSolanaPnL(owner) {
   state._beStats = { ok: 0, denied: 0, rate: 0, error: 0, partial: 0 };
+  state._yahooFallbackMints = new Set(); // reset por análisis
   if ((!state.birdeyeKey && !PROXY_BASE) || !owner || !(state.positions || []).length) return;
   const txs = await fetchEnhancedTxs(owner);
   if (!txs.length) return;
@@ -1819,8 +1830,10 @@ async function enrichSolanaPnL(owner) {
       if (e.amount <= 0) continue; // transferencias informativas sin importe
       const hp = await birdeyePriceAt(e.mint, e.ts);
       if (hp == null) {
-        // sin precio histórico de esta pata: la reconstrucción queda incompleta
-        // (típico en tokens RWA recientes que Birdeye no cubre). No falseamos: marcamos.
+        // sin precio histórico de esta pata: la reconstrucción queda incompleta.
+        // Cuando ni Birdeye ni el fallback Yahoo (xStocks) resuelven el precio,
+        // típicamente porque el token es muy nuevo o la fecha es pre-IPO. No
+        // falseamos: marcamos `incomplete` y la posición se omite del PnL.
         incomplete = true;
         continue;
       }
@@ -1862,6 +1875,10 @@ async function enrichSolanaPnL(owner) {
     p.ageDays = ageDays;
     p.apr = (ageDays && costBasisUSD > 0) ? ((feesCollectedUSD + pendFees) / costBasisUSD) * (365 / ageDays) * 100 : null;
     p.pnlBasis = "birdeye";
+    // Marca si alguna pata de esta LP usó el fallback Yahoo (xStock) → la card
+    // mostrará "Birdeye + Yahoo fallback" en lugar de solo "Birdeye".
+    const yh = state._yahooFallbackMints;
+    p.pnlUsedYahoo = !!(yh && ((p.token0?.mint && yh.has(p.token0.mint)) || (p.token1?.mint && yh.has(p.token1.mint))));
   }
 }
 

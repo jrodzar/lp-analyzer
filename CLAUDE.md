@@ -169,5 +169,8 @@ Bootstrap: el admin entra (siempre autorizado) → "👥 Accesos" → añade ema
   fichas, PnL+IL real en Solana vía Birdeye histórico, control de acceso por whitelist,
   modal de progreso al analizar.
 - Pendiente opcional: Meteora DLMM, pools clásicos Solana, fee tier de Raydium,
-  histórico para tokens RWA que Birdeye no cubre (necesitaría otra fuente de precios),
   códigos de invitación (autoservicio).
+- xStocks (TSLAx, MSTRx, NVDAx, CRCLx…) ya soportados via fallback Yahoo Finance
+  cuando Birdeye no cubre el histórico (proxy /stock + heurística de detección por
+  símbolo + name en sol/app.js). Otros tipos de RWA que Yahoo no cubra siguen
+  sin reconstrucción de PnL.
