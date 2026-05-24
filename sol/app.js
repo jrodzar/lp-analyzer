@@ -1306,7 +1306,11 @@ function lendingCard(p) {
         <div>Vault token: <a href="https://solscan.io/token/${p.mint}" target="_blank" class="font-mono text-slate-300 hover:text-fuchsia-300">${shortAddr(p.mint)}</a></div>
         <div>Activo subyacente: ${p.asset}</div>
         ${p.sharePrice != null ? `<div>Precio share: ${fmtUSD(p.sharePrice)}</div>` : ""}
-        <div class="text-[10px] text-slate-500 mt-1">Histórico de depósitos no disponible (sin escaneo de transacciones). Valor actual = shares × precio Jupiter.</div>
+        ${p.ageDays ? `<div>Abierto hace ~${Math.round(p.ageDays)}d (primer depósito: ${new Date((p.openedAt || 0) * 1000).toLocaleDateString("es-ES")})</div>` : ""}
+        ${p.withdrawnUSD ? `<div>Total retirado: ${fmtUSD(p.withdrawnUSD)}</div>` : ""}
+        <div class="text-[10px] text-slate-500 mt-1">${p.pnlBasis === "tx-scan"
+          ? "Coste base e interés reconstruidos del histórico de transacciones (Helius)."
+          : "Histórico de depósitos no disponible (sin Helius). Valor actual = shares × precio Jupiter."}</div>
       </div>
     </details>`;
   return el;
@@ -1487,6 +1491,9 @@ async function analyze() {
     if (jlTokens.length) {
       state.idleTokens = state.idleTokens.filter((t) => !isJupiterLendToken(t));
       for (const t of jlTokens) state.positions.push(buildJupiterLendPosition(t));
+      // Reconstruir coste base / interés / APR escaneando las txs del owner
+      // (silencioso: si falla, la card sigue funcionando con depo/gains "—").
+      try { await enrichJupiterLendCost(addr); } catch (e) { console.warn("enrichJupiterLendCost:", e); }
     }
 
     // PnL real + IL vs HODL con precios históricos (Birdeye, vía key propia o proxy)
@@ -1777,6 +1784,96 @@ async function enrichSolanaPnL(owner) {
   }
 }
 
+// Reconstruye coste base / interés / APR de posiciones Jupiter Lend a partir
+// de las txs del owner. Estrategia: por cada transferencia de un mint jl-* en
+// el que el owner es origen o destino, busca en el mismo tx la transferencia
+// del underlying (USDC/USDT/SOL…) en dirección opuesta — eso da el USD pagado
+// en el depósito o recibido en el retiro.
+//
+// Requisitos:
+//   - Helius (key o proxy) para fetchEnhancedTxs.
+//   - underlying = stable (USDC/USDT) → precio = $1, sin Birdeye.
+//   - underlying = non-stable (SOL, etc.) → Birdeye histórico si está, si no
+//     fallback al precio actual (puede ser inexacto en depósitos antiguos).
+async function enrichJupiterLendCost(owner) {
+  const jl = (state.positions || []).filter((p) => p._lending && p.protocol === "jupiter-lend");
+  if (!jl.length || (!state.heliusKey && !PROXY_BASE) || !owner) return;
+  let txs = [];
+  try { txs = await fetchEnhancedTxs(owner); } catch (e) { console.warn("enrichJupiterLendCost:", e); return; }
+  if (!txs.length) return;
+
+  const jlMints = new Set(jl.map((p) => p.mint));
+  const events = new Map(jl.map((p) => [p.mint, { dep: [], wd: [] }]));
+  const now = Math.floor(Date.now() / 1000);
+
+  for (const tx of txs) {
+    const ts = tx.timestamp || 0;
+    if (!ts) continue;
+    const tts = tx.tokenTransfers || [];
+    for (const t of tts) {
+      if (!jlMints.has(t.mint)) continue;
+      const isIn = t.toUserAccount === owner;
+      const isOut = t.fromUserAccount === owner;
+      if (!isIn && !isOut) continue;
+      // Contraparte: otra transferencia del owner, mint != jl, dirección opuesta
+      const wantDir = isIn ? "out" : "in";
+      let underlying = null;
+      for (const u of tts) {
+        if (u === t) continue;
+        if (u.mint === t.mint) continue;
+        const uIn = u.toUserAccount === owner;
+        const uOut = u.fromUserAccount === owner;
+        const uDir = uIn ? "in" : (uOut ? "out" : null);
+        if (uDir !== wantDir) continue;
+        const amt = u.tokenAmount || 0;
+        if (amt <= 0) continue;
+        underlying = { mint: u.mint, amount: amt };
+        break;
+      }
+      if (!underlying) continue;
+      // Precio del underlying en ese instante. Stables = $1. Resto: Birdeye
+      // histórico (si está) → precio actual como fallback.
+      let priceUSD = null;
+      if (SOL_STABLES.has(underlying.mint)) priceUSD = 1;
+      else {
+        try { priceUSD = await birdeyePriceAt(underlying.mint, ts); } catch (e) {}
+        if (priceUSD == null) priceUSD = state.prices[underlying.mint] || null;
+      }
+      if (priceUSD == null) continue;
+      const usd = underlying.amount * priceUSD;
+      const bucket = events.get(t.mint);
+      if (isIn) bucket.dep.push({ ts, usd });
+      else      bucket.wd.push({ ts, usd });
+    }
+  }
+
+  for (const p of jl) {
+    const { dep, wd } = events.get(p.mint) || { dep: [], wd: [] };
+    if (!dep.length) continue;
+    const depositedUSD = dep.reduce((s, e) => s + e.usd, 0);
+    const withdrawnUSD = wd.reduce((s, e) => s + e.usd, 0);
+    // gains = lo que tienes ahora + lo que retiraste − lo que pusiste (interés
+    // acumulado real, no afectado por retiros parciales).
+    const gainsUSD = (p.currentValueUSD || 0) + withdrawnUSD - depositedUSD;
+    const openedAt = Math.min(...dep.map((e) => e.ts));
+    const ageDays = Math.max((now - openedAt) / 86400, 1 / 24);
+    const netInvested = Math.max(depositedUSD - withdrawnUSD, 0);
+    const apr = (netInvested > 0 && ageDays)
+      ? (gainsUSD / netInvested) * (365 / ageDays) * 100
+      : null;
+    p.depositedUSD = depositedUSD;
+    p.withdrawnUSD = withdrawnUSD;
+    p.gainsUSD = gainsUSD;
+    p.feesUSD = gainsUSD;            // shim para shell.js (suma feesUSD a "Fees acumuladas")
+    p.feesCollectedUSD = gainsUSD;
+    p.pnlUSD = gainsUSD;
+    p.openedAt = openedAt;
+    p.ageDays = ageDays;
+    p.apr = apr;
+    p.pnlBasis = "tx-scan";
+  }
+}
+
 async function fetchSolanaHistory(owner) {
   if ((!state.heliusKey && !PROXY_BASE) || !owner) return [];
   const priceOf = (mint) => (state.prices[mint] != null ? state.prices[mint] : (SOL_STABLES.has(mint) ? 1 : 0));
@@ -1988,20 +2085,37 @@ document.addEventListener("DOMContentLoaded", init);
           // Histórico real (Helius enhanced txs); si falla, serie "plana" con el valor actual
           let timeline = [];
           try { timeline = await fetchSolanaHistory(d.address); } catch (e) { console.warn("sol history:", e); }
-          if (!timeline.length) {
-            const nowMs = Math.floor(Date.now() / 86400000) * 86400000;
-            timeline = (state.positions || []).filter((p) => !p.closed).map((p) => {
-              if (p._lending) {
-                // Sin histórico de depósito: tratamos el valor actual como "aportado"
-                // y 0 fees (la curva queda plana). El gap por variación de precio se
-                // visualiza igualmente en la línea "Valor real hoy".
-                const dep = p.depositedUSD != null ? p.depositedUSD : (p.currentValueUSD || 0);
-                return { posId: p.mint, label: `${p.asset} (lending)`, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: p.gainsUSD || 0 }] };
+          const nowMs = Math.floor(Date.now() / 86400000) * 86400000;
+          const haveSeriesFor = new Set(timeline.map((s) => s.posId));
+          // Series para Jupiter Lend: si tenemos openedAt (tx-scan ok) → 2 puntos
+          // (depo en su día + valor hoy con interés). Si no, plana en hoy.
+          for (const p of (state.positions || [])) {
+            if (p.closed || !p._lending) continue;
+            if (haveSeriesFor.has(p.mint)) continue;
+            const dep = p.depositedUSD != null ? p.depositedUSD : (p.currentValueUSD || 0);
+            const gain = p.gainsUSD || 0;
+            const label = `${p.asset} (lending)`;
+            if (p.openedAt) {
+              const openedDay = Math.floor((p.openedAt * 1000) / 86400000) * 86400000;
+              if (openedDay < nowMs) {
+                timeline.push({ posId: p.mint, label, flat: false, points: [
+                  { ts: openedDay, depositedUSD: dep, withdrawnUSD: 0, feesUSD: 0 },
+                  { ts: nowMs,     depositedUSD: dep, withdrawnUSD: 0, feesUSD: gain },
+                ] });
+                haveSeriesFor.add(p.mint);
+                continue;
               }
-              const fees = p.feesPendingUSD || 0;
-              const dep = Math.max(0, (p.currentValueUSD || 0) - fees);
-              return { posId: p.mint, label: `${p.token0.symbol}/${p.token1.symbol}`, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: fees }] };
-            });
+            }
+            timeline.push({ posId: p.mint, label, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: gain }] });
+            haveSeriesFor.add(p.mint);
+          }
+          // LPs sin histórico real → serie plana (compat con comportamiento anterior).
+          for (const p of (state.positions || [])) {
+            if (p.closed || p._lending) continue;
+            if (haveSeriesFor.has(p.mint)) continue;
+            const fees = p.feesPendingUSD || 0;
+            const dep = Math.max(0, (p.currentValueUSD || 0) - fees);
+            timeline.push({ posId: p.mint, label: `${p.token0.symbol}/${p.token1.symbol}`, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: fees }] });
           }
           const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
           const idleTokens = state.idleTokens || [];
