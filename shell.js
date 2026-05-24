@@ -60,7 +60,7 @@ const els = {
   frameEvm: $("frame-evm"), frameSol: $("frame-sol"),
   // histórico
   histEmpty: $("hist-empty"), histContent: $("hist-content"),
-  histAportado: $("hist-aportado"), histValor: $("hist-valor"), histGanado: $("hist-ganado"),
+  histAportado: $("hist-aportado"), histValor: $("hist-valor"), histGanado: $("hist-ganado"), histGanadoSub: $("hist-ganado-sub"),
   histPnl: $("hist-pnl"), histPnlSub: $("hist-pnl-sub"), histIl: $("hist-il"), histIlSub: $("hist-il-sub"),
   histNote: $("hist-note"), chartProjection: $("chart-projection"),
 };
@@ -2006,6 +2006,15 @@ function renderHistorico() {
   els.histAportado.textContent = fmtUSD(curves.lastAportado);
   els.histValor.textContent = fmtUSD(curves.lastValor);
   els.histGanado.textContent = fmtUSD(curves.ganado);
+  // Sub de "Ganado (fees)": desglosa fees pendientes (aún no reclamadas) vs
+  // cobradas (ya en wallet o reinvertidas). Mismo cómputo que el resumen
+  // global de Portfolio para que cuadren las cifras.
+  const allOpen = state.results.flatMap((r) => r.items || []).filter((it) => !it.closed);
+  const feesPending   = allOpen.reduce((s, it) => s + (it.feesPendingUSD || 0), 0);
+  const feesCollected = allOpen.reduce((s, it) => s + (it.feesUSD || 0), 0);
+  if (els.histGanadoSub) {
+    els.histGanadoSub.innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(feesPending)}</span> pendientes · <span class="text-emerald-400 font-semibold">${fmtUSD(feesCollected)}</span> cobradas`;
+  }
 
   // PnL e IL agregados a partir de las posiciones analizadas (incluye variación de precio).
   // Solo cuentan las posiciones que aportan el dato (EVM siempre; Solana solo con Birdeye key).
