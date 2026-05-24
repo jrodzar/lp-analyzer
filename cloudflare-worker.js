@@ -31,10 +31,10 @@
  *   POST /helius-rpc              -> mainnet.helius-rpc.com (JSON-RPC + DAS)
  *   GET  /helius-tx/{owner}?...   -> api.helius.xyz Enhanced Transactions
  *   GET  /birdeye/{path}?...      -> public-api.birdeye.so (añade X-API-KEY)
- *   GET  /stock/{ticker}/{YYYY-MM-DD} -> Stooq daily close (cierre más cercano
- *        ≤ fecha pedida). Sin key. Cacheado en KV indefinidamente (price)
- *        o 24h (null). Pensado como fallback de Birdeye para xStocks (TSLAx,
- *        MSTRx, NVDAx…) cuyo histórico Birdeye no cubre.
+ *   GET  /stock/{ticker}/{YYYY-MM-DD} -> Yahoo Finance daily close (cierre
+ *        más cercano ≤ fecha pedida). Sin key. Cacheado en KV indefinidamente
+ *        (price) o 24h (null). Pensado como fallback de Birdeye para xStocks
+ *        (TSLAx, MSTRx, NVDAx, CRCLx…) cuyo histórico Birdeye no cubre.
  */
 
 const DEFAULT_ALLOWED = [
@@ -189,21 +189,25 @@ function json(obj, status, cors) {
 }
 
 // ── /stock/{ticker}/{YYYY-MM-DD} ─────────────────────────────────────────────
-// Cierre diario de la acción `ticker` (us) para la fecha dada o el día hábil
-// más cercano ≤ fecha. Sirve como fuente de precio histórico para xStocks
-// (TSLAx → TSLA, MSTRx → MSTR…), que Birdeye no cubre.
+// Cierre diario de la acción `ticker` para la fecha dada o el día hábil más
+// cercano ≤ fecha. Sirve como fuente de precio histórico para xStocks
+// (TSLAx → TSLA, MSTRx → MSTR, NVDAx → NVDA, CRCLx → CRCL…) que Birdeye no
+// cubre históricamente.
+//
+// Fuente: Yahoo Finance v8 chart endpoint (sin key, JSON, fiable). Stooq
+// fue descartado tras añadir captcha + API-key obligatorios server-side.
 //
 // Cache (KV `QUOTA` si está): clave `stock:{ticker}:{date}`.
 //   - hits (price != null): TTL infinito (los cierres no cambian).
-//   - misses (price = null): TTL 24 h (por si la fecha era pre-IPO o el ticker
-//     aún no se reconoce y luego sí).
+//   - misses (price = null): TTL 24 h (por si la fecha era pre-IPO o el
+//     ticker aún no se reconoce y luego sí).
 async function handleStockRequest(seg, cors, env) {
-  const ticker = (seg[1] || "").toLowerCase().replace(/[^a-z0-9.]/g, "");
+  const ticker = (seg[1] || "").toUpperCase().replace(/[^A-Z0-9.\-]/g, "");
   const dateStr = seg[2] || "";
   if (!ticker || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
     return json({ error: "Bad request: /stock/{ticker}/{YYYY-MM-DD}" }, 400, cors);
   }
-  const cacheKey = `stock:${ticker}:${dateStr}`;
+  const cacheKey = `stock:${ticker.toLowerCase()}:${dateStr}`;
 
   // 1) Cache KV
   if (env.QUOTA) {
@@ -213,45 +217,55 @@ async function handleStockRequest(seg, cors, env) {
     } catch (e) { /* miss → seguimos */ }
   }
 
-  // 2) Stooq: pedimos ventana ±14 días para captar fines de semana / festivos
+  // 2) Yahoo Finance: ventana ±14 días para captar fines de semana / festivos.
+  // Endpoint: /v8/finance/chart/{TICKER}?period1=<unix>&period2=<unix>&interval=1d
+  // Devuelve { chart: { result: [{ timestamp: [...], indicators: { quote: [{ close: [...] }] } }] } }
   const target = new Date(dateStr + "T00:00:00Z");
-  const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
-  const d1 = fmt(new Date(target.getTime() - 14 * 86400 * 1000));
-  const d2 = fmt(new Date(target.getTime() +  7 * 86400 * 1000));
-  // Stooq necesita el sufijo de mercado. xStocks reflejan acciones USA → ".us".
-  const symbol = ticker.includes(".") ? ticker : `${ticker}.us`;
-  const stooqUrl = `https://stooq.com/q/d/l/?s=${symbol}&d1=${d1}&d2=${d2}&i=d`;
-  let result = { price: null, date_used: null, source: "stooq", ticker: symbol };
+  const targetUnix = Math.floor(target.getTime() / 1000);
+  const period1 = targetUnix - 14 * 86400;
+  const period2 = targetUnix + 7 * 86400;
+  const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1d`;
+  let result = { price: null, date_used: null, source: "yahoo", ticker };
   try {
-    const r = await fetch(stooqUrl);
+    const r = await fetch(yahooUrl, {
+      headers: {
+        // Yahoo a veces bloquea fetches sin UA. UA de browser estándar.
+        "User-Agent": "Mozilla/5.0 (compatible; lp-analyzer-proxy)",
+        "Accept": "application/json",
+      },
+    });
     if (r.ok) {
-      const csv = await r.text();
-      if (csv && !/^No data/i.test(csv) && csv.length > 50) {
-        const lines = csv.trim().split("\n").slice(1); // skip header "Date,Open,High,Low,Close,Volume"
+      const j = await r.json().catch(() => null);
+      const data = j && j.chart && j.chart.result && j.chart.result[0];
+      const ts = data && data.timestamp;
+      const closes = data && data.indicators && data.indicators.quote && data.indicators.quote[0] && data.indicators.quote[0].close;
+      if (Array.isArray(ts) && Array.isArray(closes) && ts.length === closes.length) {
+        // Yahoo devuelve timestamps al inicio del día de mercado (~9:30 ET).
+        // Para el matching usamos el día calendario UTC del timestamp.
         let best = null;
-        for (const line of lines) {
-          const parts = line.split(",");
-          if (parts.length < 5) continue;
-          const day = parts[0];
-          const close = parseFloat(parts[4]);
-          if (!isNaN(close) && day <= dateStr) {
+        for (let i = 0; i < ts.length; i++) {
+          const close = closes[i];
+          if (typeof close !== "number" || !isFinite(close)) continue;
+          const day = new Date(ts[i] * 1000).toISOString().slice(0, 10);
+          if (day <= dateStr) {
             if (!best || day > best.day) best = { day, close };
           }
         }
-        // Si no hay ningún día ≤ fecha (depo pre-IPO p. ej.), best-effort con el más antiguo > fecha
+        // Si no hay día ≤ fecha (depo pre-IPO p. ej.), best-effort con el más antiguo > fecha
         if (!best) {
-          for (const line of lines) {
-            const parts = line.split(",");
-            if (parts.length < 5) continue;
-            const day = parts[0];
-            const close = parseFloat(parts[4]);
-            if (!isNaN(close)) {
-              if (!best || day < best.day) best = { day, close };
-            }
+          for (let i = 0; i < ts.length; i++) {
+            const close = closes[i];
+            if (typeof close !== "number" || !isFinite(close)) continue;
+            const day = new Date(ts[i] * 1000).toISOString().slice(0, 10);
+            if (!best || day < best.day) best = { day, close };
           }
         }
-        if (best) result = { price: best.close, date_used: best.day, source: "stooq", ticker: symbol };
+        if (best) result = { price: best.close, date_used: best.day, source: "yahoo", ticker };
+      } else if (j && j.chart && j.chart.error) {
+        result.error = j.chart.error.code || "yahoo_error";
       }
+    } else {
+      result.error = `yahoo_http_${r.status}`;
     }
   } catch (e) {
     result.error = String(e);
