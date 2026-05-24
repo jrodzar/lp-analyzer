@@ -16,7 +16,7 @@ Web app para **analizar posiciones de liquidez** (LP) de una o varias wallets, m
 - **Tres vistas**:
   1. **Quick** — análisis de una wallet.
   2. **Portfolio** — varias wallets agregadas, con drag-and-drop para ordenar.
-  3. **Histórico** — evolución del capital aportado vs valor acumulado, fees y curvas IL en el tiempo (eventos on-chain reales — EVM, HyperEVM, Revert Lend, Solana vía Birdeye).
+  3. **Histórico** — evolución del capital aportado vs valor acumulado (aportado + fees), con una línea de referencia "Valor real hoy" en ámbar que muestra el valor actual a precios de mercado (gap por variación de precio explícito); además fees y curvas IL en el tiempo (eventos on-chain reales — EVM, HyperEVM, Revert Lend, Solana vía Birdeye).
 - **Multi-dispositivo**: login con Google + Firestore → tu portfolio te sigue entre PC / móvil / tablet.
 - **Instalable como app (PWA)**: en Chrome aparece el botón "Instalar" en la barra; en iPhone, desde Safari → Compartir → "Añadir a pantalla de inicio". Se abre a pantalla completa, sin barra de URL.
 - **Auto-actualización** configurable (15 min por defecto) y refresh manual.

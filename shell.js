@@ -2025,11 +2025,43 @@ function renderHistorico() {
   els.histIl.className = "text-xl font-bold mt-1 " + (ilN ? pnlColor(ilSum) : "");
   els.histIlSub.textContent = ilN ? `${ilN}/${totalLP} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
 
-  els.histNote.textContent = "La curva = aportado + fees (eventos on-chain EVM/HyperEVM/lending y transacciones Solana). PnL e IL del resumen sí incluyen variación de precio, calculados por posición.";
+  // "Valor real hoy" = suma de valueUSD de todas las posiciones DeFi abiertas
+  // (LP + lending). Mismo scope que la curva (no incluye idle tokens), pero a
+  // precios actuales. Visualiza el gap por variación de precio (lo que la curva
+  // "aportado + fees" no captura).
+  const realNowUSD = state.results
+    .flatMap((r) => r.items || [])
+    .filter((it) => !it.closed)
+    .reduce((s, it) => s + (it.valueUSD || 0), 0);
+  const lastTs = curves.valor[curves.valor.length - 1]?.x ?? Date.now();
+  // Línea horizontal del mismo span x que la curva, con marcador en el extremo.
+  const realLine = curves.valor.map((p, i) => ({ x: p.x, y: realNowUSD }));
+  const lastIdx = realLine.length - 1;
+
+  const gap = realNowUSD - curves.lastValor;
+  const gapPct = curves.lastValor > 0 ? (gap / curves.lastValor) * 100 : 0;
+  const gapTxt = gap >= 0
+    ? `(+${fmtUSD(gap).replace("$", "$")} ≈ +${gapPct.toFixed(2)}% por variación de precio)`
+    : `(${fmtUSD(gap)} ≈ ${gapPct.toFixed(2)}% por variación de precio)`;
+  els.histNote.textContent = `La curva = aportado + fees (eventos on-chain EVM/HyperEVM/lending y transacciones Solana). La línea ámbar "Valor real hoy" muestra el valor actual de las posiciones a precios de mercado ${gapTxt}. PnL e IL del resumen también incluyen variación de precio, calculados por posición.`;
 
   const datasets = [
     { label: "Capital aportado", data: curves.aportado, borderColor: "#94a3b8", borderDash: [5, 4], pointRadius: 2, borderWidth: 1.5, stepped: "after" },
-    { label: "Valor acumulado", data: curves.valor, borderColor: "#34d399", backgroundColor: "rgba(52,211,153,0.12)", pointRadius: 2, borderWidth: 2.5, fill: true, stepped: "after" },
+    { label: "Valor acumulado (aportado + fees)", data: curves.valor, borderColor: "#34d399", backgroundColor: "rgba(52,211,153,0.12)", pointRadius: 2, borderWidth: 2.5, fill: true, stepped: "after" },
+    {
+      label: "Valor real hoy (con variación de precio)",
+      data: realLine,
+      borderColor: "#fbbf24",
+      backgroundColor: "rgba(251,191,36,0.05)",
+      borderDash: [3, 6],
+      borderWidth: 1.5,
+      pointRadius: (ctx) => (ctx.dataIndex === lastIdx ? 6 : 0),
+      pointHoverRadius: (ctx) => (ctx.dataIndex === lastIdx ? 8 : 0),
+      pointStyle: "rectRot",
+      pointBackgroundColor: "#fbbf24",
+      pointBorderColor: "#fbbf24",
+      fill: false,
+    },
   ];
   // formato del eje según el rango: pocas semanas → "día mes"; meses/años → "mes año"
   const xs = curves.valor.map((p) => p.x);
