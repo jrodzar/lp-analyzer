@@ -457,14 +457,30 @@ async function ensureTokenList() {
 }
 
 async function fetchTokenInfoFallback(mint) {
-  // si Jupiter no lo conoce, leemos decimales del mint on-chain
+  // 1) Decimales on-chain — siempre fiable
+  let decimals = 0;
   try {
     const info = await rpc("getAccountInfo", [mint, { encoding: "jsonParsed" }]);
-    const dec = info?.value?.data?.parsed?.info?.decimals;
-    return { symbol: mint.slice(0, 4) + "…" + mint.slice(-4), name: "Unknown", decimals: dec ?? 0, logoURI: null };
-  } catch {
-    return { symbol: mint.slice(0, 4) + "…" + mint.slice(-4), name: "Unknown", decimals: 0, logoURI: null };
-  }
+    decimals = info?.value?.data?.parsed?.info?.decimals ?? 0;
+  } catch {}
+  // 2) Helius DAS getAsset para name/symbol/logo — funciona con cualquier mint
+  // indexado (incluye xStocks, RWAs, tokens recientes que Jupiter no lista).
+  // Sin esto, tokens no-verificados quedaban como "xxx…yyy / Unknown" y la
+  // heurística xStock (símbolo TSLAx + name "xStock") no podía detectarlos.
+  let symbol = mint.slice(0, 4) + "…" + mint.slice(-4);
+  let name = "Unknown";
+  let logoURI = null;
+  try {
+    const asset = await rpc("getAsset", { id: mint });
+    const ti = asset?.token_info;
+    const md = asset?.content?.metadata;
+    if (ti?.symbol) symbol = ti.symbol;
+    else if (md?.symbol) symbol = md.symbol;
+    if (md?.name) name = md.name;
+    if (typeof ti?.decimals === "number") decimals = ti.decimals;
+    logoURI = asset?.content?.links?.image || asset?.content?.files?.[0]?.uri || null;
+  } catch {}
+  return { symbol, name, decimals, logoURI };
 }
 
 async function getTokenMeta(mint) {
@@ -1658,8 +1674,52 @@ async function fetchEnhancedTxs(owner) {
   return txs;
 }
 
+// ============================================================================
+// xStocks fallback: para acciones tokenizadas (TSLAx, MSTRx, NVDAx, CRCLx…)
+// que Birdeye no cubre históricamente, usamos el precio del subyacente en
+// Stooq (vía proxy /stock). Detección heurística: símbolo `[A-Z]+x` y name
+// que mencione "xStock" o "Backed" (Backed Finance es el emisor).
+// ============================================================================
+const XSTOCK_SYMBOL_RX = /^([A-Z]{1,8})x$/;
+function detectXStockTicker(meta) {
+  if (!meta) return null;
+  const sym = String(meta.symbol || "");
+  const name = String(meta.name || "");
+  const m = sym.match(XSTOCK_SYMBOL_RX);
+  if (!m) return null;
+  // Confirmamos con el name para evitar falsos positivos (cualquier token que
+  // por casualidad acabe en `x` en mayúsculas no es xStock).
+  if (!/xstock|backed/i.test(name)) return null;
+  return m[1].toLowerCase(); // "TSLA" → "tsla"
+}
+
+// Precio histórico de la acción subyacente de un xStock vía proxy → Stooq.
+// Devuelve null si no hay proxy, ticker no se reconoce o Stooq no devuelve dato.
+// Cacheado en memoria por (ticker, día) — la KV del Worker hace el cache real.
+async function xstockPriceAt(ticker, unixSec) {
+  if (!PROXY_BASE || !ticker || !unixSec) return null;
+  if (!state._xstockCache) state._xstockCache = new Map();
+  const dayStr = new Date(unixSec * 1000).toISOString().slice(0, 10);
+  const cacheKey = `${ticker}:${dayStr}`;
+  if (state._xstockCache.has(cacheKey)) return state._xstockCache.get(cacheKey);
+  const url = `${PROXY_BASE}/stock/${encodeURIComponent(ticker)}/${dayStr}`;
+  try {
+    const r = await fetch(url, { headers: { ...proxyAuth(url) } });
+    if (!r.ok) { state._xstockCache.set(cacheKey, null); return null; }
+    const j = await r.json();
+    const price = typeof j.price === "number" ? j.price : null;
+    state._xstockCache.set(cacheKey, price);
+    return price;
+  } catch (e) {
+    state._xstockCache.set(cacheKey, null);
+    return null;
+  }
+}
+
 // Precio USD histórico de un token en un instante (unix segundos) vía Birdeye.
 // Cachea por (mint, día) para minimizar llamadas. Stables → 1.
+// Fallback xStocks: si Birdeye no lo cubre y el token es un xStock conocido
+// (símbolo `[A-Z]+x`, name "xStock"/"Backed"), usa Stooq via /stock.
 async function birdeyePriceAt(mint, unixSec) {
   if (SOL_STABLES.has(mint)) return 1;
   if ((!state.birdeyeKey && !PROXY_BASE) || !mint || !unixSec) return null;
@@ -1694,6 +1754,21 @@ async function birdeyePriceAt(mint, unixSec) {
     } catch (e) {
       if (attempt < 3) { await sleep(500); continue; }
       state._beStats.error++;
+    }
+  }
+  // Fallback xStocks: si Birdeye no lo tiene y el token parece xStock (TSLAx,
+  // MSTRx…), usa el precio histórico de la acción subyacente vía Stooq.
+  if (price == null) {
+    const meta = state.tokenList && state.tokenList.get(mint);
+    const ticker = detectXStockTicker(meta);
+    if (ticker) {
+      const stockPrice = await xstockPriceAt(ticker, unixSec);
+      if (stockPrice != null) {
+        price = stockPrice;
+        // Contamos como "ok" para que los banners de PnL no se disparen por
+        // un fallo de Birdeye que sí resolvió la fuente alternativa.
+        state._beStats.ok++;
+      }
     }
   }
   state._bePriceCache.set(dayKey, price);

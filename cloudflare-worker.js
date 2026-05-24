@@ -31,6 +31,10 @@
  *   POST /helius-rpc              -> mainnet.helius-rpc.com (JSON-RPC + DAS)
  *   GET  /helius-tx/{owner}?...   -> api.helius.xyz Enhanced Transactions
  *   GET  /birdeye/{path}?...      -> public-api.birdeye.so (añade X-API-KEY)
+ *   GET  /stock/{ticker}/{YYYY-MM-DD} -> Stooq daily close (cierre más cercano
+ *        ≤ fecha pedida). Sin key. Cacheado en KV indefinidamente (price)
+ *        o 24h (null). Pensado como fallback de Birdeye para xStocks (TSLAx,
+ *        MSTRx, NVDAx…) cuyo histórico Birdeye no cubre.
  */
 
 const DEFAULT_ALLOWED = [
@@ -80,6 +84,22 @@ export default {
     const fwdHeaders = { "Content-Type": "application/json" };
     const method = request.method;
     const body = method === "POST" ? await request.text() : undefined;
+
+    // ── Ruta especial /stock: no proxy genérico, sino fetch + parse CSV de
+    // Stooq + cache KV indefinida. Sirve como fallback histórico de xStocks
+    // (TSLAx, MSTRx…) que Birdeye no cubre. Auth aplicada arriba; aplicamos
+    // RL por IP igual que las otras rutas. Sin tope diario propio: los hits
+    // van casi siempre a cache KV.
+    if (seg[0] === "stock") {
+      if (env.RL) {
+        const ip = request.headers.get("cf-connecting-ip") || "anon";
+        try {
+          const { success } = await env.RL.limit({ key: ip });
+          if (!success) return json({ error: "Demasiadas peticiones. Espera un momento." }, 429, cors);
+        } catch (e) { /* binding falla → no bloqueamos */ }
+      }
+      return await handleStockRequest(seg, cors, env);
+    }
 
     try {
       if (seg[0] === "graph") {
@@ -166,6 +186,88 @@ function json(obj, status, cors) {
     status,
     headers: { ...cors, "Content-Type": "application/json" },
   });
+}
+
+// ── /stock/{ticker}/{YYYY-MM-DD} ─────────────────────────────────────────────
+// Cierre diario de la acción `ticker` (us) para la fecha dada o el día hábil
+// más cercano ≤ fecha. Sirve como fuente de precio histórico para xStocks
+// (TSLAx → TSLA, MSTRx → MSTR…), que Birdeye no cubre.
+//
+// Cache (KV `QUOTA` si está): clave `stock:{ticker}:{date}`.
+//   - hits (price != null): TTL infinito (los cierres no cambian).
+//   - misses (price = null): TTL 24 h (por si la fecha era pre-IPO o el ticker
+//     aún no se reconoce y luego sí).
+async function handleStockRequest(seg, cors, env) {
+  const ticker = (seg[1] || "").toLowerCase().replace(/[^a-z0-9.]/g, "");
+  const dateStr = seg[2] || "";
+  if (!ticker || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return json({ error: "Bad request: /stock/{ticker}/{YYYY-MM-DD}" }, 400, cors);
+  }
+  const cacheKey = `stock:${ticker}:${dateStr}`;
+
+  // 1) Cache KV
+  if (env.QUOTA) {
+    try {
+      const cached = await env.QUOTA.get(cacheKey, { type: "json" });
+      if (cached) return json(cached, 200, cors);
+    } catch (e) { /* miss → seguimos */ }
+  }
+
+  // 2) Stooq: pedimos ventana ±14 días para captar fines de semana / festivos
+  const target = new Date(dateStr + "T00:00:00Z");
+  const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
+  const d1 = fmt(new Date(target.getTime() - 14 * 86400 * 1000));
+  const d2 = fmt(new Date(target.getTime() +  7 * 86400 * 1000));
+  // Stooq necesita el sufijo de mercado. xStocks reflejan acciones USA → ".us".
+  const symbol = ticker.includes(".") ? ticker : `${ticker}.us`;
+  const stooqUrl = `https://stooq.com/q/d/l/?s=${symbol}&d1=${d1}&d2=${d2}&i=d`;
+  let result = { price: null, date_used: null, source: "stooq", ticker: symbol };
+  try {
+    const r = await fetch(stooqUrl);
+    if (r.ok) {
+      const csv = await r.text();
+      if (csv && !/^No data/i.test(csv) && csv.length > 50) {
+        const lines = csv.trim().split("\n").slice(1); // skip header "Date,Open,High,Low,Close,Volume"
+        let best = null;
+        for (const line of lines) {
+          const parts = line.split(",");
+          if (parts.length < 5) continue;
+          const day = parts[0];
+          const close = parseFloat(parts[4]);
+          if (!isNaN(close) && day <= dateStr) {
+            if (!best || day > best.day) best = { day, close };
+          }
+        }
+        // Si no hay ningún día ≤ fecha (depo pre-IPO p. ej.), best-effort con el más antiguo > fecha
+        if (!best) {
+          for (const line of lines) {
+            const parts = line.split(",");
+            if (parts.length < 5) continue;
+            const day = parts[0];
+            const close = parseFloat(parts[4]);
+            if (!isNaN(close)) {
+              if (!best || day < best.day) best = { day, close };
+            }
+          }
+        }
+        if (best) result = { price: best.close, date_used: best.day, source: "stooq", ticker: symbol };
+      }
+    }
+  } catch (e) {
+    result.error = String(e);
+  }
+
+  // 3) Cache: hits forever, misses 24h
+  if (env.QUOTA) {
+    try {
+      if (result.price != null) {
+        await env.QUOTA.put(cacheKey, JSON.stringify(result));
+      } else {
+        await env.QUOTA.put(cacheKey, JSON.stringify(result), { expirationTtl: 86400 });
+      }
+    } catch (e) {}
+  }
+  return json(result, 200, cors);
 }
 
 // ── Verificación del ID token de Firebase (JWT RS256 firmado por Google) ──────

@@ -110,7 +110,7 @@ Las claves se guardan **cifradas en Firestore** con el **mismo cifrado E2E que t
 | Solana | `@noble/hashes` + `@noble/curves`, base58 + PDA + Borsh manuales |
 | EVM | The Graph subgraphs, JSON-RPC directo, Blockscout para HyperEVM |
 | Tokens idle (EVM) | Blockscout v2 (`/api/v2/addresses/{addr}/tokens` + `/api/v2/addresses/{addr}` para el nativo) + DefiLlama Prices + DexScreener (fallback para tokens no indexados por DefiLlama, p. ej. los nuevos de HyperEVM) |
-| Histórico Solana | Birdeye historical_price_unix |
+| Histórico Solana | Birdeye historical_price_unix · Stooq (fallback para xStocks: TSLAx → TSLA, MSTRx → MSTR, etc.) |
 | Histórico EVM | tokenDayDatas del subgraph |
 | Proxy | Cloudflare Workers (verificación de Firebase ID token + rate-limit por IP + cuota KV diaria) |
 | Hosting | GitHub Pages (estático, `.nojekyll`) |
@@ -121,7 +121,7 @@ Las claves se guardan **cifradas en Firestore** con el **mismo cifrado E2E que t
 
 - **PnL no incluye gas.** En EVM se reconstruye con eventos del subgraph; en Solana con las txs enriquecidas de Helius. Es una estimación.
 - **Tokens idle en BNB Chain**: no soportados todavía (BNB no tiene una instancia oficial de Blockscout). Las posiciones LP en BNB sí se analizan normal.
-- **Tokens sin histórico** (RWA, tokens nuevos) se omiten del PnL/IL en Solana porque Birdeye no tiene su precio en la fecha del depósito.
+- **Tokens sin histórico** en Solana se omiten del PnL/IL cuando ni Birdeye ni Stooq pueden resolver el precio en la fecha del depósito. Para **xStocks** (TSLAx, MSTRx, NVDAx, CRCLx, AAPLx…) usamos como fallback el cierre histórico de la acción subyacente vía Stooq — error típico < 2% por el spread entre xToken y stock, mucho mejor que omitir.
 - **APIs gratuitas** — bajo carga alta pueden saturarse (rate-limits). El proxy aplica retries + rotación de endpoints donde es posible.
 - **Read-only.** No hay funcionalidad para abrir/cerrar/rebalancear posiciones desde la app.
 
