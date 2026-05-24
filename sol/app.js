@@ -1778,6 +1778,18 @@ async function birdeyePriceAt(mint, unixSec) {
         // en lugar de solo "Birdeye". Visible al usuario en el details note.
         if (!state._yahooFallbackMints) state._yahooFallbackMints = new Set();
         state._yahooFallbackMints.add(mint);
+        // Debug log: imprime cada vez que el fallback Yahoo resuelve un precio
+        // que Birdeye no pudo. Útil para verificar la fuente de cada precio sin
+        // tocar la UI. Formato compacto, una línea con styling ámbar.
+        const dateStr = new Date(unixSec * 1000).toISOString().slice(0, 10);
+        const sym = (meta && meta.symbol) || "?";
+        console.log(
+          `%c[xStock-fallback]%c ${sym} → ${ticker.toUpperCase()} %c$${stockPrice.toFixed(2)}%c @ ${dateStr} (mint ${mint.slice(0, 6)}…${mint.slice(-4)})`,
+          "color:#fbbf24;font-weight:bold",
+          "color:inherit",
+          "color:#fbbf24",
+          "color:#94a3b8",
+        );
       }
     }
   }
@@ -1880,6 +1892,17 @@ async function enrichSolanaPnL(owner) {
     const yh = state._yahooFallbackMints;
     p.pnlUsedYahoo = !!(yh && ((p.token0?.mint && yh.has(p.token0.mint)) || (p.token1?.mint && yh.has(p.token1.mint))));
   }
+
+  // Resumen de fuentes al final del análisis. Visible en consola para que el
+  // usuario pueda verificar de dónde salió cada precio sin tocar la UI.
+  const st = state._beStats || {};
+  const yhCount = (state._yahooFallbackMints || new Set()).size;
+  const bgColor = yhCount > 0 ? "#fbbf24" : "#34d399";
+  console.log(
+    `%c[PnL-sources]%c Birdeye OK: ${st.ok - yhCount} · Yahoo fallback (xStocks): ${yhCount} mint(s) · failures: ${st.denied + st.error + st.rate} · partial pos: ${st.partial}`,
+    `color:${bgColor};font-weight:bold`,
+    "color:#94a3b8",
+  );
 }
 
 // Reconstruye coste base / interés / APR de posiciones Jupiter Lend a partir
