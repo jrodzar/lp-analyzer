@@ -503,6 +503,60 @@ async function fetchPricesUSD(mints) {
 // Orca position discovery
 // ============================================================================
 
+// ============================================================================
+// Jupiter Lend — detección de vault-share tokens (jlUSDC, jlSOL, jlUSDT…).
+// Helius DAS los devuelve como FungibleToken con name="jupiter lend USDC" etc.
+// Los sacamos del listado idle y los presentamos como posición de lending
+// (equivalente a Revert Lend en EVM). El valor en USD ya viene en token_info
+// (Jupiter price feed) → balance × price = principal + interés acumulado.
+// ============================================================================
+const JUPITER_LEND_NAME_RX = /^jupiter\s+lend\s+/i;
+const JUPITER_LEND_COLOR_HEX = "#22d3ee"; // cyan-400 (cercano a la marca Jupiter)
+
+function isJupiterLendToken(t) {
+  if (!t || !t.name) return false;
+  return JUPITER_LEND_NAME_RX.test(t.name);
+}
+
+function buildJupiterLendPosition(t) {
+  // Extraer activo subyacente: "jupiter lend USDC" → "USDC". Fallback al
+  // símbolo: jlUSDC → USDC.
+  let asset = "?";
+  const m = (t.name || "").match(/jupiter\s+lend\s+(\S+)/i);
+  if (m) asset = m[1].toUpperCase();
+  else if (/^jl\w+/i.test(t.symbol || "")) asset = t.symbol.replace(/^jl/i, "").toUpperCase();
+  const currentValueUSD = t.valueUSD || 0;
+  return {
+    _lending: true,
+    protocol: "jupiter-lend",
+    chainName: "Solana",
+    mint: t.address, // mint del share token (jlUSDC)
+    asset, // símbolo del subyacente (USDC, SOL…)
+    shares: t.balance,
+    sharePrice: t.priceUSD || null,
+    currentValueUSD,
+    // No tenemos histórico de depósito sin escanear todas las txs del owner.
+    // Para una primera iteración mostramos solo el valor actual; PnL/APR se
+    // quedan en null (la card lo refleja con "—").
+    depositedUSD: null,
+    gainsUSD: null,
+    apr: null,
+    feesUSD: 0,
+    feesPendingUSD: 0,
+    feesCollectedUSD: 0,
+    ilUSD: null,
+    pnlUSD: null,
+    inRange: true, closed: false,
+    ageDays: 0, openedAt: 0,
+    color: hexToColorObj(JUPITER_LEND_COLOR_HEX),
+    // Shims para code paths que esperan token0/token1 (charts, history loop, etc.).
+    token0: { symbol: asset, decimals: t.decimals || 0, priceUSD: null },
+    token1: { symbol: "lending", decimals: 0, priceUSD: null },
+    amounts: { amount0: t.balance || 0, amount1: 0 },
+    logo: t.logo || null,
+  };
+}
+
 // Lista los tokens fungibles "sueltos" (idle) de la wallet — los que NO están dentro
 // de posiciones LP. Helius DAS los devuelve junto con precios USD vía Jupiter en
 // `token_info.price_info`. Incluimos también SOL nativo con su balance.
@@ -1165,6 +1219,7 @@ function hexToColorObj(hex) {
 // magenta). Si no hay protocolo conocido → fallback rotativo.
 function assignColors(list) {
   list.forEach((p, i) => {
+    if (p.color) return; // ya viene precomputado (p. ej. Jupiter Lend)
     const proto = p.protocol && PROTOCOLS[p.protocol];
     p.color = (proto && hexToColorObj(proto.color)) || distinctColor(i);
   });
@@ -1211,7 +1266,54 @@ function renderPositions() {
 
 // rangeBarHTML vive en common.js (compartido con evm/app.js).
 
+// Card de lending (Jupiter Lend en Solana). Mismo layout que la de Revert Lend
+// del lado EVM para que la vista Portfolio sea consistente entre cadenas.
+function lendingCard(p) {
+  const el = document.createElement("article");
+  el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
+  if (p.color) el.style.borderLeft = `3px solid ${p.color.line}`;
+  const gain = p.gainsUSD;
+  const protoLabel = p.protocol === "jupiter-lend" ? "Jupiter Lend" : (p.protocol || "Lending");
+  const shareSymbol = p.protocol === "jupiter-lend" ? `jl${p.asset}` : "shares";
+  const sharesTxt = p.shares != null ? fmtToken(p.shares, shareSymbol) : "";
+  el.innerHTML = `
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full" style="background:${p.color ? p.color.line : "#22d3ee"}"></span>
+          <span class="text-[11px] uppercase tracking-wide text-slate-400">${protoLabel} · ${p.chainName || "Solana"}</span>
+        </div>
+        <div class="font-semibold mt-0.5 truncate">${p.asset} (lending)</div>
+        <div class="text-[11px] text-slate-400">${sharesTxt}</div>
+      </div>
+      <span class="chip bg-sky-500/15 text-sky-300 border border-sky-500/30">préstamo</span>
+    </div>
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Valor actual</div>
+        <div class="font-semibold">${fmtUSD(p.currentValueUSD)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">depo ${p.depositedUSD == null ? "—" : fmtUSD(p.depositedUSD)}</div>
+      </div>
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Ganancias (interés)</div>
+        <div class="font-semibold ${gain == null ? "" : pnlColor(gain)}">${gain == null ? "—" : fmtUSD(gain)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">APR ~ ${p.apr == null ? "—" : p.apr.toFixed(1) + "%"}</div>
+      </div>
+    </div>
+    <details class="text-xs">
+      <summary class="text-slate-400 hover:text-slate-200">▾ detalles</summary>
+      <div class="mt-2 space-y-1 text-slate-400">
+        <div>Vault token: <a href="https://solscan.io/token/${p.mint}" target="_blank" class="font-mono text-slate-300 hover:text-fuchsia-300">${shortAddr(p.mint)}</a></div>
+        <div>Activo subyacente: ${p.asset}</div>
+        ${p.sharePrice != null ? `<div>Precio share: ${fmtUSD(p.sharePrice)}</div>` : ""}
+        <div class="text-[10px] text-slate-500 mt-1">Histórico de depósitos no disponible (sin escaneo de transacciones). Valor actual = shares × precio Jupiter.</div>
+      </div>
+    </details>`;
+  return el;
+}
+
 function positionCard(p) {
+  if (p._lending) return lendingCard(p);
   const proto = PROTOCOLS[p.protocol];
   const el = document.createElement("article");
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
@@ -1307,9 +1409,9 @@ function renderValueChart() {
   const top = [...state.positions]
     .sort((a, b) => b.currentValueUSD - a.currentValueUSD)
     .slice(0, 8);
-  const labels = top.map((p) => `${p.token0.symbol}/${p.token1.symbol}`);
+  const labels = top.map((p) => p._lending ? `${p.asset} (lending)` : `${p.token0.symbol}/${p.token1.symbol}`);
   const data = top.map((p) => p.currentValueUSD);
-  const bg = top.map((p) => (p.color ? p.color.line : PROTOCOLS[p.protocol].color));
+  const bg = top.map((p) => (p.color ? p.color.line : (PROTOCOLS[p.protocol] && PROTOCOLS[p.protocol].color) || "#22d3ee"));
 
   if (charts.value) charts.value.destroy();
   charts.value = new Chart(document.getElementById("chart-value"), {
@@ -1377,6 +1479,15 @@ async function analyze() {
     // Tokens "idle" — los que están en la wallet pero no están metidos en LPs.
     // Reusa la misma respuesta de Helius (showFungible) + Jupiter via token_info.price_info.
     state.idleTokens = await fetchIdleTokens(addr).catch(() => []);
+
+    // Jupiter Lend: los vault-share tokens (jlUSDC, jlSOL…) NO son idle, son
+    // posiciones de lending. Los sacamos del listado idle y los añadimos a
+    // state.positions como `_lending: true` (mismo patrón que Revert Lend en EVM).
+    const jlTokens = (state.idleTokens || []).filter(isJupiterLendToken);
+    if (jlTokens.length) {
+      state.idleTokens = state.idleTokens.filter((t) => !isJupiterLendToken(t));
+      for (const t of jlTokens) state.positions.push(buildJupiterLendPosition(t));
+    }
 
     // PnL real + IL vs HODL con precios históricos (Birdeye, vía key propia o proxy)
     let beWarn = "";
@@ -1784,23 +1895,41 @@ document.addEventListener("DOMContentLoaded", init);
   }
   // Normaliza las posiciones Solana para el portfolio del shell
   function toPortfolioItems() {
-    return (state.positions || []).map((p) => ({
-      kind: "sol",
-      cardHTML: (() => { try { return positionCard(p).outerHTML; } catch (e) { return ""; } })(), // misma ficha que en Quick
-      venue: (PROTOCOLS[p.protocol] && PROTOCOLS[p.protocol].name) || p.protocol,
-      pair: `${p.token0.symbol}/${p.token1.symbol}`,
-      valueUSD: p.currentValueUSD || 0,
-      feesUSD: p.feesCollectedUSD || 0,
-      feesPendingUSD: p.feesPendingUSD == null ? null : p.feesPendingUSD,
-      ilUSD: p.ilUSD == null ? null : p.ilUSD,
-      pnlUSD: p.pnlUSD == null ? null : p.pnlUSD,
-      apr: typeof p.apr === "number" && isFinite(p.apr) ? p.apr : null,
-      inRange: !!p.inRange,
-      closed: !!p.closed,
-      tickLower: p.tickLower, tickUpper: p.tickUpper, tick: p.tick,
-      dec0: p.token0.decimals, dec1: p.token1.decimals,
-      id: String(p.mint || ""),
-    }));
+    return (state.positions || []).map((p) => {
+      const cardHTML = (() => { try { return positionCard(p).outerHTML; } catch (e) { return ""; } })();
+      if (p._lending) {
+        const protoName = p.protocol === "jupiter-lend" ? "Jupiter Lend" : (p.protocol || "Lending");
+        return {
+          kind: "sol", lending: true, cardHTML,
+          venue: `${protoName} · ${p.chainName || "Solana"}`,
+          pair: `${p.asset} (lending)`,
+          valueUSD: p.currentValueUSD || 0,
+          feesUSD: p.gainsUSD || 0,        // interés acumulado (si lo conocemos)
+          feesPendingUSD: 0,
+          ilUSD: null,
+          pnlUSD: p.gainsUSD == null ? null : p.gainsUSD,
+          apr: typeof p.apr === "number" ? p.apr : null,
+          inRange: true, closed: false,
+          id: String(p.mint || ""),
+        };
+      }
+      return {
+        kind: "sol", cardHTML,
+        venue: (PROTOCOLS[p.protocol] && PROTOCOLS[p.protocol].name) || p.protocol,
+        pair: `${p.token0.symbol}/${p.token1.symbol}`,
+        valueUSD: p.currentValueUSD || 0,
+        feesUSD: p.feesCollectedUSD || 0,
+        feesPendingUSD: p.feesPendingUSD == null ? null : p.feesPendingUSD,
+        ilUSD: p.ilUSD == null ? null : p.ilUSD,
+        pnlUSD: p.pnlUSD == null ? null : p.pnlUSD,
+        apr: typeof p.apr === "number" && isFinite(p.apr) ? p.apr : null,
+        inRange: !!p.inRange,
+        closed: !!p.closed,
+        tickLower: p.tickLower, tickUpper: p.tickUpper, tick: p.tick,
+        dec0: p.token0.decimals, dec1: p.token1.decimals,
+        id: String(p.mint || ""),
+      };
+    });
   }
   window.addEventListener("message", (e) => {
     const d = e.data || {};
@@ -1862,6 +1991,13 @@ document.addEventListener("DOMContentLoaded", init);
           if (!timeline.length) {
             const nowMs = Math.floor(Date.now() / 86400000) * 86400000;
             timeline = (state.positions || []).filter((p) => !p.closed).map((p) => {
+              if (p._lending) {
+                // Sin histórico de depósito: tratamos el valor actual como "aportado"
+                // y 0 fees (la curva queda plana). El gap por variación de precio se
+                // visualiza igualmente en la línea "Valor real hoy".
+                const dep = p.depositedUSD != null ? p.depositedUSD : (p.currentValueUSD || 0);
+                return { posId: p.mint, label: `${p.asset} (lending)`, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: p.gainsUSD || 0 }] };
+              }
               const fees = p.feesPendingUSD || 0;
               const dep = Math.max(0, (p.currentValueUSD || 0) - fees);
               return { posId: p.mint, label: `${p.token0.symbol}/${p.token1.symbol}`, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: fees }] };
