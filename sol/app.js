@@ -1297,7 +1297,9 @@ function lendingCard(p) {
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Ganancias (interés)</div>
         <div class="font-semibold ${gain == null ? "" : pnlColor(gain)}">${gain == null ? "—" : fmtUSD(gain)}</div>
-        <div class="text-[10px] text-slate-400 mt-0.5">APR ~ ${p.apr == null ? "—" : p.apr.toFixed(1) + "%"}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">APR ~ ${p.apr == null
+          ? (p._aprTooEarly ? `— <span class="text-slate-500">(esperando ≥ 1 día)</span>` : "—")
+          : p.apr.toFixed(1) + "%"}</div>
       </div>
     </div>
     <details class="text-xs">
@@ -1305,11 +1307,15 @@ function lendingCard(p) {
       <div class="mt-2 space-y-1 text-slate-400">
         <div>Vault token: <a href="https://solscan.io/token/${p.mint}" target="_blank" class="font-mono text-slate-300 hover:text-fuchsia-300">${shortAddr(p.mint)}</a></div>
         <div>Activo subyacente: ${p.asset}</div>
-        ${p.sharePrice != null ? `<div>Precio share: ${fmtUSD(p.sharePrice)}</div>` : ""}
+        ${p._priceFromTx
+          ? `<div class="text-amber-300">Precio share corregido: <span class="font-semibold">${fmtUSD(p.sharePrice)}</span> <span class="text-slate-500">(derivado on-chain de tu última operación; Jupiter daba ${fmtUSD(p._heliusSharePrice)})</span></div>`
+          : (p.sharePrice != null ? `<div>Precio share: ${fmtUSD(p.sharePrice)}</div>` : "")}
         ${p.ageDays ? `<div>Abierto hace ~${Math.round(p.ageDays)}d (primer depósito: ${new Date((p.openedAt || 0) * 1000).toLocaleDateString("es-ES")})</div>` : ""}
         ${p.withdrawnUSD ? `<div>Total retirado: ${fmtUSD(p.withdrawnUSD)}</div>` : ""}
         <div class="text-[10px] text-slate-500 mt-1">${p.pnlBasis === "tx-scan"
-          ? "Coste base e interés reconstruidos del histórico de transacciones (Helius)."
+          ? (p._priceFromTx
+              ? "Coste base, interés y precio share reconstruidos del histórico de transacciones del owner (verdad on-chain — el price feed de Jupiter/Helius no cuadraba con el último depósito real)."
+              : "Coste base e interés reconstruidos del histórico de transacciones (Helius). Precio share del feed de Jupiter (Helius).")
           : "Histórico de depósitos no disponible (sin Helius). Valor actual = shares × precio Jupiter."}</div>
       </div>
     </details>`;
@@ -1841,24 +1847,82 @@ async function enrichJupiterLendCost(owner) {
       }
       if (priceUSD == null) continue;
       const usd = underlying.amount * priceUSD;
+      const jlAmt = t.tokenAmount || 0; // shares jl movidas en este mismo tx
       const bucket = events.get(t.mint);
-      if (isIn) bucket.dep.push({ ts, usd });
-      else      bucket.wd.push({ ts, usd });
+      if (isIn) bucket.dep.push({ ts, usd, jl: jlAmt });
+      else      bucket.wd.push({ ts, usd, jl: jlAmt });
     }
   }
+
+  // Stable assets cuyo share price (en USD) crece monotónicamente con el
+  // interés; cualquier movimiento ≠ interés del feed Helius/Jupiter es un bug.
+  // Para non-stables (jlSOL, jlBTC…) NO podemos comparar así, porque el cambio
+  // de precio del subyacente domina el USD del share legítimamente.
+  const STABLE_LENDING_ASSETS = new Set(["USDC", "USDT", "USDS", "DAI", "PYUSD", "USDH", "USDR"]);
+  const MAX_REALISTIC_LENDING_APR = 0.30; // 30% APR — generoso para stable lending
 
   for (const p of jl) {
     const { dep, wd } = events.get(p.mint) || { dep: [], wd: [] };
     if (!dep.length) continue;
     const depositedUSD = dep.reduce((s, e) => s + e.usd, 0);
     const withdrawnUSD = wd.reduce((s, e) => s + e.usd, 0);
+
+    // Derivar share price real on-chain del evento MÁS RECIENTE: USD pagado /
+    // jl recibido. Esto es literalmente la verdad on-chain en ese instante.
+    const allEvs = [...dep, ...wd].sort((a, b) => b.ts - a.ts);
+    let derivedPrice = null, derivedFromTs = null;
+    for (const e of allEvs) {
+      if (e.jl > 0 && e.usd > 0) {
+        derivedPrice = e.usd / e.jl;
+        derivedFromTs = e.ts;
+        break;
+      }
+    }
+
+    // Override del precio Helius cuando es claramente irreal:
+    //
+    //   1) Helius < derivado × 0.95  →  imposible (interés solo sube, nunca
+    //      baja). Helius está reportando un precio antiguo/stale → usar derivado.
+    //
+    //   2) Para STABLE lending (jlUSDC, jlUSDT…): si el precio Helius implica
+    //      un APR anualizado desde el último depósito > 30%, también es bug
+    //      del feed (los vaults USDC no rinden tanto). Usar derivado.
+    //
+    //   3) Para NON-STABLE (jlSOL, jlBTC…): NO comparamos, porque la subida/
+    //      bajada del USD del subyacente puede mover la share USD muchísimo de
+    //      forma legítima. Confiamos en Helius siempre.
+    if (derivedPrice && p.sharePrice && derivedFromTs) {
+      const ageSec = Math.max(now - derivedFromTs, 1);
+      const ageDays = ageSec / 86400;
+      const isStable = STABLE_LENDING_ASSETS.has(p.asset);
+      // (1) Helius por debajo del derivado (stale): siempre overridear
+      const heliusTooLow = p.sharePrice < derivedPrice * 0.95;
+      // (2) Stable + APR irreal desde el último evento
+      let heliusTooHigh = false;
+      if (isStable && p.sharePrice > derivedPrice) {
+        const annualizedReturn = Math.pow(p.sharePrice / derivedPrice, 365 / ageDays) - 1;
+        heliusTooHigh = annualizedReturn > MAX_REALISTIC_LENDING_APR;
+      }
+      if (heliusTooLow || heliusTooHigh) {
+        p._heliusSharePrice = p.sharePrice;
+        p._heliusValueUSD = p.currentValueUSD;
+        p.sharePrice = derivedPrice;
+        p.currentValueUSD = (p.shares || 0) * derivedPrice;
+        p._priceFromTx = true;
+        p._priceFromTs = derivedFromTs;
+      }
+    }
+
     // gains = lo que tienes ahora + lo que retiraste − lo que pusiste (interés
     // acumulado real, no afectado por retiros parciales).
     const gainsUSD = (p.currentValueUSD || 0) + withdrawnUSD - depositedUSD;
     const openedAt = Math.min(...dep.map((e) => e.ts));
     const ageDays = Math.max((now - openedAt) / 86400, 1 / 24);
     const netInvested = Math.max(depositedUSD - withdrawnUSD, 0);
-    const apr = (netInvested > 0 && ageDays)
+    // Sanity guard: extrapolar APR sobre ventanas < 1 día da ruido absurdo
+    // (cualquier $1 de ganancia × 365 días se vuelve cientos de %). Marcamos
+    // null y la card lo muestra como "— (esperando ≥ 1 día)".
+    const apr = (netInvested > 0 && ageDays >= 1)
       ? (gainsUSD / netInvested) * (365 / ageDays) * 100
       : null;
     p.depositedUSD = depositedUSD;
@@ -1870,6 +1934,7 @@ async function enrichJupiterLendCost(owner) {
     p.openedAt = openedAt;
     p.ageDays = ageDays;
     p.apr = apr;
+    p._aprTooEarly = (netInvested > 0 && ageDays < 1); // para la card
     p.pnlBasis = "tx-scan";
   }
 }
