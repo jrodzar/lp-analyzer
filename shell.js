@@ -2006,14 +2006,13 @@ function renderHistorico() {
   els.histAportado.textContent = fmtUSD(curves.lastAportado);
   els.histValor.textContent = fmtUSD(curves.lastValor);
   els.histGanado.textContent = fmtUSD(curves.ganado);
-  // Sub de "Ganado (fees)": desglosa fees pendientes (aún no reclamadas) vs
-  // cobradas (ya en wallet o reinvertidas). Mismo cómputo que el resumen
-  // global de Portfolio para que cuadren las cifras.
+  // Sub de "Ganado (fees)": solo fees pendientes (las cobradas ya están en el
+  // valor principal — mostrarlas sería redundante). Pendientes = fees aún
+  // on-chain no reclamadas, mismo cómputo que el resumen global de Portfolio.
   const allOpen = state.results.flatMap((r) => r.items || []).filter((it) => !it.closed);
-  const feesPending   = allOpen.reduce((s, it) => s + (it.feesPendingUSD || 0), 0);
-  const feesCollected = allOpen.reduce((s, it) => s + (it.feesUSD || 0), 0);
+  const feesPending = allOpen.reduce((s, it) => s + (it.feesPendingUSD || 0), 0);
   if (els.histGanadoSub) {
-    els.histGanadoSub.innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(feesPending)}</span> pendientes · <span class="text-emerald-400 font-semibold">${fmtUSD(feesCollected)}</span> cobradas`;
+    els.histGanadoSub.innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(feesPending)}</span> pendientes`;
   }
 
   // PnL e IL agregados a partir de las posiciones analizadas (incluye variación de precio).
