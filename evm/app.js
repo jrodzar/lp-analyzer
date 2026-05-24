@@ -1806,8 +1806,20 @@ function positionCard(p) {
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Valor actual</div>
         <div class="font-semibold">${fmtUSD(p.currentValueUSD)}</div>
-        <div class="text-[10px] text-slate-400 mt-0.5">${fmtToken(p.amounts.amount0, p.token0.symbol)}</div>
-        <div class="text-[10px] text-slate-400">${fmtToken(p.amounts.amount1, p.token1.symbol)}</div>
+        ${(() => {
+          // % de cada token sobre el valor del pool. En concentrated liquidity
+          // la composición cambia con el precio: posición en rango ≈ 50/50,
+          // cerca del borde puede ir 90/10, fuera del rango 100% de un lado.
+          const v0 = (p.amounts.amount0 || 0) * (p.token0.priceUSD || 0);
+          const v1 = (p.amounts.amount1 || 0) * (p.token1.priceUSD || 0);
+          const tot = v0 + v1;
+          const pct0 = tot > 0 ? (v0 / tot) * 100 : 0;
+          const pct1 = tot > 0 ? (v1 / tot) * 100 : 0;
+          return `
+            <div class="text-[10px] text-slate-400 mt-0.5">${fmtToken(p.amounts.amount0, p.token0.symbol)} <span class="text-slate-500">(${pct0.toFixed(1)}%)</span></div>
+            <div class="text-[10px] text-slate-400">${fmtToken(p.amounts.amount1, p.token1.symbol)} <span class="text-slate-500">(${pct1.toFixed(1)}%)</span></div>
+          `;
+        })()}
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees</div>
