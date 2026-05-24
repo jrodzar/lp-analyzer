@@ -1555,16 +1555,18 @@ function idleTokensBlock(tokens, opts = {}) {
     const chainName = chainDisplayName(t.chain);
     const chainHex = venueColor(chainName) || "#94a3b8";
     const chip = chainName
-      ? `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0" style="background:${chainHex}22;color:${chainHex};border:1px solid ${chainHex}44">${chainName}</span>`
+      ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap" style="background:${chainHex}22;color:${chainHex};border:1px solid ${chainHex}44">${chainName}</span>`
       : "";
+    // Layout en columnas fijas para que todas las filas se alineen:
+    //   [SYMBOL w-20] [CHAIN w-24] [NAME flex-1] [BALANCE w-28 derecha] [USD w-20 derecha]
     return `
-      <div class="flex items-center gap-2 bg-slate-950/40 rounded-md px-2 py-1.5">
-        ${chip}
-        <span class="font-semibold text-slate-200 w-16 truncate">${t.symbol || "?"}</span>
+      <div class="flex items-center gap-3 bg-slate-950/40 rounded-md px-2 py-1.5">
+        <span class="font-semibold text-slate-100 w-20 shrink-0 truncate">${t.symbol || "?"}</span>
+        <div class="w-24 shrink-0">${chip}</div>
         <span class="hidden sm:inline text-slate-500 text-[11px] truncate flex-1">${t.name || ""}</span>
         <span class="flex-1 sm:hidden"></span>
-        <span class="font-mono text-[11px] text-slate-400 shrink-0">${bal}</span>
-        <span class="font-semibold text-slate-100 shrink-0 w-20 text-right">${valStr}</span>
+        <span class="font-mono text-[11px] text-slate-400 w-28 shrink-0 text-right">${bal}</span>
+        <span class="font-semibold text-slate-100 w-20 shrink-0 text-right">${valStr}</span>
       </div>`;
   };
   body.innerHTML = significant.map(rowFor).join("");
