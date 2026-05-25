@@ -13,54 +13,11 @@ modo multiusuario por **login de Google (Firebase)** y portfolios guardados.
 > stack o en las limitaciones honestas— actualízalo en el mismo commit. Es la cara
 > pública del proyecto y no debe quedarse obsoleto.
 
-## Ramas
+## Rama
 
-- **`main`** — app analytics estable, desplegada en GitHub Pages
-  (https://jrodzar.github.io/lp-analyzer/). Es la cara pública. Todo PR/commit
-  aquí debe ser **read-only** (no toca fondos del usuario).
-- **`active-management`** — rama paralela de larga vida donde se desarrolla la
-  funcionalidad de **firmar transacciones** desde la app (cobrar fees, hacer
-  compounding total/parcial vía Rabby/Phantom/Ledger). Vive en paralelo a
-  `main` y se sincroniza periódicamente para no quedarse obsoleta.
-
-### Workflow `active-management`
-
-1. **Desarrollo** se hace siempre en la rama:
-   ```
-   git checkout active-management
-   # ... commits con prefijo "[active] ..."
-   git push
-   ```
-2. **Sincronización desde `main`** — cada vez que `main` recibe un commit
-   relevante (fix, mejora de UI, nueva feature analytics), traer esos cambios a
-   la rama:
-   ```
-   git checkout active-management
-   git merge main
-   # resolver conflictos si los hay
-   git push
-   ```
-   Recomendado: hacerlo al menos una vez por semana, o inmediatamente después
-   de un commit grande en `main`.
-3. **NO mergear `active-management` → `main`** hasta que el MVP esté completo,
-   testeado en mainnet con cantidades pequeñas y revisado de seguridad. La
-   rama puede vivir meses sin mergear sin problema.
-4. **Deployment**:
-   - Inicialmente, solo local: `git checkout active-management && python -m
-     http.server 8000` → `http://localhost:8000` (el Worker ya permite
-     `localhost:5180`; añadir `localhost:8000` en `ALLOWED_ORIGINS` si hace
-     falta).
-   - Cuando el MVP funcione, decidir entre subdirectorio `/beta/` en este
-     mismo repo o repo separado `lp-analyzer-pro`.
-5. **Prefijo de commits en la rama**: usar `[active]` al inicio del subject
-   para distinguirlos rápido en `git log` mezclado.
-
-### Por qué rama separada (y no feature flag en main)
-
-La diferencia entre lectura y firma de transacciones es un cambio de **postura
-de seguridad**: en `main` un bug es "mal número en la UI"; con firma sería
-"mover dinero del usuario". Mantenerlo aislado evita que un commit
-distraído en `main` introduzca riesgo de fondos.
+Solo existe **`main`** — app analytics estable, desplegada en GitHub Pages
+(https://jrodzar.github.io/lp-analyzer/). Es la cara pública y todo commit
+aquí debe ser **read-only** (no firma transacciones ni toca fondos).
 
 ## Cómo arrancar
 
