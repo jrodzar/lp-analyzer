@@ -8,7 +8,21 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>Solana LP Analyzer</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Tailwind: CDN en dev, CSS pre-compilado en prod. Ver comentario en index.html
+       de la raíz. El iframe recibe ?v=N en la URL (shell.js lo añade), lo leemos
+       de location.search para cache-bustear igual que el HTML padre. -->
+  <script>
+    (function () {
+      var h = location.hostname;
+      var dev = h === "localhost" || h === "127.0.0.1" || h === "" || location.protocol === "file:";
+      if (dev) {
+        document.write('<' + 'script src="https://cdn.tailwindcss.com"><\/script>');
+      } else {
+        var v = (new URL(location.href)).searchParams.get("v") || "0";
+        document.write('<link rel="stylesheet" href="../assets/styles.css?v=' + v + '">');
+      }
+    })();
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
   <!-- Crypto mínimo: @noble (fiable en CDN). Evitamos @solana/web3.js entero

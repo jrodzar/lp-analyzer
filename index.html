@@ -24,8 +24,23 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "131";</script>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script>window.APP_VERSION = "132";</script>
+  <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
+       En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
+       npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
+       y elimina el warning "cdn.tailwindcss.com should not be used in production".
+       document.write síncrono evita FOUC al inyectarse antes del primer paint. -->
+  <script>
+    (function () {
+      var h = location.hostname;
+      var dev = h === "localhost" || h === "127.0.0.1" || h === "" || location.protocol === "file:";
+      if (dev) {
+        document.write('<' + 'script src="https://cdn.tailwindcss.com"><\/script>');
+      } else {
+        document.write('<link rel="stylesheet" href="assets/styles.css?v=' + (window.APP_VERSION || "0") + '">');
+      }
+    })();
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
   <style>
