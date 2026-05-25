@@ -38,6 +38,7 @@ const els = {
   pfCta: $("pf-cta"), pfCtaBtn: $("pf-cta-btn"),
   addRabby: $("add-rabby"), addPhantom: $("add-phantom"),
   connectRabby: $("connect-rabby"), connectPhantom: $("connect-phantom"),
+  disconnectRabby: $("disconnect-rabby"), disconnectPhantom: $("disconnect-phantom"),
   analyzingModal: $("analyzing-modal"), analyzingMsg: $("analyzing-msg"), analyzingBar: $("analyzing-bar"),
   // portfolio results
   pfSummary: $("pf-summary"), gValue: $("g-value"), gFees: $("g-fees"), gFeesSub: $("g-fees-sub"),
@@ -956,6 +957,14 @@ function connectWalletOnly(type) {
   if (!state.wallet[type]) setPfStatus(`Abriendo ${type === "evm" ? "Rabby/MetaMask" : "Phantom"} para conectar…`);
 }
 
+// Desvincula la wallet del iframe (no cierra la sesión en la propia extensión).
+// El iframe llama a disconnectWallet/disconnectPhantom y notifica al shell vía
+// lp-wallet con address=null, lo que dispara la cascada de renders.
+function disconnectWalletOnly(type) {
+  const frame = type === "evm" ? els.frameEvm : els.frameSol;
+  frame.contentWindow.postMessage({ type: "lp-disconnect-wallet" }, "*");
+}
+
 // Render del botón "Añadir wallet conectada → X" según el estado:
 //   · Sin wallet conectada → "Rabby no conectada" (deshabilitado)
 //   · Conectada y NO en portfolio → "+ Añadir 0x1abc…def" (acción: añadir)
@@ -966,11 +975,12 @@ function connectWalletOnly(type) {
 function renderWalletAddButton(type) {
   const addBtn = type === "evm" ? els.addRabby : els.addPhantom;
   const connectBtn = type === "evm" ? els.connectRabby : els.connectPhantom;
+  const disconnectBtn = type === "evm" ? els.disconnectRabby : els.disconnectPhantom;
   const addr = state.wallet[type];
   const name = type === "evm" ? "Rabby" : "Phantom";
   const icon = type === "evm" ? "🔗" : "👻";
 
-  // Botón "Conectar X" (en la barra superior de gestión)
+  // Botón "Conectar X" (en la barra superior de gestión) + botón ✕ adyacente
   if (connectBtn) {
     if (addr) {
       connectBtn.innerHTML = `<span class="text-emerald-400">✓</span> ${name} conectada <span class="text-slate-400 font-mono">${shortAddr(addr)}</span>`;
@@ -978,6 +988,15 @@ function renderWalletAddButton(type) {
     } else {
       connectBtn.innerHTML = `${icon} Conectar ${name}`;
       connectBtn.title = `Conectar ${name}`;
+    }
+  }
+  // Botón "✕" de desconectar: solo visible cuando hay wallet conectada
+  if (disconnectBtn) {
+    if (addr) {
+      disconnectBtn.classList.remove("hidden");
+      disconnectBtn.title = `Desconectar ${name} (${shortAddr(addr)})`;
+    } else {
+      disconnectBtn.classList.add("hidden");
     }
   }
 
@@ -2404,6 +2423,10 @@ els.pfCsv.onclick = exportPortfolioCSV;
 // Guards por si el HTML está en caché viejo sin estos IDs.
 if (els.connectRabby) els.connectRabby.onclick = () => connectWalletOnly("evm");
 if (els.connectPhantom) els.connectPhantom.onclick = () => connectWalletOnly("sol");
+// Botones ✕ adyacentes para desconectar la wallet. Solo visibles cuando hay
+// conexión (visibilidad gestionada por renderWalletAddButton).
+if (els.disconnectRabby) els.disconnectRabby.onclick = () => disconnectWalletOnly("evm");
+if (els.disconnectPhantom) els.disconnectPhantom.onclick = () => disconnectWalletOnly("sol");
 // Render inicial de los botones (estado "no conectada" hasta que llegue el
 // primer `lp-wallet`). Tras login + iframes ready, los engines reportarán
 // sus wallets actuales si las hay, y `renderWalletAddButton` se llama desde
