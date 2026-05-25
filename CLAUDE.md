@@ -4,8 +4,10 @@ App web (sin backend propio) para analizar posiciones de liquidez de una wallet,
 **EVM (Uniswap V3, multi-red)** y **Solana (Orca Whirlpools + Raydium CLMM)**, con
 modo multiusuario por **login de Google (Firebase)** y portfolios guardados.
 
-> Entorno del autor: Windows, **sin Node/npm**. Todo es HTML + JS servido estático.
-> Las librerías se cargan por CDN. No hay build step.
+> Entorno del autor: Windows, **sin Node/npm localmente**. El código es HTML + JS
+> servido estático; las librerías de runtime (Chart.js, @noble, etc) cargan por CDN.
+> **Tailwind sí se pre-compila en CI** (no más CDN runtime — ver "Build pipeline"
+> más abajo).
 
 > **Mantén el `README.md` al día.** Cada vez que un cambio sea visible para alguien
 > que mire el repo desde fuera —nueva pestaña, nueva métrica, nueva cadena/protocolo
@@ -26,6 +28,36 @@ python -m http.server 5180
 ```
 Abrir `http://localhost:5180`. (En Claude Code: usar el botón de preview; hay
 `.claude/launch.json` configurado para el puerto 5180.)
+
+En localhost los HTMLs cargan **Tailwind por CDN** (toggle dev/prod en `index.html`,
+`evm/index.html`, `sol/index.html`). En producción cargan `assets/styles.css`
+pre-compilado. No necesitas Node local para nada.
+
+## Build pipeline
+
+GitHub Pages sirve desde la raíz del repo, **incluido `./assets/styles.css`**.
+Ese CSS lo genera CI en cada push:
+
+- `.github/workflows/build-tailwind.yml` corre `npm clean-install` →
+  `postinstall` en `package.json` compila Tailwind (`tailwindcss -i
+  src/tailwind-input.css -o assets/styles.css --minify`) → si cambió, lo commitea
+  de vuelta a main con `build: recompile tailwind css` → notifica a `lp-analyzer-pro`
+  vía `repository_dispatch` para que sincronice.
+- `tailwind.config.js` escanea `./*.{html,js}`, `./{evm,sol,active}/**/*.{html,js}`.
+  La carpeta `active/` solo existe en pro pero está en el config (Tailwind ignora
+  globs sin matches), así que el mismo config sirve para ambos repos.
+
+**Sincronización con `lp-analyzer-pro` (privado):** `notify-pro.yml` dispara
+`repository_dispatch` en cada push. Pro tiene su propio workflow (`sync-from-public.yml`)
+que merge-ea y resuelve usando `-X ours` + recuperación manual de archivos preservados
+(`.github/workflows/`, `CLAUDE.md`, `.claude/launch.json`).
+
+**Regla:** NUNCA pongas el literal `[skip ci]` en mensajes de commit (CF Workers
+Builds en pro lo detecta como substring y skipea builds). El workflow de sync
+en pro ya no lo añade — si lo ves en algún script o subject, quítalo.
+
+Pro tiene un build pipeline adicional (`scripts/build-dist.sh` + `dist/`) que solo
+se usa allí. Ver el `CLAUDE.md` de pro para detalles.
 
 ## Arquitectura
 
