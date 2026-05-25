@@ -40,7 +40,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
+          # No usamos `cache: npm` porque al primer build no existe lockfile
+          # y la action falla. Con una sola dep (tailwindcss) npm install tarda
+          # ~10s, no merece la complejidad de habilitar cache condicionalmente.
 
       - name: Install dependencies
         # npm ci si hay lockfile, si no fallback a npm install (primera vez)
