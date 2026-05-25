@@ -1,6 +1,6 @@
 /*
- * Input CSS para Tailwind. Lo procesa el CLI en CI (build-tailwind.yml en main,
- * "npm run build:css" en CF Workers Builds en pro) y emite assets/styles.css.
+ * Input CSS para Tailwind. Lo procesa el CLI en CI (build-tailwind.yml) y
+ * emite assets/styles.css.
  *
  * NO añadir aquí el CSS personalizado del header / scrollbar / chips / etc:
  * ese vive inline en <style> dentro de cada index.html (más cercano al

@@ -41,23 +41,8 @@ Ese CSS lo genera CI en cada push:
 - `.github/workflows/build-tailwind.yml` corre `npm clean-install` →
   `postinstall` en `package.json` compila Tailwind (`tailwindcss -i
   src/tailwind-input.css -o assets/styles.css --minify`) → si cambió, lo commitea
-  de vuelta a main con `build: recompile tailwind css` → notifica a `lp-analyzer-pro`
-  vía `repository_dispatch` para que sincronice.
-- `tailwind.config.js` escanea `./*.{html,js}`, `./{evm,sol,active}/**/*.{html,js}`.
-  La carpeta `active/` solo existe en pro pero está en el config (Tailwind ignora
-  globs sin matches), así que el mismo config sirve para ambos repos.
-
-**Sincronización con `lp-analyzer-pro` (privado):** `notify-pro.yml` dispara
-`repository_dispatch` en cada push. Pro tiene su propio workflow (`sync-from-public.yml`)
-que merge-ea y resuelve usando `-X ours` + recuperación manual de archivos preservados
-(`.github/workflows/`, `CLAUDE.md`, `.claude/launch.json`).
-
-**Regla:** NUNCA pongas el literal `[skip ci]` en mensajes de commit (CF Workers
-Builds en pro lo detecta como substring y skipea builds). El workflow de sync
-en pro ya no lo añade — si lo ves en algún script o subject, quítalo.
-
-Pro tiene un build pipeline adicional (`scripts/build-dist.sh` + `dist/`) que solo
-se usa allí. Ver el `CLAUDE.md` de pro para detalles.
+  de vuelta a main con mensaje `build: recompile tailwind css`.
+- `tailwind.config.js` escanea `./*.{html,js}` y `./{evm,sol}/**/*.{html,js}`.
 
 ## Arquitectura
 

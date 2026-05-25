@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
-# Construye la carpeta dist/ que CF Workers Builds sube como assets al Worker.
-# Solo se ejecuta en lp-analyzer-pro (CF Workers Builds). En lp-analyzer (main,
-# GitHub Pages) este script existe pero NUNCA se llama — GH Pages sirve
-# directamente desde la raíz del repo.
+# Construye una carpeta dist/ que contiene SOLO los archivos públicos servidos
+# al navegador, excluyendo .git/, node_modules/, package.json, CLAUDE.md, etc.
 #
-# Por qué dist/ y no la raíz:
-#   - wrangler 4.94.0 NO honra .assetsignore de manera fiable. El log seguía
-#     mostrando "Read 1793 files" tras añadir .assetsignore con patrones de
-#     todo tipo (.git/, .git/**, **/.git/**).
-#   - Resultado sin dist/: .git/, node_modules/, package.json, CLAUDE.md, etc
-#     se subían al Worker. Cloudflare Access los bloqueaba públicamente, pero
-#     cualquiera con cookie de Access podría descargar el repo privado entero.
-#   - Con dist/ generado a mano controlamos al 100% qué se sube — no hay manera
-#     de que se cuele un archivo no listado abajo.
+# Pensado para targets de deploy que leen de un directorio explícito (ej.
+# wrangler.jsonc con `assets.directory: "./dist"`), en lugar de la raíz del
+# repo. GitHub Pages NO lo usa — sirve directamente desde la raíz.
+#
+# Por qué dist/ explícito y no .assetsignore:
+#   wrangler 4.94 no honra .assetsignore de manera fiable. El log seguía
+#   subiendo .git/ y node_modules/ a pesar de añadirlos al .assetsignore con
+#   patrones de todo tipo (.git/, .git/**, **/.git/**). Generar dist/ a mano
+#   da control 100% sobre qué se sube.
 
 set -euo pipefail
 
@@ -28,16 +26,15 @@ cp -r assets/. "$DIST/assets/"
 cp -r evm "$DIST/"
 cp -r sol "$DIST/"
 
-# active/ solo existe en lp-analyzer-pro (módulos de management activo:
-# Cobrar fees, Compound, etc). En main no existe — copiamos si la vemos.
-if [ -d active ]; then
-  cp -r active "$DIST/"
-fi
+# Carpetas opcionales que pueden existir en forks/variantes del repo
+for opt in active; do
+  [ -d "$opt" ] && cp -r "$opt" "$DIST/"
+done
 
 # Compilar Tailwind directamente sobre dist/. Sobrescribe el styles.css que
 # vino de copiar assets/, por si el del repo estaba obsoleto. El postinstall
-# de package.json también compila pero a ./assets/styles.css (para GH Pages
-# en main); aquí lo regeneramos para asegurar que el de dist/ es el bueno.
+# de package.json también compila pero a ./assets/styles.css (para GH Pages);
+# aquí lo regeneramos para asegurar que el de dist/ es el bueno.
 npx tailwindcss -i src/tailwind-input.css -o "$DIST/assets/styles.css" --minify
 
 echo "✓ Built $DIST/ ($(find "$DIST" -type f | wc -l) files)"

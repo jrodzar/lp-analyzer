@@ -67,13 +67,3 @@ jobs:
           git commit -m "build: recompile tailwind css"
           git push
           echo "changed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Notify lp-analyzer-pro (so pro syncs the new CSS)
-        if: steps.commit.outputs.changed == 'true'
-        run: |
-          curl -s -o /dev/null -w "Dispatch HTTP %{http_code}\n" \
-            -X POST \
-            -H "Authorization: Bearer ${{ secrets.PRO_DISPATCH_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/jrodzar/lp-analyzer-pro/dispatches \
-            -d '{"event_type":"public-main-updated"}'
