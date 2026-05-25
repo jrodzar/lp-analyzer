@@ -13,14 +13,18 @@
        (vía Compartir → Añadir a pantalla de inicio). Ver manifest.json y sw.js. -->
   <link rel="manifest" href="manifest.json" />
   <meta name="theme-color" content="#ECE600" />
+  <!-- iOS Safari sigue usando el meta antiguo de Apple; Chrome lo deprecó a
+       favor del genérico "mobile-web-app-capable". Dejamos los dos para
+       compatibilidad cruzada (iOS y Android leen el suyo respectivamente). -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Booster Crypto" />
   <link rel="apple-touch-icon" href="favicon.svg" />
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "130";</script>
+  <script>window.APP_VERSION = "131";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
