@@ -1537,13 +1537,13 @@ function idleTokensBlock(tokens, opts = {}) {
   wrap.className = "rounded-xl border border-slate-800 border-l-4 bg-slate-900/40 p-3 mb-4 text-sm";
   wrap.style.borderLeftColor = "#92604A";
   const head = document.createElement("summary");
-  head.className = "flex items-center gap-2 cursor-pointer select-none text-slate-300";
+  head.className = "flex items-center gap-2 cursor-pointer select-none text-slate-300 flex-wrap";
   head.innerHTML = `
     <span class="text-base">💼</span>
     <span class="font-semibold">Tokens en wallet (idle)</span>
-    <span class="text-[11px] text-slate-500">— fuera de LPs</span>
+    <span class="text-[11px] text-slate-500 hidden sm:inline">— fuera de LPs</span>
     <span class="flex-1"></span>
-    <span class="text-slate-400 text-xs">${significant.length}${dust.length ? ` <span class="text-slate-600">(+${dust.length} polvo)</span>` : ""} · <span class="text-slate-100 font-semibold">${fmtUSD(totalSignificantUSD)}</span></span>
+    <span class="text-slate-400 text-xs whitespace-nowrap">${significant.length}${dust.length ? ` <span class="text-slate-600">(+${dust.length} polvo)</span>` : ""} · <span class="text-slate-100 font-semibold">${fmtUSD(totalSignificantUSD)}</span></span>
   `;
   wrap.appendChild(head);
 
@@ -1557,16 +1557,34 @@ function idleTokensBlock(tokens, opts = {}) {
     const chip = chainName
       ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap" style="background:${chainHex}22;color:${chainHex};border:1px solid ${chainHex}44">${chainName}</span>`
       : "";
-    // Layout en columnas fijas para que todas las filas se alineen:
-    //   [SYMBOL w-20] [CHAIN w-24] [NAME flex-1] [BALANCE w-28 derecha] [USD w-20 derecha]
+    // Dos layouts:
+    //   - Desktop (sm+): una sola fila con 5 columnas alineadas
+    //     [SYMBOL w-20] [CHAIN w-24] [NAME flex-1] [BALANCE w-28 derecha] [USD w-20 derecha]
+    //   - Mobile (< sm): dos filas compactas porque ~432px de columnas no caben en 375px
+    //     Fila 1: [SYMBOL] [chain]                            [USD]
+    //     Fila 2: [name compacto]                             [BALANCE mono]
     return `
-      <div class="flex items-center gap-3 bg-slate-950/40 rounded-md px-2 py-1.5">
-        <span class="font-semibold text-slate-100 w-20 shrink-0 truncate">${t.symbol || "?"}</span>
-        <div class="w-24 shrink-0">${chip}</div>
-        <span class="hidden sm:inline text-slate-500 text-[11px] truncate flex-1">${t.name || ""}</span>
-        <span class="flex-1 sm:hidden"></span>
-        <span class="font-mono text-[11px] text-slate-400 w-28 shrink-0 text-right">${bal}</span>
-        <span class="font-semibold text-slate-100 w-20 shrink-0 text-right">${valStr}</span>
+      <div class="bg-slate-950/40 rounded-md px-2 py-1.5">
+        <!-- Desktop -->
+        <div class="hidden sm:flex sm:items-center sm:gap-3">
+          <span class="font-semibold text-slate-100 w-20 shrink-0 truncate">${t.symbol || "?"}</span>
+          <div class="w-24 shrink-0">${chip}</div>
+          <span class="text-slate-500 text-[11px] truncate flex-1">${t.name || ""}</span>
+          <span class="font-mono text-[11px] text-slate-400 w-28 shrink-0 text-right">${bal}</span>
+          <span class="font-semibold text-slate-100 w-20 shrink-0 text-right">${valStr}</span>
+        </div>
+        <!-- Mobile -->
+        <div class="sm:hidden">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold text-slate-100 truncate min-w-0">${t.symbol || "?"}</span>
+            <div class="shrink-0">${chip}</div>
+            <span class="ml-auto font-semibold text-slate-100 shrink-0">${valStr}</span>
+          </div>
+          <div class="flex items-center justify-between gap-2 mt-0.5">
+            <span class="text-slate-500 text-[10px] truncate min-w-0">${t.name || ""}</span>
+            <span class="font-mono text-[10px] text-slate-400 shrink-0">${bal}</span>
+          </div>
+        </div>
       </div>`;
   };
   body.innerHTML = significant.map(rowFor).join("");
