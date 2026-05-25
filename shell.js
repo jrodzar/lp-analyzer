@@ -37,6 +37,7 @@ const els = {
   pfManageToggle: $("pf-manage-toggle"), pfManageBody: $("pf-manage-body"), pfManageChev: $("pf-manage-chev"), pfCount: $("pf-count"),
   pfCta: $("pf-cta"), pfCtaBtn: $("pf-cta-btn"),
   addRabby: $("add-rabby"), addPhantom: $("add-phantom"),
+  connectRabby: $("connect-rabby"), connectPhantom: $("connect-phantom"),
   analyzingModal: $("analyzing-modal"), analyzingMsg: $("analyzing-msg"), analyzingBar: $("analyzing-bar"),
   // portfolio results
   pfSummary: $("pf-summary"), gValue: $("g-value"), gFees: $("g-fees"), gFeesSub: $("g-fees-sub"),
@@ -940,13 +941,72 @@ function renamePortfolioEntry(address) {
   savePortfolio();
 }
 
-// Añadir la wallet conectada (Rabby EVM / Phantom SOL) al portfolio.
-// Siempre re-solicita la dirección activa para soportar cambio de cuenta en la wallet.
-function addConnectedWallet(type) {
-  pendingWalletAdd[type] = true;
+// Conecta una wallet del portfolio (Rabby EVM / Phantom SOL) — solo abre la
+// extensión para que el usuario apruebe. NO añade al portfolio: eso es un paso
+// aparte (botón "Añadir wallet conectada → <shortAddr>" en la barra de abajo).
+// Pasos:
+//   1. postMessage al iframe correspondiente con `lp-connect-wallet`.
+//   2. El iframe abre la extensión y, tras éxito, manda `lp-wallet` con la
+//      address detectada (handler en message listener actualiza state.wallet).
+//   3. renderWalletAddButton(type) refresca la UI de los botones para mostrar
+//      la dirección activa y habilitar el "+ Añadir".
+function connectWalletOnly(type) {
   const frame = type === "evm" ? els.frameEvm : els.frameSol;
   frame.contentWindow.postMessage({ type: "lp-connect-wallet" }, "*");
   if (!state.wallet[type]) setPfStatus(`Abriendo ${type === "evm" ? "Rabby/MetaMask" : "Phantom"} para conectar…`);
+}
+
+// Render del botón "Añadir wallet conectada → X" según el estado:
+//   · Sin wallet conectada → "Rabby no conectada" (deshabilitado)
+//   · Conectada y NO en portfolio → "+ Añadir 0x1abc…def" (acción: añadir)
+//   · Conectada y YA en portfolio → "✓ 0x1abc…def ya en portfolio" (deshabilitado)
+// También actualiza el botón global "🔗 Conectar Rabby" según conexión:
+//   · Sin conectar → "🔗 Conectar Rabby"
+//   · Conectada → "✓ Rabby conectada · 0x1abc…def"
+function renderWalletAddButton(type) {
+  const addBtn = type === "evm" ? els.addRabby : els.addPhantom;
+  const connectBtn = type === "evm" ? els.connectRabby : els.connectPhantom;
+  const addr = state.wallet[type];
+  const name = type === "evm" ? "Rabby" : "Phantom";
+  const icon = type === "evm" ? "🔗" : "👻";
+
+  // Botón "Conectar X" (en la barra superior de gestión)
+  if (connectBtn) {
+    if (addr) {
+      connectBtn.innerHTML = `<span class="text-emerald-400">✓</span> ${name} conectada <span class="text-slate-400 font-mono">${shortAddr(addr)}</span>`;
+      connectBtn.title = `${name} ya conectada: ${addr}. Pulsa para volver a abrirla (cambiar de cuenta, etc.)`;
+    } else {
+      connectBtn.innerHTML = `${icon} Conectar ${name}`;
+      connectBtn.title = `Conectar ${name}`;
+    }
+  }
+
+  // Botón "Añadir wallet conectada → X" (en la fila inferior)
+  if (!addBtn) return;
+  if (!addr) {
+    addBtn.innerHTML = `<span class="text-slate-500">${name} no conectada</span>`;
+    addBtn.disabled = true;
+    addBtn.title = `Pulsa "${icon} Conectar ${name}" arriba para activar este botón`;
+    addBtn.onclick = null;
+    return;
+  }
+  const inPortfolio = state.portfolio.some((p) => p.address.toLowerCase() === addr.toLowerCase());
+  if (inPortfolio) {
+    addBtn.innerHTML = `<span class="text-emerald-400">✓</span> <span class="font-mono">${shortAddr(addr)}</span> <span class="text-slate-500">ya en portfolio</span>`;
+    addBtn.disabled = true;
+    addBtn.title = `${addr} ya está en el portfolio`;
+    addBtn.onclick = null;
+  } else {
+    addBtn.innerHTML = `+ Añadir <span class="font-mono">${shortAddr(addr)}</span>`;
+    addBtn.disabled = false;
+    addBtn.title = `Añadir al portfolio: ${addr}`;
+    addBtn.onclick = () => addWalletAddress(type);
+  }
+}
+
+function renderWalletAddButtons() {
+  renderWalletAddButton("evm");
+  renderWalletAddButton("sol");
 }
 
 function addWalletAddress(type) {
@@ -1017,6 +1077,9 @@ function renderPortfolioList() {
   els.pfList.innerHTML = "";
   updatePfCount();
   applyPfManagePref();
+  // Si una wallet conectada acaba de añadirse / quitarse del portfolio, los
+  // botones "+ Añadir <addr>" / "✓ <addr> ya en portfolio" cambian de estado.
+  renderWalletAddButtons();
   if (!state.portfolio.length) {
     els.pfList.innerHTML = `<div class="text-xs text-slate-500">Aún no hay direcciones. Añade una arriba.</div>`;
     els.pfCta.classList.add("hidden");
@@ -1933,7 +1996,12 @@ window.addEventListener("message", (e) => {
     state.wallet[d.app] = d.address || null;
     if (d.app === state.mode) { renderWalletButton(); if (d.address) els.addr.value = d.address; }
     // si estábamos esperando para añadir esta wallet al portfolio, hazlo ahora
+    // (mantenido como compatibilidad; el botón "Conectar X" actual no lo usa,
+    // pero otros flujos antiguos podrían).
     if (d.address && pendingWalletAdd[d.app]) { pendingWalletAdd[d.app] = false; addWalletAddress(d.app); }
+    // Refresca los botones "Conectar X" + "Añadir wallet conectada → X" con
+    // la nueva dirección (o el estado desconectado si address es null).
+    renderWalletAddButton(d.app);
   } else if (d.type === "lp-result" && pendingReqs.has(d.reqId)) {
     const resolve = pendingReqs.get(d.reqId);
     pendingReqs.delete(d.reqId);
@@ -2329,8 +2397,18 @@ els.pfAdd.onclick = addPortfolioEntry;
 els.pfAddress.addEventListener("keydown", (e) => { if (e.key === "Enter") addPortfolioEntry(); });
 els.analyzeAll.onclick = () => analyzeAll();
 els.pfCsv.onclick = exportPortfolioCSV;
-els.addRabby.onclick = () => addConnectedWallet("evm");
-els.addPhantom.onclick = () => addConnectedWallet("sol");
+// Nuevos botones "Conectar Rabby/Phantom" en la barra de gestión: solo
+// disparan la conexión (no añaden al portfolio). El paso "añadir" lo hace
+// el usuario después pulsando los botones "+ Añadir <addr>" que aparecen en
+// la fila inferior cuando hay una wallet conectada.
+// Guards por si el HTML está en caché viejo sin estos IDs.
+if (els.connectRabby) els.connectRabby.onclick = () => connectWalletOnly("evm");
+if (els.connectPhantom) els.connectPhantom.onclick = () => connectWalletOnly("sol");
+// Render inicial de los botones (estado "no conectada" hasta que llegue el
+// primer `lp-wallet`). Tras login + iframes ready, los engines reportarán
+// sus wallets actuales si las hay, y `renderWalletAddButton` se llama desde
+// el listener de `lp-wallet`.
+renderWalletAddButtons();
 els.autoRefresh.onchange = applyAutoRefresh;
 els.refreshNow.onclick = refreshActiveTab;
 els.pfManageToggle.onclick = togglePfManage;

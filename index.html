@@ -20,7 +20,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "125";</script>
+  <script>window.APP_VERSION = "126";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
@@ -239,6 +239,8 @@
               <button id="change-pass" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Cambiar contraseña de cifrado">🔑 Contraseña</button>
               <button id="delete-account" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/40 border border-slate-700 hover:border-rose-700 text-xs text-rose-300" title="Eliminar permanentemente tu cuenta y todos tus datos">🗑️ Eliminar cuenta</button>
               <button id="pf-csv" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Descargar posiciones en CSV">⬇ CSV</button>
+              <button id="connect-rabby" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Conectar Rabby / MetaMask (EVM)">🔗 Conectar Rabby</button>
+              <button id="connect-phantom" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Conectar Phantom (Solana)">👻 Conectar Phantom</button>
               <button id="analyze-all" class="px-3 py-1.5 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-xs font-semibold">Analizar todo</button>
             </div>
           </div>
@@ -251,8 +253,13 @@
             <div id="pf-add-err" class="text-[11px] text-rose-400 hidden"></div>
             <div class="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
               <span>Añadir wallet conectada:</span>
-              <button id="add-rabby" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">🔗 Rabby (EVM)</button>
-              <button id="add-phantom" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">👻 Phantom (SOL)</button>
+              <!-- El texto y el handler de estos botones se generan dinámicamente en
+                   shell.js (renderWalletAddButton). Estados:
+                     · Sin wallet conectada → "Rabby no conectada" (deshabilitado)
+                     · Conectada y NO en portfolio → "+ Añadir <shortAddr>"
+                     · Conectada y YA en portfolio → "✓ <shortAddr> ya en portfolio" -->
+              <button id="add-rabby"   class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"></button>
+              <button id="add-phantom" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"></button>
             </div>
             <div id="pf-list" class="space-y-1.5"></div>
           </div>
