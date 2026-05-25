@@ -965,27 +965,16 @@ function disconnectWalletOnly(type) {
   frame.contentWindow.postMessage({ type: "lp-disconnect-wallet" }, "*");
 }
 
-// SVG inline del logo de Rabby Wallet — cuerpo redondeado con dos orejas
-// triangulares (rabby = rabbit) y dos ojos. Color brand azul-violeta CLARO
-// para destacar sobre el fondo oscuro del botón. Inline para no añadir
-// requests extra; la idea es que el HTML resultante de cada render se cachee
-// solo en el navegador.
-const RABBY_ICON_SVG = `<svg viewBox="0 0 128 128" class="w-6 h-6 inline-block align-[-6px]" xmlns="http://www.w3.org/2000/svg" aria-label="Rabby Wallet">
-  <path fill="#7084FF" d="M28 50 L20 12 L48 32 Z M100 50 L108 12 L80 32 Z M20 60 c0-12 9-22 22-22h44 c13 0 22 10 22 22 v38 c0 14-10 22-22 22 H42 c-12 0-22-8-22-22 z"/>
-  <ellipse fill="#fff" cx="48" cy="72" rx="9" ry="11"/>
-  <ellipse fill="#fff" cx="80" cy="72" rx="9" ry="11"/>
-  <circle fill="#0F1117" cx="48" cy="74" r="4"/>
-  <circle fill="#0F1117" cx="80" cy="74" r="4"/>
-</svg>`;
-
-// SVG inline del logo de Phantom Wallet — fantasma con base ondulada y dos
-// ojos oscuros. Color brand violeta CLARO (#AB9FF2) — el oficial de Phantom
-// — para destacar sobre fondo oscuro.
-const PHANTOM_ICON_SVG = `<svg viewBox="0 0 128 128" class="w-6 h-6 inline-block align-[-6px]" xmlns="http://www.w3.org/2000/svg" aria-label="Phantom Wallet">
-  <path fill="#AB9FF2" d="M64 8 C30 8 8 30 8 64 L8 118 L24 102 L40 118 L56 102 L72 118 L88 102 L104 118 L120 102 L120 64 C120 30 98 8 64 8 Z"/>
-  <circle fill="#0F1117" cx="46" cy="56" r="6"/>
-  <circle fill="#0F1117" cx="82" cy="56" r="6"/>
-</svg>`;
+// Logos oficiales de Rabby y Phantom — bundled en el repo bajo
+// `assets/wallets/` para evitar dependencias de CDN externos que podrían
+// cambiar URL o no permitir CORS.
+//   · rabby.png   → 128×128 PNG bajado de rabby.io/assets/images/logo-128.png
+//   · phantom.svg → SVG vectorial bajado de phantom.com/_web_platform_assets/
+//                   favicon.svg (color brand oficial #AB9FF2)
+// Como son archivos estáticos del repo, ?v=APP_VERSION se podría añadir
+// para cache-busting, pero solo bumpeamos cuando reemplacemos el asset.
+const RABBY_ICON_SVG = `<img src="assets/wallets/rabby.png" alt="Rabby Wallet" class="w-6 h-6 inline-block align-[-6px]">`;
+const PHANTOM_ICON_SVG = `<img src="assets/wallets/phantom.svg" alt="Phantom Wallet" class="w-6 h-6 inline-block align-[-6px]">`;
 
 // Render del botón "Añadir wallet conectada → X" según el estado:
 //   · Sin wallet conectada → "Rabby no conectada" (deshabilitado)
