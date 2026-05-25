@@ -1,0 +1,12 @@
+{
+  "name": "lp-analyzer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Booster Crypto - LP Analyzer (static HTML app). package.json exists only so CI can install Tailwind for the build step. No runtime Node dependencies.",
+  "scripts": {
+    "build:css": "tailwindcss -i src/tailwind-input.css -o assets/styles.css --minify"
+  },
+  "dependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}

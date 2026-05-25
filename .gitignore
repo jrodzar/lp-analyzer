@@ -6,3 +6,6 @@ desktop.ini
 # Editor
 .vscode/
 *.swp
+
+# Node (solo para CI; no se instala localmente — Windows sin Node)
+node_modules/
