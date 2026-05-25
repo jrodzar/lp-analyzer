@@ -1,0 +1,30 @@
+name: Notify downstream on push to main
+
+# Dispara un repository_dispatch en un repo downstream (opcional, configurado
+# vía secrets). Si no hay secret configurado el step falla con 404 inofensivo
+# — el push a main no se ve afectado.
+#
+# Secrets requeridos:
+#   DOWNSTREAM_REPO            → "<owner>/<repo>"  (en formato GitHub)
+#   DOWNSTREAM_DISPATCH_TOKEN  → PAT con scope `repo` sobre ese repo
+#
+# El event_type que se envía es "public-main-updated" — el repo downstream
+# debe tener un workflow con `on: repository_dispatch: types: [public-main-updated]`
+# para reaccionar (típicamente: hacer un sync/pull desde este repo).
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger downstream sync
+        run: |
+          curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+            -X POST \
+            -H "Authorization: Bearer ${{ secrets.DOWNSTREAM_DISPATCH_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ secrets.DOWNSTREAM_REPO }}/dispatches" \
+            -d '{"event_type":"public-main-updated"}'
