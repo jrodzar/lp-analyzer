@@ -9,3 +9,7 @@ desktop.ini
 
 # Node (solo para CI; no se instala localmente — Windows sin Node)
 node_modules/
+
+# Build artifact de CF Workers Builds (solo en pro, generado por
+# scripts/build-dist.sh). Nunca se commitea.
+dist/

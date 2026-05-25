@@ -5,6 +5,7 @@
   "description": "Booster Crypto - LP Analyzer (static HTML app). package.json exists only so CI can install Tailwind for the build step. No runtime Node dependencies.",
   "scripts": {
     "build:css": "tailwindcss -i src/tailwind-input.css -o assets/styles.css --minify",
+    "build:dist": "bash scripts/build-dist.sh",
     "postinstall": "tailwindcss -i src/tailwind-input.css -o assets/styles.css --minify || true"
   },
   "dependencies": {
