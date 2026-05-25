@@ -1589,6 +1589,8 @@ async function connectPhantom() {
     if (input) input.value = pk;
     renderWalletButton();
     setStatus(`Conectada: ${shortAddr(pk)}. Pulsa Analizar.`, "ok");
+    // Notificar al shell (si estamos embebidos) tras la conexión inicial.
+    window.__notifySolWallet?.();
     if (!provider.__lpListenersAttached) {
       provider.on?.("accountChanged", (publicKey) => {
         if (publicKey) {
@@ -1597,6 +1599,10 @@ async function connectPhantom() {
           if (inp) inp.value = state.connectedAddress;
           renderWalletButton();
           setStatus(`Cuenta cambiada: ${shortAddr(state.connectedAddress)}`, "info");
+          // El usuario cambió de cuenta directamente en la extensión Phantom
+          // — propagamos al shell para que actualice "Phantom conectada
+          // 0x..." y los botones de "Añadir wallet conectada" con la nueva.
+          window.__notifySolWallet?.();
         } else {
           disconnectPhantom();
         }
@@ -1614,6 +1620,9 @@ function disconnectPhantom() {
   state.connectedAddress = null;
   renderWalletButton();
   setStatus("Wallet desvinculada de la app.", "info");
+  // Notificar al shell para que muestre "Phantom no conectada" y deshabilite
+  // los botones de "Añadir wallet conectada".
+  window.__notifySolWallet?.();
 }
 
 function renderWalletButton() {
@@ -1642,6 +1651,8 @@ async function trySilentReconnectPhantom() {
       const inp = document.getElementById("addr-input");
       if (inp) inp.value = state.connectedAddress;
       renderWalletButton();
+      // Notifica al shell también en la reconexión silenciosa al cargar.
+      window.__notifySolWallet?.();
     }
   } catch (e) { /* silencioso */ }
 }
@@ -2170,6 +2181,12 @@ document.addEventListener("DOMContentLoaded", init);
     const addr = (typeof state !== "undefined" && state.connectedAddress) || null;
     try { window.parent.postMessage({ type: "lp-wallet", app: "sol", address: addr }, "*"); } catch (e) {}
   }
+  // Expuesto en window para que handlers fuera del IIFE (connectPhantom,
+  // accountChanged, disconnectPhantom, trySilentReconnectPhantom) puedan
+  // notificar al shell sin romper el encapsulamiento. Permite que cualquier
+  // cambio de cuenta desde la extensión Phantom se refleje en la UI del
+  // shell automáticamente.
+  window.__notifySolWallet = notifyWallet;
   // Normaliza las posiciones Solana para el portfolio del shell
   function toPortfolioItems() {
     return (state.positions || []).map((p) => {

@@ -2189,6 +2189,9 @@ function onWalletConnected(account, provider) {
   document.getElementById("addr-input").value = account;
   renderWalletButton();
   setStatus(`Conectada: ${shortAddr(account)}. Pulsa Analizar.`, "ok");
+  // Notificar al shell (si estamos embebidos) — la wallet ya está conectada
+  // y la dirección activa puede haber cambiado.
+  window.__notifyEvmWallet?.();
 
   // listeners (solo registramos una vez)
   if (provider && !provider.__lpListenersAttached) {
@@ -2200,6 +2203,10 @@ function onWalletConnected(account, provider) {
         document.getElementById("addr-input").value = accs[0];
         renderWalletButton();
         setStatus(`Cuenta cambiada: ${shortAddr(accs[0])}`, "info");
+        // El usuario cambió de cuenta directamente en la extensión Rabby —
+        // propagamos al shell para que actualice "Rabby conectada 0x..."
+        // y los botones de "Añadir wallet conectada" con la nueva dirección.
+        window.__notifyEvmWallet?.();
       }
     });
     provider.__lpListenersAttached = true;
@@ -2211,6 +2218,9 @@ function disconnectWallet() {
   state.connectedAddress = null;
   renderWalletButton();
   setStatus("Wallet desvinculada de la app. La sesión sigue activa en la extensión.", "info");
+  // Notificar al shell para que muestre "Rabby no conectada" y deshabilite
+  // los botones de "Añadir wallet conectada".
+  window.__notifyEvmWallet?.();
 }
 
 function renderWalletButton() {
@@ -2285,6 +2295,11 @@ document.addEventListener("DOMContentLoaded", init);
     const addr = (typeof state !== "undefined" && state.connectedAddress) || null;
     try { window.parent.postMessage({ type: "lp-wallet", app: "evm", address: addr }, "*"); } catch (e) {}
   }
+  // Expuesto en window para que handlers fuera del IIFE (onWalletConnected,
+  // accountsChanged, disconnectWallet) puedan notificar al shell sin romper el
+  // encapsulamiento. Permite que cualquier cambio de cuenta desde la extensión
+  // Rabby/MetaMask se refleje en la UI del shell automáticamente.
+  window.__notifyEvmWallet = notifyWallet;
   // Normaliza las posiciones EVM para el portfolio del shell
   function toPortfolioItems() {
     return (state.positions || []).map((p) => {
