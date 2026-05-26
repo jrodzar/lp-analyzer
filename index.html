@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "137";</script>
+  <script>window.APP_VERSION = "138";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -539,10 +539,6 @@
 
   </main>
 
-  <!-- wallet.js debe cargar ANTES que shell.js — shell.js consulta
-       window.LPWallet en connectWalletOnly() para decidir si delegar al
-       iframe o ir por el fallback (deep links / WalletConnect). -->
-  <script>document.write('<scr' + 'ipt src="wallet.js?v=' + window.APP_VERSION + '"><\/scr' + 'ipt>');</script>
   <script>document.write('<scr' + 'ipt src="shell.js?v=' + window.APP_VERSION + '"><\/scr' + 'ipt>');</script>
 </body>
 </html>
