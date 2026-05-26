@@ -120,8 +120,18 @@
       const chainLabel = chain === "evm" ? "EVM" : "Solana";
 
       // Solo EVM tiene "nota Rabby" — para SOL Phantom sí tiene deep link.
+      // Rabby Mobile NO aparece en el directorio de Reown ni tiene Universal
+      // Link público para "abrir esta URL en mi navegador". La única vía es
+      // que el usuario abra Rabby Mobile manualmente → navegador interno →
+      // pegue nuestra URL. Damos instrucciones claras + botón copy.
       const rabbyHint = chain === "evm"
-        ? `<p class="text-[11px] text-amber-300/80 bg-amber-900/20 border border-amber-700/30 rounded-lg px-3 py-2"><strong>¿Rabby Mobile?</strong> Usa <strong>WalletConnect</strong> abajo — Rabby Mobile no abre dApps directamente, solo via WalletConnect.</p>`
+        ? `<div class="text-[11px] text-amber-200/90 bg-amber-900/20 border border-amber-700/30 rounded-lg px-3 py-2.5 space-y-1.5">
+             <div><strong>¿Tienes Rabby Mobile?</strong></div>
+             <div>1. Abre la app Rabby</div>
+             <div>2. Pestaña <strong>Discover</strong> / icono 🌐 (navegador)</div>
+             <div>3. Pega esta URL: <button class="lpw-copy underline text-amber-100 hover:text-white" data-url="${currentUrl()}">copiar URL 📋</button></div>
+             <div>4. Una vez en Rabby, pulsa "Conectar Rabby" otra vez</div>
+           </div>`
         : "";
 
       const overlay = document.createElement("div");
@@ -162,6 +172,34 @@
         cleanup();
         resolve(null);
       };
+      // Handler de "copiar URL" (visible si la nota de Rabby Mobile aparece).
+      // Usa Clipboard API moderna, con fallback a execCommand para navegadores
+      // antiguos o contextos sin secure-context (raros en HTTPS).
+      overlay.querySelectorAll(".lpw-copy").forEach((btn) => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const url = btn.dataset.url;
+          const done = (ok) => {
+            btn.textContent = ok ? "copiado ✓" : "fallo, copia a mano";
+            setTimeout(() => { btn.textContent = "copiar URL 📋"; }, 2000);
+          };
+          if (navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(url).then(() => done(true), () => done(false));
+          } else {
+            // Fallback antiguo
+            try {
+              const ta = document.createElement("textarea");
+              ta.value = url;
+              document.body.appendChild(ta);
+              ta.select();
+              document.execCommand("copy");
+              ta.remove();
+              done(true);
+            } catch (_) { done(false); }
+          }
+        };
+      });
+
       overlay.querySelectorAll(".lpw-opt").forEach((btn) => {
         btn.onclick = () => {
           const action = btn.dataset.action;
