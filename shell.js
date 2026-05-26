@@ -967,7 +967,7 @@ function connectWalletOnly(type) {
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || "");
     if (isMobile) {
       setPfStatus(
-        `No detecté la extensión ${walletName}. En móvil las extensiones de navegador no existen — abre la app de tu wallet y navega a esta web desde su navegador interno.`,
+        `No detecté la extensión ${walletName}. En móvil las extensiones de navegador no existen.`,
         "err"
       );
     } else if (type === "evm") {
