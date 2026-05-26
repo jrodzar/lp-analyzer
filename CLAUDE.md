@@ -185,6 +185,18 @@ Bootstrap: el admin entra (siempre autorizado) → "👥 Accesos" → añade ema
 - Los engines detectan modo embebido (`window.parent !== window`) y ocultan su propia
   cabecera e input; el shell aporta esa UI.
 - No hay secretos en el repo: claves y config viven en el navegador (localStorage).
+- **Diálogos UI**: NUNCA `window.alert/confirm/prompt`. Usa los helpers Tailwind
+  definidos en `shell.js` (expuestos en `window.uiAlert/uiConfirm/uiPrompt`):
+  ```js
+  await uiAlert(msg, { title, okLabel, okStyle: "primary"|"danger"|"default" })
+  await uiConfirm(msg, { title, okLabel, cancelLabel, okStyle })
+  await uiPrompt(msg, defaultValue, { title, placeholder, okLabel, cancelLabel, okStyle })
+  ```
+  Son Promise-based (await-able), soportan Escape/Enter, focus automático, y
+  estilan los botones por color semántico. Para modales más ricos (tablas de
+  datos, sliders, previews) construir HTML inline con el mismo patrón visual:
+  overlay `fixed inset-0 z-[200+] bg-black/70 flex items-center justify-center p-4`
+  + dialog `bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-5 space-y-4`.
 
 ## Estado / pendientes
 - Hecho: EVM (incl. HyperEVM RPC + Revert Lend), Orca, Raydium, portfolios, login,
