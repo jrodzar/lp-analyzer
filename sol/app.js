@@ -1283,10 +1283,12 @@ function renderPositions() {
 // rangeBarHTML vive en common.js (compartido con evm/app.js).
 
 // Devuelve { url, label } con el enlace a la web para gestionar la posición.
-// Orca acepta deep-link por pool address (`/pools/<whirlpool>`), patrón
-// estándar usado por DexScreener/Birdeye al enlazar pools de Solana. Raydium
-// no expone un deep-link por posición/pool documentado, así que enlazamos a
-// portfolio. Jupiter Lend → página general.
+// - Orca: deep-link `/pools/<whirlpool>` (patrón usado por DexScreener/Birdeye).
+// - Raydium: `/liquidity-pools/?search=<pool>` — confirmado leyendo el frontend
+//   V3 (raydium-ui-v3-public, src/features/Pools/Pools.tsx) que acepta el
+//   parámetro `search` con un PublicKey y filtra por pool ID. La página
+//   resultante muestra el pool y permite +/- liquidity directamente.
+// - Jupiter Lend → página general (no expone deep-link por vault).
 function managementLinkSol(p) {
   if (p._lending) {
     if (p.protocol === "jupiter-lend") return { url: "https://jup.ag/lend", label: "Jupiter Lend" };
@@ -1297,7 +1299,11 @@ function managementLinkSol(p) {
       ? { url: `https://www.orca.so/pools/${p.whirlpool}`, label: "Orca" }
       : { url: "https://www.orca.so/portfolio", label: "Orca" };
   }
-  if (p.protocol === "raydium") return { url: "https://raydium.io/portfolio/", label: "Raydium" };
+  if (p.protocol === "raydium") {
+    return p.whirlpool
+      ? { url: `https://raydium.io/liquidity-pools/?search=${p.whirlpool}`, label: "Raydium" }
+      : { url: "https://raydium.io/portfolio/", label: "Raydium" };
+  }
   return null;
 }
 
