@@ -1,0 +1,54 @@
+name: Deploy to GitHub Pages
+
+# Workflow custom para publicar a GitHub Pages — sustituye al "legacy"
+# pages-build-deployment auto-managed cuando este último tiene problemas
+# de infra (errors tipo "An action could not be found at the URI
+# .../upload-pages-artifact/tar.gz/<sha>..." con "Internal server error").
+#
+# Esto usa tags semver (@v3 / @v4) en vez de SHAs pinneados que GitHub
+# resuelve internamente — así nos saltamos el caché roto de su CDN de actions.
+#
+# Para activarlo: en repo Settings → Pages → Source: "GitHub Actions"
+# (o vía API: PUT /repos/{owner}/{repo}/pages con build_type=workflow).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Solo un deploy activo a la vez — si llega uno nuevo mientras hay otro en
+# vuelo, cancelamos el viejo. Evita queues largas.
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "."
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
