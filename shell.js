@@ -400,6 +400,120 @@ async function loadRememberedKey(uid) {
 }
 function forgetKey(uid) { localStorage.removeItem("lp:enckey:" + uid); }
 
+// ============================================================================
+// UI Modals — sustitutos de window.alert/confirm/prompt con estilo Tailwind.
+//
+// Por qué no nativos: window.confirm/alert/prompt bloquean el thread del
+// navegador, no se pueden estilar, y en móvil aparecen con la URL completa
+// del origen (feo). Los modales custom son no-bloqueantes (Promise-based),
+// estilo coherente con el resto de la app, soportan Escape/Enter, y permiten
+// botones con colores semánticos (danger en rojo para destructivos).
+//
+// API:
+//   uiAlert(message, opts)            → Promise<void>
+//   uiConfirm(message, opts)          → Promise<boolean>     (true = OK, false = cancel)
+//   uiPrompt(message, defVal, opts)   → Promise<string|null> (null = cancel)
+//
+// opts comunes:
+//   title         (string)  — encabezado, default según tipo
+//   okLabel       (string)  — etiqueta del botón principal
+//   cancelLabel   (string)  — etiqueta del botón secundario
+//   okStyle       ("primary"|"danger"|"default") — color del botón OK
+//   placeholder   (string)  — solo uiPrompt
+//   html          (bool)    — si true, message se inserta como HTML (sin escape)
+// ============================================================================
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function _showDialog(opts) {
+  return new Promise((resolve) => {
+    const { type, title, message, defaultValue, placeholder, okLabel, cancelLabel, okStyle, html } = opts;
+    const okClasses = ({
+      primary: "bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900",
+      danger:  "bg-rose-600 hover:bg-rose-500 text-white",
+      default: "bg-slate-700 hover:bg-slate-600 text-slate-100",
+    })[okStyle || "primary"];
+    const msgHtml = html ? message : escapeHtml(message).replace(/\n/g, "<br>");
+
+    const overlay = document.createElement("div");
+    overlay.className = "fixed inset-0 z-[300] bg-black/70 flex items-center justify-center p-4";
+    overlay.innerHTML = `
+      <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <h3 class="text-base font-semibold text-slate-100">${escapeHtml(title)}</h3>
+          <button class="ui-close text-slate-400 hover:text-slate-100 text-2xl leading-none">×</button>
+        </div>
+        <div class="text-sm text-slate-300 leading-relaxed">${msgHtml}</div>
+        ${type === "prompt" ? `<input type="text" class="ui-input w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-slate-500" placeholder="${escapeHtml(placeholder || "")}" value="${escapeHtml(defaultValue || "")}" />` : ""}
+        <div class="flex justify-end gap-2 pt-1">
+          ${type !== "alert" ? `<button class="ui-cancel px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm text-slate-100">${escapeHtml(cancelLabel || "Cancelar")}</button>` : ""}
+          <button class="ui-ok px-4 py-2 rounded-lg text-sm font-semibold ${okClasses}">${escapeHtml(okLabel)}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const cleanup = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+    const finish = (val) => { cleanup(); resolve(val); };
+    const onCancel = () => finish(type === "prompt" ? null : type === "confirm" ? false : undefined);
+    const onOk = () => {
+      if (type === "prompt") finish(overlay.querySelector(".ui-input").value);
+      else if (type === "confirm") finish(true);
+      else finish(undefined);
+    };
+    const input = overlay.querySelector(".ui-input");
+    const okBtn = overlay.querySelector(".ui-ok");
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+      else if (e.key === "Enter") {
+        // En prompt: Enter en el input = OK. En alert/confirm: Enter siempre = OK.
+        if (type === "prompt" && document.activeElement !== input) return;
+        e.preventDefault(); onOk();
+      }
+    };
+
+    overlay.onclick = (e) => { if (e.target === overlay) onCancel(); };
+    overlay.querySelector(".ui-close").onclick = onCancel;
+    okBtn.onclick = onOk;
+    overlay.querySelector(".ui-cancel")?.addEventListener("click", onCancel);
+    document.addEventListener("keydown", onKey);
+
+    // Focus: input para prompt, OK button para alert/confirm
+    setTimeout(() => {
+      if (type === "prompt" && input) { input.focus(); input.select(); }
+      else okBtn.focus();
+    }, 50);
+  });
+}
+
+window.uiAlert = (message, opts = {}) => _showDialog({
+  type: "alert", message,
+  title: opts.title || "Aviso",
+  okLabel: opts.okLabel || "OK",
+  okStyle: opts.okStyle || "primary",
+  html: opts.html,
+});
+window.uiConfirm = (message, opts = {}) => _showDialog({
+  type: "confirm", message,
+  title: opts.title || "Confirmar",
+  okLabel: opts.okLabel || "Confirmar",
+  cancelLabel: opts.cancelLabel || "Cancelar",
+  okStyle: opts.okStyle || "primary",
+  html: opts.html,
+});
+window.uiPrompt = (message, defaultValue, opts = {}) => _showDialog({
+  type: "prompt", message, defaultValue,
+  title: opts.title || "Introduce un valor",
+  okLabel: opts.okLabel || "OK",
+  cancelLabel: opts.cancelLabel || "Cancelar",
+  placeholder: opts.placeholder || "",
+  okStyle: opts.okStyle || "primary",
+  html: opts.html,
+});
+
 // Modal de contraseña. mode: "set" (nueva) | "unlock" (existente). Devuelve Promise<key|null>.
 let encResolve = null;
 function openEncModal(mode) {
@@ -468,13 +582,18 @@ async function handleEncSubmit() {
 // las direcciones — solo evita quedar bloqueado fuera de la app.
 async function handleForgotPassword() {
   if (!state.user || !fb.db) return;
-  const ok1 = confirm(
+  const ok1 = await uiConfirm(
     "⚠️ ¿Seguro que quieres empezar de cero?\n\n" +
     "Esto BORRARÁ tus direcciones cifradas (no se pueden recuperar sin la contraseña).\n" +
-    "Después podrás definir una nueva contraseña con un portfolio vacío."
+    "Después podrás definir una nueva contraseña con un portfolio vacío.",
+    { title: "Empezar de cero", okLabel: "Sí, borrar todo", okStyle: "danger" }
   );
   if (!ok1) return;
-  const typed = prompt('Escribe "BORRAR" en mayúsculas para confirmar:');
+  const typed = await uiPrompt(
+    "Para confirmar, escribe BORRAR en mayúsculas:",
+    "",
+    { title: "Confirmación final", placeholder: "BORRAR", okLabel: "Borrar", okStyle: "danger" }
+  );
   if (typed !== "BORRAR") return;
   try {
     const ref = fb.fsMod.doc(fb.db, "users", state.user.uid);
@@ -506,21 +625,26 @@ async function handleForgotPassword() {
 async function handleDeleteAccount() {
   if (!state.user || !fb.auth || !fb.db) return;
   if (isAdminUser()) {
-    alert("La cuenta de administrador no se puede eliminar desde la app.");
+    await uiAlert("La cuenta de administrador no se puede eliminar desde la app.", { title: "Operación no permitida" });
     return;
   }
   const email = state.user.email || "";
-  const ok1 = confirm(
+  const ok1 = await uiConfirm(
     "⚠️ ¿Eliminar tu cuenta?\n\n" +
     "Se borrarán:\n" +
     "• Tus direcciones cifradas y preferencias\n" +
     "• Tu cuenta de Firebase Auth\n\n" +
-    "Esta acción es IRREVERSIBLE."
+    "Esta acción es IRREVERSIBLE.",
+    { title: "Eliminar cuenta", okLabel: "Eliminar", okStyle: "danger" }
   );
   if (!ok1) return;
-  const typed = prompt(`Para confirmar, escribe tu email exactamente:\n${email}`);
+  const typed = await uiPrompt(
+    `Para confirmar, escribe tu email exactamente:\n${email}`,
+    "",
+    { title: "Confirmación final", placeholder: email, okLabel: "Eliminar cuenta", okStyle: "danger" }
+  );
   if ((typed || "").trim().toLowerCase() !== email.toLowerCase()) {
-    alert("Email no coincide. Cancelado.");
+    await uiAlert("Email no coincide. Cancelado.", { title: "Cancelado" });
     return;
   }
   try {
@@ -545,14 +669,14 @@ async function handleDeleteAccount() {
       await fb.authMod.deleteUser(fb.auth.currentUser);
     } catch (e) {
       if (e && e.code === "auth/requires-recent-login") {
-        alert("Por seguridad, vuelve a iniciar sesión para confirmar el borrado.");
+        await uiAlert("Por seguridad, vuelve a iniciar sesión para confirmar el borrado.", { title: "Se requiere re-login" });
         const provider = new fb.authMod.GoogleAuthProvider();
         await fb.authMod.reauthenticateWithPopup(fb.auth.currentUser, provider);
         await fb.authMod.deleteUser(fb.auth.currentUser);
       } else { throw e; }
     }
     // 4) onAuthChange(null) se encarga del resto (vuelta al gate)
-    alert("Tu cuenta ha sido eliminada. Hasta pronto 👋");
+    await uiAlert("Tu cuenta ha sido eliminada. Hasta pronto 👋", { title: "Cuenta eliminada" });
   } catch (e) {
     console.error("delete-account", e);
     setPfStatus(`No se pudo eliminar la cuenta: ${e.message}`, "err");
@@ -932,10 +1056,14 @@ function removePortfolioEntry(address) {
   savePortfolio();
 }
 
-function renamePortfolioEntry(address) {
+async function renamePortfolioEntry(address) {
   const entry = state.portfolio.find((p) => p.address === address);
   if (!entry) return;
-  const input = prompt(`Nuevo nombre para ${shortAddr(address)}:`, entry.label || "");
+  const input = await uiPrompt(
+    `Nuevo nombre para ${shortAddr(address)}:`,
+    entry.label || "",
+    { title: "Renombrar dirección", placeholder: "Etiqueta (opcional)", okLabel: "Guardar" }
+  );
   if (input === null) return;
   entry.label = input.trim();
   renderPortfolioList();
@@ -1073,14 +1201,18 @@ function renderWalletAddButtons() {
   renderWalletAddButton("sol");
 }
 
-function addWalletAddress(type) {
+async function addWalletAddress(type) {
   const address = state.wallet[type];
   if (!address) { setPfStatus(`No hay wallet ${type === "evm" ? "EVM" : "Solana"} conectada.`, "err"); return; }
   if (state.portfolio.some((p) => p.address.toLowerCase() === address.toLowerCase())) {
     setPfStatus("Esa wallet ya está en el portfolio.", "err"); return;
   }
   const defaultLabel = type === "evm" ? "Rabby" : "Phantom";
-  const input = prompt(`Nombre para esta dirección (${shortAddr(address)}):`, defaultLabel);
+  const input = await uiPrompt(
+    `Nombre para esta dirección (${shortAddr(address)}):`,
+    defaultLabel,
+    { title: "Añadir al portfolio", placeholder: "Etiqueta", okLabel: "Añadir" }
+  );
   if (input === null) return; // usuario canceló
   const label = input.trim() || defaultLabel;
   state.portfolio.push({ address, type, label });
