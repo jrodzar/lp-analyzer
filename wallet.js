@@ -174,30 +174,67 @@
   // ==========================================================================
   // WalletConnect (vía Reown AppKit) — lazy load
   // ==========================================================================
+  // Resolución defensiva de un export desde un módulo ESM. Reown publica las
+  // clases como named exports, pero esm.sh a veces las envuelve en .default
+  // dependiendo de versión / bundle. Probamos los dos caminos.
+  function pickExport(mod, name) {
+    return mod?.[name] || mod?.default?.[name] || (typeof mod?.default === "function" ? mod.default : null);
+  }
+
   let _appKitPromise = null;
   async function ensureAppKit() {
     if (_appKitPromise) return _appKitPromise;
     _appKitPromise = (async () => {
       // Cargamos Reown AppKit y adapters desde esm.sh (auto-bundle deps).
       // ~250 KB total minified. Solo se descarga si el usuario llega aquí.
+      const VER = "1.7.6"; // versión pinneada para estabilidad
       const [appkitMod, ethersAdapterMod, solanaAdapterMod, networksMod] = await Promise.all([
-        import("https://esm.sh/@reown/appkit@1?bundle"),
-        import("https://esm.sh/@reown/appkit-adapter-ethers@1?bundle"),
-        import("https://esm.sh/@reown/appkit-adapter-solana@1?bundle"),
-        import("https://esm.sh/@reown/appkit@1/networks?bundle"),
+        import(`https://esm.sh/@reown/appkit@${VER}?bundle`),
+        import(`https://esm.sh/@reown/appkit-adapter-ethers@${VER}?bundle`),
+        import(`https://esm.sh/@reown/appkit-adapter-solana@${VER}?bundle`).catch((e) => {
+          console.warn("[wallet] Solana adapter falló, sigo solo con EVM:", e);
+          return null;
+        }),
+        import(`https://esm.sh/@reown/appkit@${VER}/networks?bundle`),
       ]);
-      const { createAppKit } = appkitMod;
-      const { EthersAdapter } = ethersAdapterMod;
-      const { SolanaAdapter } = solanaAdapterMod;
+
+      const createAppKit = pickExport(appkitMod, "createAppKit");
+      const EthersAdapter = pickExport(ethersAdapterMod, "EthersAdapter");
+      const SolanaAdapter = solanaAdapterMod ? pickExport(solanaAdapterMod, "SolanaAdapter") : null;
+
+      // Debug: si algún constructor falta, lo logueamos antes de petar.
+      if (!createAppKit || !EthersAdapter) {
+        console.error("[wallet] Reown exports mal resueltos", {
+          createAppKit: typeof createAppKit,
+          EthersAdapter: typeof EthersAdapter,
+          SolanaAdapter: typeof SolanaAdapter,
+          appkitKeys: Object.keys(appkitMod || {}),
+          ethersKeys: Object.keys(ethersAdapterMod || {}),
+        });
+        throw new Error("Reown AppKit: no pude resolver createAppKit/EthersAdapter");
+      }
+
       const {
         mainnet, arbitrum, optimism, polygon, base, bsc,
         solana,
       } = networksMod;
 
+      // Construir adapters defensivamente
+      const adapters = [];
+      try { adapters.push(new EthersAdapter()); }
+      catch (e) { console.error("[wallet] EthersAdapter ctor falló:", e); }
+      if (SolanaAdapter) {
+        try { adapters.push(new SolanaAdapter()); }
+        catch (e) { console.warn("[wallet] SolanaAdapter ctor falló, sigo solo con EVM:", e); }
+      }
+
+      const networks = [mainnet, arbitrum, optimism, polygon, base, bsc];
+      if (SolanaAdapter && solana) networks.push(solana);
+
       const appKit = createAppKit({
-        adapters: [new EthersAdapter(), new SolanaAdapter()],
+        adapters,
         projectId: REOWN_PROJECT_ID,
-        networks: [mainnet, arbitrum, optimism, polygon, base, bsc, solana],
+        networks,
         defaultNetwork: mainnet,
         metadata: {
           name: "Booster Crypto LP Analyzer",
