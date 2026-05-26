@@ -19,7 +19,7 @@ rm -rf "$DIST"
 mkdir -p "$DIST/assets"
 
 # Archivos sueltos de la raíz que SÍ van al navegador
-cp index.html sw.js manifest.json favicon.svg common.js shell.js "$DIST/"
+cp index.html sw.js manifest.json favicon.svg common.js shell.js wallet.js "$DIST/"
 
 # Subcarpetas públicas
 cp -r assets/. "$DIST/assets/"

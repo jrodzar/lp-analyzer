@@ -2379,6 +2379,16 @@ document.addEventListener("DOMContentLoaded", init);
       if (typeof openSettings === "function") openSettings();
     } else if (d.type === "lp-connect-wallet") {
       if (typeof connectWallet === "function") Promise.resolve(connectWallet()).then(notifyWallet).catch(notifyWallet);
+    } else if (d.type === "lp-set-wallet" && typeof d.address === "string") {
+      // Address inyectada por el shell tras WalletConnect / deep link (wallet.js).
+      // El iframe no tiene acceso al provider — solo guarda la dirección para
+      // que el flujo de "Añadir al portfolio" funcione. Para firmar txs en pro
+      // hace falta el provider real (se gestiona allí, no aquí).
+      state.connectedAddress = d.address;
+      const input = document.getElementById("addr-input");
+      if (input) input.value = d.address;
+      if (typeof renderWalletButton === "function") renderWalletButton();
+      window.__notifyEvmWallet?.();
     } else if (d.type === "lp-disconnect-wallet") {
       if (typeof disconnectWallet === "function") { disconnectWallet(); notifyWallet(); }
     } else if (d.type === "lp-set-chains" && Array.isArray(d.chains)) {

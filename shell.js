@@ -942,19 +942,49 @@ function renamePortfolioEntry(address) {
   savePortfolio();
 }
 
-// Conecta una wallet del portfolio (Rabby EVM / Phantom SOL) — solo abre la
-// extensión para que el usuario apruebe. NO añade al portfolio: eso es un paso
-// aparte (botón "Añadir wallet conectada → <shortAddr>" en la barra de abajo).
-// Pasos:
-//   1. postMessage al iframe correspondiente con `lp-connect-wallet`.
-//   2. El iframe abre la extensión y, tras éxito, manda `lp-wallet` con la
-//      address detectada (handler en message listener actualiza state.wallet).
-//   3. renderWalletAddButton(type) refresca la UI de los botones para mostrar
-//      la dirección activa y habilitar el "+ Añadir".
+// Conecta una wallet del portfolio (Rabby EVM / Phantom SOL).
+//   - Si hay provider inyectado (extensión o in-app browser de wallet móvil):
+//     postMessage al iframe; el iframe abre la extensión, recibe la address y
+//     la propaga vía lp-wallet → state.wallet → renderWalletAddButton.
+//   - Si NO hay provider (típicamente Safari/Chrome móvil sin extensión, o
+//     desktop sin extensión instalada): delegamos en window.LPWallet.connectFallback
+//     (wallet.js), que abre un bottom sheet con deep links a apps móviles o un
+//     modal de WalletConnect con QR. Cuando responde con address, la inyectamos
+//     en el iframe vía lp-set-wallet para que el resto del flujo funcione igual.
+// NO añade al portfolio: eso es un paso aparte (botón "+ Añadir wallet
+// conectada → <shortAddr>" en la barra de abajo).
 function connectWalletOnly(type) {
   const frame = type === "evm" ? els.frameEvm : els.frameSol;
-  frame.contentWindow.postMessage({ type: "lp-connect-wallet" }, "*");
-  if (!state.wallet[type]) setPfStatus(`Abriendo ${type === "evm" ? "Rabby/MetaMask" : "Phantom"} para conectar…`);
+  const walletName = type === "evm" ? "Rabby/MetaMask" : "Phantom";
+
+  // Camino feliz — provider inyectado, flujo de toda la vida.
+  const fallback = window.LPWallet?.needsFallback?.(type);
+  if (!fallback) {
+    frame.contentWindow.postMessage({ type: "lp-connect-wallet" }, "*");
+    if (!state.wallet[type]) setPfStatus(`Abriendo ${walletName} para conectar…`);
+    return;
+  }
+
+  // Sin provider — usar wallet.js (deep links / WalletConnect).
+  setPfStatus(`Selecciona cómo conectar tu wallet ${type === "evm" ? "EVM" : "Solana"}…`);
+  window.LPWallet.connectFallback(type)
+    .then((res) => {
+      if (!res?.address) {
+        setPfStatus(""); // usuario cerró el modal
+        return;
+      }
+      // Inyectar la address en el iframe — el iframe la trata como si la
+      // hubiera conectado él mismo (state.connectedAddress + render + notify).
+      frame.contentWindow.postMessage(
+        { type: "lp-set-wallet", address: res.address, source: res.source },
+        "*"
+      );
+      setPfStatus(`Conectada vía ${res.source === "walletconnect" ? "WalletConnect" : "deep link"}: ${res.address.slice(0, 6)}…${res.address.slice(-4)}`);
+    })
+    .catch((e) => {
+      console.warn("[wallet] fallback connect failed:", e);
+      setPfStatus(`No se pudo conectar la wallet ${walletName}.`);
+    });
 }
 
 // Desvincula la wallet del iframe (no cierra la sesión en la propia extensión).
