@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "132";</script>
+  <script>window.APP_VERSION = "133";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -252,7 +252,10 @@
                 <span id="pf-count" class="hidden text-[11px] px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300 font-mono"></span>
               </button>
             </div>
-            <div class="flex items-center gap-2">
+            <!-- flex-wrap evita que la fila de botones sobresalga del card
+                 en móvil. justify-end mantiene la alineación a la derecha
+                 que tiene en desktop cuando solo hay una fila. -->
+            <div class="flex items-center gap-2 flex-wrap justify-end">
               <button id="manage-access" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Gestionar accesos (admin)">👥 Accesos</button>
               <button id="settings-open" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Configurar tus propias API keys (opcional)">⚙ Settings</button>
               <button id="change-pass" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Cambiar contraseña de cifrado">🔑 Contraseña</button>
