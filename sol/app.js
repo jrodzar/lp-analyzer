@@ -1282,6 +1282,31 @@ function renderPositions() {
 
 // rangeBarHTML vive en common.js (compartido con evm/app.js).
 
+// Devuelve { url, label } con el enlace a la web para gestionar la posición
+// (Orca/Raydium portfolio para LPs, Jupiter Lend para lending). Si no hay
+// web conocida → null. No hay deep-link por posición en Solana DEXs, así
+// que enlazamos a la página de portfolio del protocolo correspondiente.
+function managementLinkSol(p) {
+  if (p._lending) {
+    if (p.protocol === "jupiter-lend") return { url: "https://jup.ag/lend", label: "Jupiter Lend" };
+    return null;
+  }
+  if (p.protocol === "orca") return { url: "https://www.orca.so/portfolio", label: "Orca" };
+  if (p.protocol === "raydium") return { url: "https://raydium.io/portfolio/", label: "Raydium" };
+  return null;
+}
+
+function managementFooterHTML(link) {
+  if (!link) return "";
+  return `
+    <div class="flex justify-end pt-1">
+      <a href="${link.url}" target="_blank" rel="noopener noreferrer"
+         class="text-[11px] text-purple-300 hover:text-purple-200 inline-flex items-center gap-1">
+        Gestionar en ${link.label} ↗
+      </a>
+    </div>`;
+}
+
 // Card de lending (Jupiter Lend en Solana). Mismo layout que la de Revert Lend
 // del lado EVM para que la vista Portfolio sea consistente entre cadenas.
 function lendingCard(p) {
@@ -1334,7 +1359,8 @@ function lendingCard(p) {
               : "Coste base e interés reconstruidos del histórico de transacciones (Helius). Precio share del feed de Jupiter (Helius).")
           : "Histórico de depósitos no disponible (sin Helius). Valor actual = shares × precio Jupiter."}</div>
       </div>
-    </details>`;
+    </details>
+    ${managementFooterHTML(managementLinkSol(p))}`;
   return el;
 }
 
@@ -1423,6 +1449,7 @@ function positionCard(p) {
           : "Birdeye"} (estimación; fees vs retiros por heurística).</div>` : ""}
       </div>
     </details>
+    ${managementFooterHTML(managementLinkSol(p))}
   `;
   return el;
 }

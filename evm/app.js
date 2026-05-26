@@ -1727,6 +1727,31 @@ function renderPositions() {
   for (const p of list) container.appendChild(positionCard(p));
 }
 
+// Devuelve { url, label } con el enlace a la web para gestionar la posición
+// (Revert para Uniswap V3 en mainnet/arbitrum/op/poly/base/bnb, Hyperswap web
+// para HyperEVM, Revert Lend para lending). Si no hay web conocida → null.
+function managementLinkEVM(p) {
+  if (p._lending) {
+    return { url: "https://revert.finance/#/lending", label: "Revert Lend" };
+  }
+  if (p.chainKey === "hyperevm") {
+    return { url: `https://app.hyperswap.exchange/#/pool/${p.nftId}`, label: "Hyperswap" };
+  }
+  return { url: `https://revert.finance/#/uniswap-position/${p.chainKey}/${p.nftId}`, label: "Revert" };
+}
+
+// HTML del footer "Gestionar en <plataforma> ↗" para insertar al final de cada card.
+function managementFooterHTML(link) {
+  if (!link) return "";
+  return `
+    <div class="flex justify-end pt-1">
+      <a href="${link.url}" target="_blank" rel="noopener noreferrer"
+         class="text-[11px] text-fuchsia-300 hover:text-fuchsia-200 inline-flex items-center gap-1">
+        Gestionar en ${link.label} ↗
+      </a>
+    </div>`;
+}
+
 function lendingCard(p) {
   const chain = state.chains[p.chainKey] || { name: p.chainName, explorer: "" };
   const el = document.createElement("article");
@@ -1763,7 +1788,8 @@ function lendingCard(p) {
         <div>Vault: <a href="${chain.explorer}/address/${p.vault}" target="_blank" class="font-mono text-slate-300 hover:text-fuchsia-300">${shortAddr(p.vault)}</a></div>
         <div>Activo: ${p.asset}</div>
       </div>
-    </details>`;
+    </details>
+    ${managementFooterHTML(managementLinkEVM(p))}`;
   return el;
 }
 
@@ -1849,6 +1875,7 @@ function positionCard(p) {
         <div>Fees raw: ${fmtToken(Number(p.raw.collectedFeesToken0), p.token0.symbol)} + ${fmtToken(Number(p.raw.collectedFeesToken1), p.token1.symbol)}</div>
       </div>
     </details>
+    ${managementFooterHTML(managementLinkEVM(p))}
   `;
   return el;
 }
