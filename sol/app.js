@@ -1284,10 +1284,14 @@ function renderPositions() {
 
 // Devuelve { url, label } con el enlace a la web para gestionar la posición.
 // - Orca: deep-link `/pools/<whirlpool>` (patrón usado por DexScreener/Birdeye).
-// - Raydium: `/liquidity-pools/?search=<pool>` — confirmado leyendo el frontend
-//   V3 (raydium-ui-v3-public, src/features/Pools/Pools.tsx) que acepta el
-//   parámetro `search` con un PublicKey y filtra por pool ID. La página
-//   resultante muestra el pool y permite +/- liquidity directamente.
+// - Raydium: `/liquidity-pools/?token=<pool>` — el parámetro `search` que
+//   aparece en el tipo PoolPageQuery del frontend V3 NO se lee de la URL
+//   (solo es referencia interna). El que SÍ se lee via useEffectWithUrl es
+//   `token`: intenta resolverlo contra tokenMap; si no es un mint conocido
+//   pero ES un PublicKey válido (caso de un pool ID), cae al fallback
+//   `searchMints` → setSearchText(<addr>) → useFetchPoolById carga el pool.
+//   Verificado en raydium-ui-v3-public/src/features/Pools/Pools.tsx líneas
+//   168-187 (useEffectWithUrl 'token') y 282-285 (useFetchPoolById).
 // - Jupiter Lend → página general (no expone deep-link por vault).
 function managementLinkSol(p) {
   if (p._lending) {
@@ -1301,7 +1305,7 @@ function managementLinkSol(p) {
   }
   if (p.protocol === "raydium") {
     return p.whirlpool
-      ? { url: `https://raydium.io/liquidity-pools/?search=${p.whirlpool}`, label: "Raydium" }
+      ? { url: `https://raydium.io/liquidity-pools/?token=${p.whirlpool}`, label: "Raydium" }
       : { url: "https://raydium.io/portfolio/", label: "Raydium" };
   }
   return null;
