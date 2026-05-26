@@ -62,10 +62,6 @@
     const u = encodeURIComponent(currentUrl());
     return `https://phantom.app/ul/browse/${u}?ref=${u}`;
   }
-  function dlRabby() {
-    // Rabby Mobile soporta dApps embebidas vía rabby.io/dapp/<url>
-    return `https://rabby.io/dapp/${encodeURIComponent(currentUrl())}`;
-  }
   function dlMetaMask() {
     const u = new URL(currentUrl());
     return `https://metamask.app.link/dapp/${u.host}${u.pathname}${u.search}`;
@@ -73,12 +69,24 @@
   function dlTrustWallet() {
     return `https://link.trustwallet.com/open_url?coin_id=60&url=${encodeURIComponent(currentUrl())}`;
   }
+  function dlRainbow() {
+    return `https://rnbwapp.com/open?url=${encodeURIComponent(currentUrl())}`;
+  }
+  function dlCoinbaseWallet() {
+    return `https://go.cb-w.com/dapp?cb_url=${encodeURIComponent(currentUrl())}`;
+  }
 
+  // NOTA importante sobre Rabby Mobile: NO tiene Universal Link tipo
+  // "abre tu navegador interno con esta URL" como sí tienen MetaMask y
+  // Phantom. Rabby Mobile conecta a dApps exclusivamente vía WalletConnect.
+  // Por eso NO aparece en la lista de deep links — el usuario con Rabby
+  // Mobile debe usar el botón "WalletConnect" del fondo del bottom sheet.
   function evmWalletOptions() {
     return [
-      { id: "rabby", name: "Rabby", icon: "assets/wallets/rabby.png", url: dlRabby() },
-      { id: "mm",    name: "MetaMask", icon: "🦊", url: dlMetaMask() },
-      { id: "trust", name: "Trust Wallet", icon: "🛡️", url: dlTrustWallet() },
+      { id: "mm",       name: "MetaMask",        icon: "🦊", url: dlMetaMask() },
+      { id: "trust",    name: "Trust Wallet",    icon: "🛡️", url: dlTrustWallet() },
+      { id: "rainbow",  name: "Rainbow",         icon: "🌈", url: dlRainbow() },
+      { id: "coinbase", name: "Coinbase Wallet", icon: "🔵", url: dlCoinbaseWallet() },
     ];
   }
   function solWalletOptions() {
@@ -111,6 +119,11 @@
       const opts = chain === "evm" ? evmWalletOptions() : solWalletOptions();
       const chainLabel = chain === "evm" ? "EVM" : "Solana";
 
+      // Solo EVM tiene "nota Rabby" — para SOL Phantom sí tiene deep link.
+      const rabbyHint = chain === "evm"
+        ? `<p class="text-[11px] text-amber-300/80 bg-amber-900/20 border border-amber-700/30 rounded-lg px-3 py-2"><strong>¿Rabby Mobile?</strong> Usa <strong>WalletConnect</strong> abajo — Rabby Mobile no abre dApps directamente, solo via WalletConnect.</p>`
+        : "";
+
       const overlay = document.createElement("div");
       overlay.className =
         "fixed inset-0 z-[100] bg-black/60 flex items-end sm:items-center justify-center";
@@ -122,13 +135,14 @@
           </div>
           <p class="text-xs text-slate-400">Pulsa una wallet para abrir su app:</p>
           <div class="space-y-2">${opts.map(buildOptionHTML).join("")}</div>
+          ${rabbyHint}
           <div class="border-t border-slate-700 pt-3">
             <button data-action="wc"
                     class="lpw-opt w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-left">
               <span class="w-8 h-8 flex items-center justify-center text-2xl">🔗</span>
               <div class="flex-1">
                 <div class="font-medium text-slate-100">WalletConnect</div>
-                <div class="text-[11px] text-slate-400">Quédate en este navegador (escanea / link)</div>
+                <div class="text-[11px] text-slate-400">Quédate en este navegador (escanea / link) — Rabby, Frame, Ledger…</div>
               </div>
               <span class="text-slate-500">→</span>
             </button>
