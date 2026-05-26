@@ -953,8 +953,33 @@ function renamePortfolioEntry(address) {
 //      la dirección activa y habilitar el "+ Añadir".
 function connectWalletOnly(type) {
   const frame = type === "evm" ? els.frameEvm : els.frameSol;
+  const walletName = type === "evm" ? "Rabby/MetaMask" : "Phantom";
+
+  // Detectar provider en el shell antes de delegar al iframe — sin esto el
+  // status "Abriendo Rabby/MetaMask para conectar…" se queda colgado para
+  // siempre si no hay extensión instalada (el iframe muestra error pero el
+  // shell no se entera). Los providers se inyectan en TODOS los frames así
+  // que window.ethereum/solana son los mismos que ve el iframe.
+  const hasProvider = type === "evm"
+    ? typeof window.ethereum !== "undefined"
+    : typeof window.solana !== "undefined" && window.solana.isPhantom;
+  if (!hasProvider) {
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || "");
+    if (isMobile) {
+      setPfStatus(
+        `No detecté la extensión ${walletName}. En móvil las extensiones de navegador no existen — abre la app de tu wallet y navega a esta web desde su navegador interno.`,
+        "err"
+      );
+    } else if (type === "evm") {
+      setPfStatus(`No detecté Rabby/MetaMask. Instala una (rabby.io / metamask.io) y recarga la página.`, "err");
+    } else {
+      setPfStatus(`No detecté Phantom. Instálala (phantom.app) y recarga la página.`, "err");
+    }
+    return;
+  }
+
   frame.contentWindow.postMessage({ type: "lp-connect-wallet" }, "*");
-  if (!state.wallet[type]) setPfStatus(`Abriendo ${type === "evm" ? "Rabby/MetaMask" : "Phantom"} para conectar…`);
+  if (!state.wallet[type]) setPfStatus(`Abriendo ${walletName} para conectar…`);
 }
 
 // Desvincula la wallet del iframe (no cierra la sesión en la propia extensión).
