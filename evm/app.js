@@ -2440,9 +2440,21 @@ document.addEventListener("DOMContentLoaded", init);
                 try {
                   const data = await gql(p.chainKey, SNAPSHOTS_QUERY, { positionId: p.id });
                   return { position: p, snapshots: data.positionSnapshots || [] };
-                } catch { return { position: p, snapshots: [] }; }
+                } catch (e) {
+                  // Surface in console — antes era catch silencioso → la card
+                  // mostraba "actual" sin pista del error de fondo.
+                  console.warn(`[snapshots] failed for ${p.chainKey} #${p.nftId}:`, e?.message || e);
+                  return { position: p, snapshots: [] };
+                }
               }));
+              const withSnaps = bundles.filter((b) => b.snapshots.length).length;
+              console.log(`[timeline] ${withSnaps}/${bundles.length} posiciones con snapshots`);
               timeline = await buildPortfolioTimeline(bundles);
+              // Diagnóstico final: cuántas terminaron con histBasis seteado
+              const hist = bundles.filter((b) => b.position.histBasis === true).length;
+              const mix  = bundles.filter((b) => b.position.histBasis === false).length;
+              const none = bundles.filter((b) => b.position.histBasis === undefined).length;
+              console.log(`[timeline] histBasis: ${hist} histórico puro · ${mix} parcial · ${none} sin datos`);
             }
           } catch (e) { console.warn("timeline build failed:", e); }
           // añadir series propias de HyperEVM (RPC) y lending (reconstruidas de eventos)
