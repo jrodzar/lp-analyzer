@@ -220,6 +220,39 @@ if (typeof document !== "undefined") {
   else document.addEventListener("DOMContentLoaded", () => setupTipTaps(document));
 }
 
+// ============================================================================
+// Event delegation: switching de tabs en los accordions de "logs" de las cards.
+// ============================================================================
+// Los botones tienen `data-tab-btn="<id>"` y `data-uid="<unique>"`. Los paneles
+// asociados llevan `data-tab-panel="<id>"` con el mismo `data-uid`. Hacemos
+// delegación a nivel de document para que sobreviva el round-trip postMessage
+// que sufren las cards en Portfolio mode (cardHTML → template.innerHTML pierde
+// onclick inline). Idempotente: si common.js se vuelve a evaluar, no se
+// duplican listeners porque comprobamos un flag global.
+if (typeof window !== "undefined" && !window.__lpTabDelegationInstalled) {
+  window.__lpTabDelegationInstalled = true;
+  document.addEventListener("click", function (e) {
+    const btn = e.target && e.target.closest ? e.target.closest("[data-tab-btn]") : null;
+    if (!btn) return;
+    const uid = btn.dataset.uid;
+    const tab = btn.dataset.tabBtn;
+    if (!uid || !tab) return;
+    // Update active state on all sibling buttons sharing this uid
+    document.querySelectorAll(`[data-tab-btn][data-uid="${uid}"]`).forEach((b) => {
+      const isActive = b.dataset.tabBtn === tab;
+      b.classList.toggle("border-emerald-400", isActive);
+      b.classList.toggle("text-emerald-300", isActive);
+      b.classList.toggle("font-semibold", isActive);
+      b.classList.toggle("border-transparent", !isActive);
+      b.classList.toggle("text-slate-400", !isActive);
+    });
+    // Show/hide panels
+    document.querySelectorAll(`[data-tab-panel][data-uid="${uid}"]`).forEach((p) => {
+      p.classList.toggle("hidden", p.dataset.tabPanel !== tab);
+    });
+  });
+}
+
 // Plugin Chart.js: imprime el valor (compacto) encima de cada barra.
 var barValueLabels = {
   id: "barValueLabels",

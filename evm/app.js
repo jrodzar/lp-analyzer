@@ -233,6 +233,7 @@ const SNAPSHOTS_QUERY = `
       withdrawnToken1
       collectedFeesToken0
       collectedFeesToken1
+      transaction { id }
     }
   }
 `;
@@ -1901,6 +1902,134 @@ function lendingCard(p) {
 // price(tick) = 1.0001^tick * 10^(dec0-dec1)  (token1 por token0)
 // rangeBarHTML vive en common.js (compartido con sol/app.js).
 
+// ============================================================================
+// Log de eventos por posición (Deposit / Withdraw / Fee Collect / Compound)
+// ============================================================================
+// Convierte la lista de PositionSnapshots (cumulative) del subgraph en una
+// lista de eventos discretos (delta entre snapshots consecutivos).
+// Cada snapshot del subgraph se crea por una interacción (Mint/Burn/Collect),
+// así que comparar contra el anterior nos da el "movimiento" de esa tx.
+//
+// Heurística de clasificación:
+//   - Si subieron tanto `depositedToken*` como `collectedFeesToken*` en la
+//     misma tx → es un Fee Compound (cobro + redepósito en una sola tx).
+//   - Si subió solo `depositedToken*` → Deposit (capital aportado).
+//   - Si subió solo `withdrawnToken*` → Withdraw (capital retirado).
+//   - Si subió solo `collectedFeesToken*` → Fee Collect (cobro a wallet).
+function classifyEvents(snapshots) {
+  if (!snapshots || !snapshots.length) return [];
+  const events = [];
+  let pD0 = 0, pD1 = 0, pW0 = 0, pW1 = 0, pC0 = 0, pC1 = 0;
+  for (const s of snapshots) {
+    const d0 = Number(s.depositedToken0), d1 = Number(s.depositedToken1);
+    const w0 = Number(s.withdrawnToken0 || 0), w1 = Number(s.withdrawnToken1 || 0);
+    const c0 = Number(s.collectedFeesToken0), c1 = Number(s.collectedFeesToken1);
+    const dDep0 = d0 - pD0, dDep1 = d1 - pD1;
+    const dWdr0 = w0 - pW0, dWdr1 = w1 - pW1;
+    const dCol0 = c0 - pC0, dCol1 = c1 - pC1;
+    const isDep = dDep0 > 0 || dDep1 > 0;
+    const isWdr = dWdr0 > 0 || dWdr1 > 0;
+    const isCol = dCol0 > 0 || dCol1 > 0;
+    const txHash = s.transaction?.id || "";
+    const ts = Number(s.timestamp);
+    if (isDep && isCol) {
+      // Compound = cobro + redepósito en la misma tx. El "amount" del
+      // evento es lo cobrado/redepositado (= los fees, no el total deposit).
+      events.push({ ts, type: "compound", amount0: dCol0, amount1: dCol1, txHash });
+    } else if (isDep) {
+      events.push({ ts, type: "deposit", amount0: dDep0, amount1: dDep1, txHash });
+    } else if (isWdr) {
+      events.push({ ts, type: "withdraw", amount0: dWdr0, amount1: dWdr1, txHash });
+    } else if (isCol) {
+      events.push({ ts, type: "collect", amount0: dCol0, amount1: dCol1, txHash });
+    }
+    pD0 = d0; pD1 = d1; pW0 = w0; pW1 = w1; pC0 = c0; pC1 = c1;
+  }
+  return events;
+}
+
+// Devuelve HTML para el accordion de logs. Vacío si no hay snapshots
+// (típico en HyperEVM RPC-only o cuando snapshots aún no se fetched).
+function eventLogHTML(p) {
+  const events = classifyEvents(p._snapshots || []);
+  if (!events.length) return "";
+
+  // Cash flows = movimientos de capital (deposit/withdraw, no fees)
+  // Compoundings = eventos relacionados con fees (compound auto + collect manual)
+  const cashFlows = events.filter((e) => e.type === "deposit" || e.type === "withdraw");
+  const compounds = events.filter((e) => e.type === "compound" || e.type === "collect");
+
+  const chain = state.chains[p.chainKey] || {};
+  const explorer = chain.explorer || "";
+  const uid = `log-${p.chainKey}-${p.nftId}`;
+
+  const typeLabel = {
+    deposit:  `<span class="text-emerald-300 font-semibold">Deposit</span>`,
+    withdraw: `<span class="text-rose-300 font-semibold">Withdraw</span>`,
+    compound: `<span class="text-fuchsia-300 font-semibold">Fee Compound</span>`,
+    collect:  `<span class="text-cyan-300 font-semibold">Fee Collect</span>`,
+  };
+
+  const fmtDate = (ts) => {
+    const d = new Date(ts * 1000);
+    return d.toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" })
+      + ", " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  };
+  const fmtAmt = (n) => {
+    if (!n || !isFinite(n)) return "—";
+    if (n >= 1) return n.toFixed(4);
+    if (n >= 0.0001) return n.toFixed(6);
+    return n.toExponential(2);
+  };
+  const fmtTx = (h) => h
+    ? `<a href="${explorer}/tx/${h}" target="_blank" class="font-mono text-fuchsia-300 hover:underline">${h.slice(0, 6)}…${h.slice(-4)}</a>`
+    : `<span class="text-slate-600">—</span>`;
+
+  const tableFor = (evts, emptyMsg) => {
+    if (!evts.length) return `<div class="text-xs text-slate-500 italic py-3 text-center">${emptyMsg}</div>`;
+    return `
+      <div class="overflow-x-auto -mx-1 mt-1">
+        <table class="text-[11px] w-full min-w-[420px]">
+          <thead>
+            <tr class="text-slate-500 text-left">
+              <th class="px-2 py-1 font-medium whitespace-nowrap">Fecha</th>
+              <th class="px-2 py-1 font-medium">Tipo</th>
+              <th class="px-2 py-1 font-medium text-right">${p.token0.symbol}</th>
+              <th class="px-2 py-1 font-medium text-right">${p.token1.symbol}</th>
+              <th class="px-2 py-1 font-medium text-right">Tx</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${evts.slice().reverse().map((e) => `
+              <tr class="border-t border-slate-800">
+                <td class="px-2 py-1 text-slate-400 whitespace-nowrap">${fmtDate(e.ts)}</td>
+                <td class="px-2 py-1 whitespace-nowrap">${typeLabel[e.type] || e.type}</td>
+                <td class="px-2 py-1 font-mono text-slate-300 text-right">${fmtAmt(e.amount0)}</td>
+                <td class="px-2 py-1 font-mono text-slate-300 text-right">${fmtAmt(e.amount1)}</td>
+                <td class="px-2 py-1 text-right">${fmtTx(e.txHash)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  };
+
+  return `
+    <details class="text-xs">
+      <summary class="text-slate-400 hover:text-slate-200">📜 logs (${events.length})</summary>
+      <div class="mt-2">
+        <div class="flex gap-1 border-b border-slate-800 mb-1 text-[11px]">
+          <button data-tab-btn="cashflows" data-uid="${uid}" class="px-3 py-1.5 border-b-2 border-emerald-400 text-emerald-300 font-semibold">Cash flows (${cashFlows.length})</button>
+          <button data-tab-btn="compounds" data-uid="${uid}" class="px-3 py-1.5 border-b-2 border-transparent text-slate-400 hover:text-slate-200">Compoundings (${compounds.length})</button>
+        </div>
+        <div data-tab-panel="cashflows" data-uid="${uid}">${tableFor(cashFlows, "Sin depósitos ni retiros registrados.")}</div>
+        <div data-tab-panel="compounds" data-uid="${uid}" class="hidden">${tableFor(compounds, "Sin compounds ni cobros de fees registrados.")}</div>
+      </div>
+    </details>
+  `;
+}
+
 function positionCard(p) {
   if (p._lending) return lendingCard(p);
   const chain = state.chains[p.chainKey];
@@ -1987,6 +2116,7 @@ function positionCard(p) {
         <div>Fees raw: ${fmtToken(Number(p.raw.collectedFeesToken0), p.token0.symbol)} + ${fmtToken(Number(p.raw.collectedFeesToken1), p.token1.symbol)}</div>
       </div>
     </details>
+    ${eventLogHTML(p)}
     ${managementFooterHTML(managementLinkEVM(p))}
   `;
   return el;
@@ -2540,7 +2670,11 @@ document.addEventListener("DOMContentLoaded", init);
               const bundles = await Promise.all(toFetch.map(async (p) => {
                 try {
                   const data = await gql(p.chainKey, SNAPSHOTS_QUERY, { positionId: p.id });
-                  return { position: p, snapshots: data.positionSnapshots || [] };
+                  const snaps = data.positionSnapshots || [];
+                  // Stash en la posición para que positionCard pueda renderizar
+                  // el accordion de logs sin tener que volver a consultar.
+                  p._snapshots = snaps;
+                  return { position: p, snapshots: snaps };
                 } catch (e) {
                   // Surface in console — antes era catch silencioso → la card
                   // mostraba "actual" sin pista del error de fondo.
