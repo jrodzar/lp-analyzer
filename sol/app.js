@@ -1358,16 +1358,20 @@ function lendingCard(p) {
       <div class="mt-2 space-y-1 text-slate-400">
         <div>Vault token: <a href="https://solscan.io/token/${p.mint}" target="_blank" class="font-mono text-slate-300 hover:text-fuchsia-300">${shortAddr(p.mint)}</a></div>
         <div>Activo subyacente: ${p.asset}</div>
-        ${p._priceFromTx
-          ? `<div class="text-amber-300">Precio share corregido: <span class="font-semibold">${fmtUSD(p.sharePrice)}</span> <span class="text-slate-500">(derivado on-chain de tu última operación; Jupiter daba ${fmtUSD(p._heliusSharePrice)})</span></div>`
-          : (p.sharePrice != null ? `<div>Precio share: ${fmtUSD(p.sharePrice)}</div>` : "")}
+        ${p._priceFromOnchain
+          ? `<div class="text-emerald-300">Precio share on-chain: <span class="font-semibold">${fmtUSD(p.sharePrice)}</span>${p._heliusSharePrice != null ? ` <span class="text-slate-500">(Jupiter feed daba ${fmtUSD(p._heliusSharePrice)})</span>` : ""}</div>`
+          : p._priceFromTx
+            ? `<div class="text-amber-300">Precio share corregido: <span class="font-semibold">${fmtUSD(p.sharePrice)}</span> <span class="text-slate-500">(derivado on-chain de tu última operación; Jupiter daba ${fmtUSD(p._heliusSharePrice)})</span></div>`
+            : (p.sharePrice != null ? `<div>Precio share: ${fmtUSD(p.sharePrice)}</div>` : "")}
         ${p.ageDays ? `<div>Abierto hace ~${Math.round(p.ageDays)}d (primer depósito: ${new Date((p.openedAt || 0) * 1000).toLocaleDateString("es-ES")})</div>` : ""}
         ${p.withdrawnUSD ? `<div>Total retirado: ${fmtUSD(p.withdrawnUSD)}</div>` : ""}
-        <div class="text-[10px] text-slate-500 mt-1">${p.pnlBasis === "tx-scan"
-          ? (p._priceFromTx
-              ? "Coste base, interés y precio share reconstruidos del histórico de transacciones del owner (verdad on-chain — el price feed de Jupiter/Helius no cuadraba con el último depósito real)."
-              : "Coste base e interés reconstruidos del histórico de transacciones (Helius). Precio share del feed de Jupiter (Helius).")
-          : "Histórico de depósitos no disponible (sin Helius). Valor actual = shares × precio Jupiter."}</div>
+        <div class="text-[10px] text-slate-500 mt-1">${p._priceFromOnchain
+          ? "Valor actual leído directamente del vault on-chain de Jupiter Lend (campo token_exchange_price del Lending account). Coste base reconstruido del histórico de transacciones del owner."
+          : p.pnlBasis === "tx-scan"
+            ? (p._priceFromTx
+                ? "Coste base, interés y precio share reconstruidos del histórico de transacciones del owner (verdad on-chain — el price feed de Jupiter/Helius no cuadraba con el último depósito real)."
+                : "Coste base e interés reconstruidos del histórico de transacciones (Helius). Precio share del feed de Jupiter (Helius).")
+            : "Histórico de depósitos no disponible (sin Helius). Valor actual = shares × precio Jupiter."}</div>
       </div>
     </details>
     ${managementFooterHTML(managementLinkSol(p))}`;
@@ -1558,6 +1562,12 @@ async function analyze() {
       // Reconstruir coste base / interés / APR escaneando las txs del owner
       // (silencioso: si falla, la card sigue funcionando con depo/gains "—").
       try { await enrichJupiterLendCost(addr); } catch (e) { console.warn("enrichJupiterLendCost:", e); }
+      // Leer el ratio share→underlying directo del vault on-chain — la verdad
+      // exacta en este instante, sin lag del feed de Helius/Jupiter. Re-calcula
+      // currentValueUSD + gainsUSD + apr con el sharePrice on-chain. Se ejecuta
+      // DESPUÉS de enrichJupiterLendCost porque depende de depositedUSD para
+      // recomputar las ganancias.
+      try { await enrichJupiterLendFromVault(); } catch (e) { console.warn("enrichJupiterLendFromVault:", e); }
     }
 
     // PnL real + IL vs HODL con precios históricos (Birdeye, vía key propia o proxy)
@@ -2106,6 +2116,134 @@ async function enrichJupiterLendCost(owner) {
     p.apr = apr;
     p._aprTooEarly = (netInvested > 0 && ageDays < 1); // para la card
     p.pnlBasis = "tx-scan";
+  }
+}
+
+// ============================================================================
+// Jupiter Lend — leer el ratio share→underlying directo del vault on-chain.
+// ============================================================================
+// Por qué: el `price_info.price_per_token` que devuelve Helius/Jupiter para
+// jlUSDC/jlSOL/etc se actualiza con retraso (horas a días). Para posiciones
+// recién abiertas, eso muestra "0 ganancias" o incluso pérdidas falsas porque
+// el feed reporta un sharePrice por debajo del que el usuario mismo pagó.
+// La verdad on-chain vive en la cuenta `Lending` del programa Jupiter Lend
+// (jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9), que contiene un campo
+// `token_exchange_price` (u64, escalado 1e12) que es la ratio exacta:
+//
+//   underlying_amount = shares * token_exchange_price / 1e12
+//
+// El layout viene del IDL público del SDK @jup-ag/lend-read:
+//   discriminator: [135, 199, 82, 16, 249, 131, 182, 241]
+//   offsets tras discriminator:
+//     0..32   mint (underlying — USDC para jlUSDC)
+//     32..64  f_token_mint (= jlUSDC mint)
+//     64..66  lending_id (u16)
+//     66..67  decimals (u8) — del fToken (= del underlying)
+//     67..99  rewards_rate_model (pubkey)
+//     99..107 liquidity_exchange_price (u64) — sin rewards
+//     107..115 token_exchange_price (u64) — CON rewards, este es el que usamos
+//     ...
+//
+// Cómo encontramos la Lending account dado un jl* mint sin escanear: el
+// mintAuthority del fToken mint apunta a la Lending account (porque el
+// programa Lending mintea/quema fTokens). Lo leemos del campo de
+// SPL Token Mint (offset 0..4 flag, 4..36 pubkey).
+async function enrichJupiterLendFromVault() {
+  const jl = (state.positions || []).filter((p) => p._lending && p.protocol === "jupiter-lend");
+  if (!jl.length) return;
+
+  // Paso 1: leer los mints jl* en batch para extraer su mintAuthority
+  const mints = jl.map((p) => p.mint);
+  const mintRes = await rpc("getMultipleAccounts", [mints, { encoding: "base64" }]);
+  const mintAuths = []; // index → string | null
+  for (let i = 0; i < jl.length; i++) {
+    const acc = mintRes?.value?.[i];
+    if (!acc || !acc.data) { mintAuths.push(null); continue; }
+    const data = Uint8Array.from(atob(acc.data[0]), (c) => c.charCodeAt(0));
+    if (data.length < 36) { mintAuths.push(null); continue; }
+    // SPL Mint: COption<Pubkey> = 4 bytes flag (0=None, 1=Some) + 32 bytes key
+    const flag = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, true);
+    if (flag === 0) { mintAuths.push(null); continue; }
+    mintAuths.push(base58Encode(data.slice(4, 36)));
+  }
+
+  // Paso 2: leer todas las Lending accounts (deduplicadas) en batch
+  const uniqueAuths = [...new Set(mintAuths.filter(Boolean))];
+  if (!uniqueAuths.length) return;
+
+  const LENDING_DISC = new Uint8Array([135, 199, 82, 16, 249, 131, 182, 241]);
+  const lendingRes = await rpc("getMultipleAccounts", [uniqueAuths, { encoding: "base64" }]);
+  const lendingMap = new Map(); // addr → { underlyingMint, decimals, tokenExchangePrice }
+  for (let i = 0; i < uniqueAuths.length; i++) {
+    const acc = lendingRes?.value?.[i];
+    if (!acc || !acc.data) continue;
+    const data = Uint8Array.from(atob(acc.data[0]), (c) => c.charCodeAt(0));
+    if (data.length < 8 + 115) continue;
+    if (!bytesEqual(data.subarray(0, 8), LENDING_DISC)) continue;
+
+    const r = new BorshReader(data);
+    r.skip(8); // discriminator
+    const underlyingMint = r.pubkey().toBase58();
+    r.skip(32); // f_token_mint
+    r.skip(2);  // lending_id
+    const decimals = r.u8(); // decimals del fToken (= underlying)
+    r.skip(32); // rewards_rate_model
+    r.skip(8);  // liquidity_exchange_price
+    const tokenExchangePrice = r.u64(); // u64 LE, escalado 1e12
+
+    lendingMap.set(uniqueAuths[i], { underlyingMint, decimals, tokenExchangePrice });
+  }
+
+  // Paso 3: aplicar el sharePrice on-chain a cada posición jl
+  for (let i = 0; i < jl.length; i++) {
+    const p = jl[i];
+    const lendingAddr = mintAuths[i];
+    if (!lendingAddr) continue;
+    const lending = lendingMap.get(lendingAddr);
+    if (!lending) continue;
+
+    // ratio = tokenExchangePrice / 1e12 → underlying_human / shares_human
+    // (las decimales del fToken == decimales del underlying según el IDL, así
+    // que la ratio en raw también funciona en human-readable sin re-scaling)
+    const sharesHuman = p.shares || 0;
+    if (sharesHuman <= 0) continue;
+    const ratio = Number(lending.tokenExchangePrice) / 1e12;
+    const assetsHuman = sharesHuman * ratio;
+
+    // USD value: necesitamos el precio del underlying.
+    // USDC/USDT/... = $1 (stables); resto usa state.prices o falla silenciosa.
+    let underlyingPrice = state.prices[lending.underlyingMint];
+    if (underlyingPrice == null && SOL_STABLES.has(lending.underlyingMint)) underlyingPrice = 1;
+    if (underlyingPrice == null || underlyingPrice <= 0) continue;
+
+    const currentValueUSD = assetsHuman * underlyingPrice;
+    if (!isFinite(currentValueUSD) || currentValueUSD <= 0) continue;
+
+    // Guardamos lo que reportaba Helius/Jupiter para mostrarlo en detalles
+    // (solo si no lo hizo ya enrichJupiterLendCost via _priceFromTx).
+    if (!p._priceFromTx && p._heliusSharePrice == null) {
+      p._heliusSharePrice = p.sharePrice;
+      p._heliusValueUSD = p.currentValueUSD;
+    }
+    p.sharePrice = currentValueUSD / sharesHuman;
+    p.currentValueUSD = currentValueUSD;
+    p._priceFromOnchain = true;
+    delete p._priceFromTx; // el on-chain sustituye al derivado-de-tx
+
+    // Re-calcular gainsUSD/apr ahora que tenemos el valor real on-chain
+    if (p.depositedUSD != null) {
+      const withdrawn = p.withdrawnUSD || 0;
+      p.gainsUSD = currentValueUSD + withdrawn - p.depositedUSD;
+      p.feesUSD = p.gainsUSD;
+      p.feesCollectedUSD = p.gainsUSD;
+      p.pnlUSD = p.gainsUSD;
+      const ageDays = p.ageDays || 0;
+      const netInvested = Math.max(p.depositedUSD - withdrawn, 0);
+      p.apr = (netInvested > 0 && ageDays >= 1)
+        ? (p.gainsUSD / netInvested) * (365 / ageDays) * 100
+        : null;
+      p._aprTooEarly = (netInvested > 0 && ageDays < 1);
+    }
   }
 }
 
