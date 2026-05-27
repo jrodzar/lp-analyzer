@@ -1399,7 +1399,14 @@ async function buildPortfolioTimeline(bundles) {
     const sorted = [...snaps].sort((a, c) => Number(a.timestamp) - Number(c.timestamp));
     const dates = [...new Set(sorted.map((s) => Math.floor(Number(s.timestamp) / 86400) * 86400))];
     let prices = {};
-    try { prices = await fetchTokenDayPrices(p.chainKey, [p.token0.id, p.token1.id], dates); } catch (e) { console.warn("tokenDayDatas", p.chainKey, e); }
+    let tokenDayDatasFailed = false;
+    try { prices = await fetchTokenDayPrices(p.chainKey, [p.token0.id, p.token1.id], dates); }
+    catch (e) { tokenDayDatasFailed = true; console.warn(`[tokenDayDatas] ${p.chainKey} #${p.nftId} fallo:`, e?.message || e); }
+    const priceKeyCount = Object.keys(prices).length;
+    const expectedKeys = dates.length * 2; // 2 tokens × N días
+    if (!tokenDayDatasFailed && priceKeyCount < expectedKeys) {
+      console.log(`[priceAt] ${p.chainKey} #${p.nftId}: ${priceKeyCount}/${expectedKeys} precios diarios encontrados (faltan ${expectedKeys - priceKeyCount})`);
+    }
     const t0 = (p.token0.id || "").toLowerCase(), t1 = (p.token1.id || "").toLowerCase();
     const priceAt = (tok, ts) => { const v = prices[`${tok}:${Math.floor(Number(ts) / 86400) * 86400}`]; return (v != null && isFinite(v)) ? v : null; };
     let pD0 = 0, pD1 = 0, pW0 = 0, pW1 = 0, pC0 = 0, pC1 = 0;
@@ -1425,12 +1432,23 @@ async function buildPortfolioTimeline(bundles) {
       p.depositedUSD = costBasis;
       p.withdrawnUSD = withdrawn;
       p.pnlUSD = (p.currentValueUSD || 0) + withdrawn + fees + (p.uncollectedUSD || 0) - costBasis;
-      p.histBasis = anyHist && !anyCur; // true solo si TODO se valoró con histórico
+      // Tres estados explícitos para la card:
+      //   "full"  → todo histórico (📜 visible, tooltip "dinero real ganado")
+      //   "mixed" → algunos snapshots históricos + algunos current (tooltip "parcial")
+      //   "none"  → tokenDayDatas no devolvió nada → todo es current
+      //             (caso típico: rate limit en el proxy, o subgraph sin
+      //             tokenDayDatas para esos tokens en esas fechas)
+      p.histBasis = anyHist && !anyCur ? "full"
+                  : anyHist           ? "mixed"
+                  :                     "none";
       // Sobrescribe feesUSD (que enrichPosition había puesto = raw × precio
       // ACTUAL) con el valor histórico real: sum de las fees cobradas en
       // cada intervalo entre snapshots, valoradas al precio que tenían los
       // tokens EN EL MOMENTO de cada cobro. Refleja el USD real que ganaste,
       // no el valor actual si los tokens han subido/bajado desde entonces.
+      // (Si histBasis === "none", `fees` será aritméticamente ≈ feesUSD
+      // original — todos los precios cayeron al actual — así que sobrescribir
+      // no cambia nada visible.)
       p.feesUSD = fees;
       p.feesCollectedUSD = fees; // shim para shell.js
     }
@@ -1855,11 +1873,13 @@ function positionCard(p) {
         })()}
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees <span class="cursor-help" title="${p.histBasis === true
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees <span class="cursor-help" title="${p.histBasis === "full"
           ? "Fees cobradas valoradas con el precio de cada token EN EL MOMENTO de cada cobro (tokenDayDatas del subgraph). Refleja el dinero real ganado, no afectado por movimientos de precio posteriores."
-          : p.histBasis === false
-            ? "Fees cobradas valoradas parcialmente con precios históricos del subgraph y parcialmente con el precio actual (algunas fechas no tenían dato histórico). 'Pendientes' siempre usa precio actual."
-            : "Fees cobradas valoradas con el precio ACTUAL de los tokens (no se pudo reconstruir histórico — sin snapshots o sin tokenDayDatas). NO refleja lo que valían cuando se cobraron. 'Pendientes' usa precio actual."}">ⓘ</span>${p.histBasis === true ? " <span title='Cálculo histórico'>📜</span>" : ""}</div>
+          : p.histBasis === "mixed"
+            ? "Fees cobradas valoradas parcialmente con precios históricos del subgraph y parcialmente con el precio actual (algunas fechas concretas no tenían dato histórico). 'Pendientes' siempre usa precio actual."
+            : p.histBasis === "none"
+              ? "Fees cobradas valoradas con el precio ACTUAL (tokenDayDatas no devolvió datos — el proxy puede haber saturado por rate limit, o el subgraph no expone precios para esos tokens). 'Pendientes' usa precio actual."
+              : "Fees cobradas valoradas con el precio ACTUAL de los tokens (no se pudo cargar el histórico — posición sin snapshots, HyperEVM RPC-only, o error de red). NO refleja lo que valían cuando se cobraron. 'Pendientes' usa precio actual."}">ⓘ</span>${p.histBasis === "full" ? " <span title='Cálculo histórico'>📜</span>" : ""}</div>
         <div class="font-semibold text-emerald-400 leading-tight">${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>
         <div class="text-amber-300 font-semibold leading-tight">${p.uncollectedUSD === null ? "n/d" : fmtUSD(p.uncollectedUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>
         <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${isFinite(p.apr) ? p.apr.toFixed(1) + "%" : "—"}</div>
@@ -2451,10 +2471,11 @@ document.addEventListener("DOMContentLoaded", init);
               console.log(`[timeline] ${withSnaps}/${bundles.length} posiciones con snapshots`);
               timeline = await buildPortfolioTimeline(bundles);
               // Diagnóstico final: cuántas terminaron con histBasis seteado
-              const hist = bundles.filter((b) => b.position.histBasis === true).length;
-              const mix  = bundles.filter((b) => b.position.histBasis === false).length;
-              const none = bundles.filter((b) => b.position.histBasis === undefined).length;
-              console.log(`[timeline] histBasis: ${hist} histórico puro · ${mix} parcial · ${none} sin datos`);
+              const full   = bundles.filter((b) => b.position.histBasis === "full").length;
+              const mixed  = bundles.filter((b) => b.position.histBasis === "mixed").length;
+              const none   = bundles.filter((b) => b.position.histBasis === "none").length;
+              const undef  = bundles.filter((b) => b.position.histBasis === undefined).length;
+              console.log(`[timeline] histBasis: ${full} full · ${mixed} mixed · ${none} none (todo current por tokenDayDatas vacío) · ${undef} sin timeline (sin snapshots)`);
             }
           } catch (e) { console.warn("timeline build failed:", e); }
           // añadir series propias de HyperEVM (RPC) y lending (reconstruidas de eventos)
