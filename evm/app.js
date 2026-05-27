@@ -1345,6 +1345,61 @@ async function fetchSnapshotsForChart(positions) {
   return Promise.all(tasks);
 }
 
+// ============================================================================
+// DefiLlama historical prices — fallback cuando tokenDayDatas del subgraph
+// no tiene datos (subgraphs antiguos, o tokens sin liquidez tracked en V3).
+// ============================================================================
+// API: POST https://coins.llama.fi/batchHistorical
+//   body: { coins: { "<chain>:<addr>": [ts1, ts2, ...] }, searchWidth: "600" }
+//   resp: { coins: { "<chain>:<addr>": { prices: [{ timestamp, price }] } } }
+// Free, sin auth. searchWidth=600s busca el precio más cercano dentro de
+// ±10min del timestamp pedido.
+const DEFILLAMA_CHAIN_PREFIX = {
+  ethereum: "ethereum",
+  arbitrum: "arbitrum",
+  optimism: "optimism",
+  polygon: "polygon",
+  base: "base",
+  bnb: "bsc", // DefiLlama usa "bsc" para Binance Smart Chain
+  // hyperevm: no soportado por DefiLlama en este momento
+};
+
+async function fetchDefiLlamaPrices(chainKey, tokenIds, dates) {
+  const out = {};
+  const prefix = DEFILLAMA_CHAIN_PREFIX[chainKey];
+  if (!prefix) return out;
+  const toks = tokenIds.filter(Boolean).map((t) => t.toLowerCase());
+  if (!toks.length || !dates.length) return out;
+
+  // DefiLlama acepta una sola llamada batch con TODOS los pares token×fecha.
+  const coins = {};
+  for (const tok of toks) coins[`${prefix}:${tok}`] = dates;
+
+  try {
+    const res = await fetch("https://coins.llama.fi/batchHistorical", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ coins, searchWidth: "600" }),
+    });
+    if (!res.ok) {
+      console.warn(`[defillama] HTTP ${res.status} para ${chainKey}`);
+      return out;
+    }
+    const data = await res.json();
+    for (const [coinKey, info] of Object.entries(data.coins || {})) {
+      const tok = (coinKey.split(":")[1] || "").toLowerCase();
+      for (const p of (info.prices || [])) {
+        const day = Math.floor(Number(p.timestamp) / 86400) * 86400;
+        const v = Number(p.price);
+        if (isFinite(v)) out[`${tok}:${day}`] = v;
+      }
+    }
+  } catch (e) {
+    console.warn(`[defillama] fetch failed para ${chainKey}:`, e?.message || e);
+  }
+  return out;
+}
+
 // Precio USD histórico de tokens por día vía The Graph (tokenDayDatas). Cacheado.
 const _dayPriceCache = new Map(); // `${chain}:${token}:${date}` -> priceUSD | null
 async function fetchTokenDayPrices(chainKey, tokenIds, dates) {
@@ -1402,10 +1457,25 @@ async function buildPortfolioTimeline(bundles) {
     let tokenDayDatasFailed = false;
     try { prices = await fetchTokenDayPrices(p.chainKey, [p.token0.id, p.token1.id], dates); }
     catch (e) { tokenDayDatasFailed = true; console.warn(`[tokenDayDatas] ${p.chainKey} #${p.nftId} fallo:`, e?.message || e); }
-    const priceKeyCount = Object.keys(prices).length;
     const expectedKeys = dates.length * 2; // 2 tokens × N días
-    if (!tokenDayDatasFailed && priceKeyCount < expectedKeys) {
-      console.log(`[priceAt] ${p.chainKey} #${p.nftId}: ${priceKeyCount}/${expectedKeys} precios diarios encontrados (faltan ${expectedKeys - priceKeyCount})`);
+    let priceSource = "subgraph";
+    // Fallback a DefiLlama si el subgraph devolvió poco o nada (típico de
+    // subgraphs antiguos que ya no indexan tokenDayDatas recientes).
+    // DefiLlama tiene precios históricos gratis y sin rate limit para los
+    // tokens principales en las chains EVM más usadas.
+    if (Object.keys(prices).length < expectedKeys / 2) {
+      const llama = await fetchDefiLlamaPrices(p.chainKey, [p.token0.id, p.token1.id], dates);
+      // Merge: el subgraph (si tenía algo) tiene preferencia; rellenamos huecos con DefiLlama.
+      let added = 0;
+      for (const [k, v] of Object.entries(llama)) {
+        if (!(k in prices)) { prices[k] = v; added++; }
+      }
+      if (added > 0) {
+        priceSource = Object.keys(prices).length > added ? "subgraph+defillama" : "defillama";
+        console.log(`[priceAt] ${p.chainKey} #${p.nftId}: subgraph dio ${Object.keys(prices).length - added}/${expectedKeys}, DefiLlama añadió ${added} → total ${Object.keys(prices).length}/${expectedKeys}`);
+      } else if (Object.keys(prices).length < expectedKeys) {
+        console.log(`[priceAt] ${p.chainKey} #${p.nftId}: ${Object.keys(prices).length}/${expectedKeys} precios diarios (DefiLlama tampoco tenía datos)`);
+      }
     }
     const t0 = (p.token0.id || "").toLowerCase(), t1 = (p.token1.id || "").toLowerCase();
     const priceAt = (tok, ts) => { const v = prices[`${tok}:${Math.floor(Number(ts) / 86400) * 86400}`]; return (v != null && isFinite(v)) ? v : null; };
