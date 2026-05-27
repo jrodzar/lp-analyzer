@@ -2058,15 +2058,22 @@ async function enrichJupiterLendCost(owner) {
       const ageSec = Math.max(now - derivedFromTs, 1);
       const ageDays = ageSec / 86400;
       const isStable = STABLE_LENDING_ASSETS.has(p.asset);
-      // (1) Helius por debajo del derivado (stale): siempre overridear
-      const heliusTooLow = p.sharePrice < derivedPrice * 0.95;
-      // (2) Stable + APR irreal desde el último evento
+      // (1a) Helius MUY por debajo del derivado (claramente stale, cualquier asset)
+      const heliusTooLowGeneral = p.sharePrice < derivedPrice * 0.95;
+      // (1b) Para STABLE lending: cualquier sharePrice de Helius por debajo del
+      //      derivado on-chain es imposible. Los vaults de stables (USDC/USDT/…)
+      //      tienen share price monotónicamente creciente; si Helius reporta
+      //      un valor MÁS BAJO que el del último depósito del propio usuario,
+      //      el feed está stale. Sin esto, mostraríamos "pérdidas" en
+      //      posiciones de stable lending recién abiertas, que es absurdo.
+      const heliusTooLowForStable = isStable && p.sharePrice < derivedPrice;
+      // (2) Stable + APR irreal desde el último evento (Helius reportando ALTO)
       let heliusTooHigh = false;
       if (isStable && p.sharePrice > derivedPrice) {
         const annualizedReturn = Math.pow(p.sharePrice / derivedPrice, 365 / ageDays) - 1;
         heliusTooHigh = annualizedReturn > MAX_REALISTIC_LENDING_APR;
       }
-      if (heliusTooLow || heliusTooHigh) {
+      if (heliusTooLowGeneral || heliusTooLowForStable || heliusTooHigh) {
         p._heliusSharePrice = p.sharePrice;
         p._heliusValueUSD = p.currentValueUSD;
         p.sharePrice = derivedPrice;
