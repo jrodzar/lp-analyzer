@@ -1872,20 +1872,40 @@ async function enrichSolanaPnL(owner) {
   if (!vaultToPos.size) return; // sin atribución por pool no podemos calcular fiable
 
   const SRC = new Set(["RAYDIUM", "ORCA", "WHIRLPOOL"]);
-  // eventos por posición: { ts, mint, amount(ui), dir: 'in'|'out' }
+  // eventos por posición: { ts, sig, mint, amount(ui), dir: 'in'|'out' }
+  //
+  // Netting per (tx, mint, position): si dentro de la misma tx el mismo mint
+  // sale del wallet hacia el vault Y entra desde el vault al wallet, sólo
+  // cuenta el flujo NETO. Esto elimina "round-trips" fantasma — p.ej. cuando
+  // Orca devuelve tokens sobrantes en un increase_liquidity single-sided, o
+  // un rebalance interno mueve tokens al wallet y vuelven a entrar en la
+  // misma operación. Sin netting, el "in" se contaba como retiro (>5% del
+  // principal vivo) y el "out" como depósito nuevo, inflando ambos.
   const perPos = new Map();
   for (const tx of txs) {
     if (!SRC.has(tx.source)) continue;
     const ts = tx.timestamp || 0;
+    const sig = tx.signature || "";
+    // clave (posId+mint) → { mint, posId, net }; net>0 = depósito, net<0 = retiro
+    const perTxMint = new Map();
     for (const t of (tx.tokenTransfers || [])) {
-      let counterparty = null, dir = null;
-      if (t.fromUserAccount === owner) { counterparty = t.toTokenAccount; dir = "out"; }   // a pool = depósito
-      else if (t.toUserAccount === owner) { counterparty = t.fromTokenAccount; dir = "in"; } // del pool = retiro/fee
+      let counterparty = null, signFlow = 0;
+      if (t.fromUserAccount === owner) { counterparty = t.toTokenAccount; signFlow = +1; }    // wallet→pool
+      else if (t.toUserAccount === owner) { counterparty = t.fromTokenAccount; signFlow = -1; } // pool→wallet
       else continue;
       const posId = counterparty && vaultToPos.get(counterparty);
       if (!posId) continue;
-      if (!perPos.has(posId)) perPos.set(posId, []);
-      perPos.get(posId).push({ ts, mint: t.mint, amount: t.tokenAmount || 0, dir });
+      const key = posId + ":" + t.mint;
+      const cur = perTxMint.get(key) || { mint: t.mint, posId, net: 0 };
+      cur.net += signFlow * (t.tokenAmount || 0);
+      perTxMint.set(key, cur);
+    }
+    for (const v of perTxMint.values()) {
+      if (!v.net) continue; // round-trip exacto: ignorar
+      const dir = v.net > 0 ? "out" : "in";
+      const amount = Math.abs(v.net);
+      if (!perPos.has(v.posId)) perPos.set(v.posId, []);
+      perPos.get(v.posId).push({ ts, sig, mint: v.mint, amount, dir });
     }
   }
 
