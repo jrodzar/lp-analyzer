@@ -2152,54 +2152,62 @@ async function enrichJupiterLendFromVault() {
   const jl = (state.positions || []).filter((p) => p._lending && p.protocol === "jupiter-lend");
   if (!jl.length) return;
 
-  // Paso 1: leer los mints jl* en batch para extraer su mintAuthority
-  const mints = jl.map((p) => p.mint);
-  const mintRes = await rpc("getMultipleAccounts", [mints, { encoding: "base64" }]);
-  const mintAuths = []; // index → string | null
-  for (let i = 0; i < jl.length; i++) {
-    const acc = mintRes?.value?.[i];
-    if (!acc || !acc.data) { mintAuths.push(null); continue; }
-    const data = Uint8Array.from(atob(acc.data[0]), (c) => c.charCodeAt(0));
-    if (data.length < 36) { mintAuths.push(null); continue; }
-    // SPL Mint: COption<Pubkey> = 4 bytes flag (0=None, 1=Some) + 32 bytes key
-    const flag = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, true);
-    if (flag === 0) { mintAuths.push(null); continue; }
-    mintAuths.push(base58Encode(data.slice(4, 36)));
+  const LENDING_PROGRAM = "jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9";
+  const LENDING_DISC = new Uint8Array([135, 199, 82, 16, 249, 131, 182, 241]);
+
+  // Pedimos TODAS las Lending accounts del programa con un filtro memcmp
+  // por discriminator. Hay ~10-30 (una por asset soportado); ~200 bytes cada
+  // una → respuesta total <10KB. Una sola llamada en vez de adivinar la PDA
+  // desde el lado del cliente.
+  //
+  // Por qué este enfoque y no via mintAuthority: el mintAuthority del fToken
+  // mint NO siempre es la propia Lending account — depende de cómo el
+  // programa inicializa el mint. Escanear el programa es robusto a cualquier
+  // configuración interna.
+  const discB58 = base58Encode(LENDING_DISC);
+  let progAccs = [];
+  try {
+    progAccs = await rpc("getProgramAccounts", [
+      LENDING_PROGRAM,
+      {
+        encoding: "base64",
+        filters: [{ memcmp: { offset: 0, bytes: discB58 } }],
+      },
+    ]) || [];
+  } catch (e) {
+    console.warn("getProgramAccounts Jupiter Lend failed:", e?.message || e);
+    return;
   }
 
-  // Paso 2: leer todas las Lending accounts (deduplicadas) en batch
-  const uniqueAuths = [...new Set(mintAuths.filter(Boolean))];
-  if (!uniqueAuths.length) return;
-
-  const LENDING_DISC = new Uint8Array([135, 199, 82, 16, 249, 131, 182, 241]);
-  const lendingRes = await rpc("getMultipleAccounts", [uniqueAuths, { encoding: "base64" }]);
-  const lendingMap = new Map(); // addr → { underlyingMint, decimals, tokenExchangePrice }
-  for (let i = 0; i < uniqueAuths.length; i++) {
-    const acc = lendingRes?.value?.[i];
-    if (!acc || !acc.data) continue;
-    const data = Uint8Array.from(atob(acc.data[0]), (c) => c.charCodeAt(0));
+  // Decodificar todas y construir un map: fTokenMint → { underlyingMint, decimals, tokenExchangePrice }
+  const fTokenMap = new Map();
+  for (const a of progAccs) {
+    const dataField = a?.account?.data;
+    if (!dataField) continue;
+    const data = Uint8Array.from(atob(dataField[0]), (c) => c.charCodeAt(0));
     if (data.length < 8 + 115) continue;
     if (!bytesEqual(data.subarray(0, 8), LENDING_DISC)) continue;
 
     const r = new BorshReader(data);
     r.skip(8); // discriminator
     const underlyingMint = r.pubkey().toBase58();
-    r.skip(32); // f_token_mint
+    const fTokenMint = r.pubkey().toBase58();
     r.skip(2);  // lending_id
-    const decimals = r.u8(); // decimals del fToken (= underlying)
+    const decimals = r.u8();
     r.skip(32); // rewards_rate_model
     r.skip(8);  // liquidity_exchange_price
     const tokenExchangePrice = r.u64(); // u64 LE, escalado 1e12
-
-    lendingMap.set(uniqueAuths[i], { underlyingMint, decimals, tokenExchangePrice });
+    fTokenMap.set(fTokenMint, { underlyingMint, decimals, tokenExchangePrice });
   }
 
-  // Paso 3: aplicar el sharePrice on-chain a cada posición jl
-  for (let i = 0; i < jl.length; i++) {
-    const p = jl[i];
-    const lendingAddr = mintAuths[i];
-    if (!lendingAddr) continue;
-    const lending = lendingMap.get(lendingAddr);
+  if (!fTokenMap.size) {
+    console.warn("Jupiter Lend: 0 Lending accounts found via getProgramAccounts");
+    return;
+  }
+
+  // Aplicar a cada posición del usuario buscando su mint en el map
+  for (const p of jl) {
+    const lending = fTokenMap.get(p.mint);
     if (!lending) continue;
 
     // ratio = tokenExchangePrice / 1e12 → underlying_human / shares_human
