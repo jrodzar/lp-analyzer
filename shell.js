@@ -1251,22 +1251,22 @@ function updatePfCount() {
     els.pfCount.textContent = `${n} · ${ev} EVM · ${so} SOL`;
   }
 }
-function setPfManageOpen(open, persist = true) {
+function setPfManageOpen(open) {
   els.pfManageBody.classList.toggle("hidden", !open);
   els.pfManageChev.textContent = open ? "▾" : "▸";
-  if (persist) localStorage.setItem("lp:pfManageOpen", open ? "1" : "0");
 }
 function togglePfManage() {
   const open = els.pfManageBody.classList.contains("hidden"); // si estaba oculto, lo abrimos
-  setPfManageOpen(open, true);
+  setPfManageOpen(open);
 }
-// Aplica el estado según la preferencia del usuario; si no hay pref guardada,
-// se abre cuando el portfolio está vacío y se pliega cuando ya hay direcciones.
+// Aplica el estado por defecto: abierto solo cuando el portfolio está vacío
+// (para que el usuario añada direcciones cómodamente). Cuando ya hay
+// direcciones, el panel se pliega para no ocupar espacio — el usuario lo
+// abre manualmente con el chevron ▸ cuando quiere gestionar direcciones.
+// (Antes guardábamos la preferencia en localStorage pero acababa "atascada"
+// en abierto si el usuario lo había abierto alguna vez. Mejor regla simple.)
 function applyPfManagePref() {
-  const saved = localStorage.getItem("lp:pfManageOpen");
-  if (saved === "1") setPfManageOpen(true, false);
-  else if (saved === "0") setPfManageOpen(false, false);
-  else setPfManageOpen(state.portfolio.length === 0, false);
+  setPfManageOpen(state.portfolio.length === 0);
 }
 
 function renderPortfolioList() {
@@ -1714,12 +1714,8 @@ function renderPortfolio() {
   renderPortfolioCharts();
 
   // secciones por dirección — cada una es un <details> plegable con MARCO ÚNICO
-  // que engloba cabecera + tokens idle + cards LP. Plegadas por defecto cuando
-  // hay al menos una dirección — el usuario abre solo las que le interesan.
-  // La cabecera ya muestra conteo, valor DeFi/idle y fees totales, así que la
-  // mayoría de las veces no hace falta abrir.
+  // que engloba cabecera + tokens idle + cards LP. Abierto por defecto.
   els.pfSections.innerHTML = "";
-  const collapseByDefault = (state.results || []).length >= 1;
   for (const r of state.results) {
     const items = visItems(r);
     const subVal = items.reduce((s, it) => s + (it.valueUSD || 0), 0);
@@ -1733,7 +1729,7 @@ function renderPortfolio() {
       : "bg-purple-500/15 text-purple-300 border border-purple-500/30";
 
     const section = document.createElement("details");
-    section.open = !collapseByDefault;
+    section.open = true;
     section.className = `pf-section rounded-xl border border-slate-800 border-l-4 ${borderCls} ${bgCls} mb-4 overflow-hidden`;
 
     const head = document.createElement("summary");
