@@ -1872,7 +1872,7 @@ async function enrichSolanaPnL(owner) {
   if (!vaultToPos.size) return; // sin atribución por pool no podemos calcular fiable
 
   const SRC = new Set(["RAYDIUM", "ORCA", "WHIRLPOOL"]);
-  // eventos por posición: { ts, sig, mint, amount(ui), dir: 'in'|'out' }
+  // eventos por posición: { ts, sig, mint, amount(ui), dir: 'in'|'out', mixed }
   //
   // Netting per (tx, mint, position): si dentro de la misma tx el mismo mint
   // sale del wallet hacia el vault Y entra desde el vault al wallet, sólo
@@ -1881,6 +1881,12 @@ async function enrichSolanaPnL(owner) {
   // un rebalance interno mueve tokens al wallet y vuelven a entrar en la
   // misma operación. Sin netting, el "in" se contaba como retiro (>5% del
   // principal vivo) y el "out" como depósito nuevo, inflando ambos.
+  //
+  // Además marcamos cada evento con `mixed = true` si la tx (a nivel de
+  // posición) tuvo flujos en ambas direcciones. Esto importa porque una
+  // recolección PURA de fees (`collect_fees`) sólo genera flujos vault→wallet;
+  // si la tx también tiene flujos wallet→vault es un rebalance/compound y un
+  // residuo "in" tras netting no es una fee — es la asimetría del rebalance.
   const perPos = new Map();
   for (const tx of txs) {
     if (!SRC.has(tx.source)) continue;
@@ -1888,6 +1894,8 @@ async function enrichSolanaPnL(owner) {
     const sig = tx.signature || "";
     // clave (posId+mint) → { mint, posId, net }; net>0 = depósito, net<0 = retiro
     const perTxMint = new Map();
+    // por posición, ¿esta tx tuvo flujos in y/o out?
+    const perPosFlows = new Map(); // posId -> { hasIn, hasOut }
     for (const t of (tx.tokenTransfers || [])) {
       let counterparty = null, signFlow = 0;
       if (t.fromUserAccount === owner) { counterparty = t.toTokenAccount; signFlow = +1; }    // wallet→pool
@@ -1899,13 +1907,18 @@ async function enrichSolanaPnL(owner) {
       const cur = perTxMint.get(key) || { mint: t.mint, posId, net: 0 };
       cur.net += signFlow * (t.tokenAmount || 0);
       perTxMint.set(key, cur);
+      const flows = perPosFlows.get(posId) || { hasIn: false, hasOut: false };
+      if (signFlow > 0) flows.hasOut = true; else flows.hasIn = true;
+      perPosFlows.set(posId, flows);
     }
     for (const v of perTxMint.values()) {
       if (!v.net) continue; // round-trip exacto: ignorar
       const dir = v.net > 0 ? "out" : "in";
       const amount = Math.abs(v.net);
+      const flows = perPosFlows.get(v.posId) || {};
+      const mixed = !!(flows.hasIn && flows.hasOut);
       if (!perPos.has(v.posId)) perPos.set(v.posId, []);
-      perPos.get(v.posId).push({ ts, sig, mint: v.mint, amount, dir });
+      perPos.get(v.posId).push({ ts, sig, mint: v.mint, amount, dir, mixed });
     }
   }
 
@@ -1918,6 +1931,7 @@ async function enrichSolanaPnL(owner) {
     let costBasisUSD = 0, withdrawnUSD = 0, feesCollectedUSD = 0;
     let cumDep = 0, cumWd = 0, incomplete = false;
     const netAmt = new Map(); // mint -> cantidad neta de principal (depósito - retiro)
+    const debugLog = []; // diagnóstico: cada evento con su clasificación
     for (const e of evs) {
       if (e.amount <= 0) continue; // transferencias informativas sin importe
       const hp = await birdeyePriceAt(e.mint, e.ts);
@@ -1930,18 +1944,38 @@ async function enrichSolanaPnL(owner) {
         continue;
       }
       const usd = e.amount * hp;
+      let cls = "?";
       if (e.dir === "out") {
         costBasisUSD += usd; cumDep += usd;
         netAmt.set(e.mint, (netAmt.get(e.mint) || 0) + e.amount);
+        cls = "deposit";
       } else {
-        // heurística: importe grande respecto al principal vivo = retiro; pequeño = fee
-        if (usd > 0.05 * Math.max(cumDep - cumWd, 1)) {
-          withdrawnUSD += usd; cumWd += usd;
-          netAmt.set(e.mint, (netAmt.get(e.mint) || 0) - e.amount);
+        // heurística refinada:
+        //   - tx PURA (sólo flujos vault→wallet): grande = retiro, pequeño = fee
+        //   - tx MIXTA (también hubo wallet→vault → rebalance/compound):
+        //     un residuo "in" NUNCA es una fee. Es la asimetría del rebalance.
+        //     Grande = retiro real; pequeño = ruido del rebalance (ignorar).
+        const isLarge = usd > 0.05 * Math.max(cumDep - cumWd, 1);
+        if (e.mixed) {
+          if (isLarge) {
+            withdrawnUSD += usd; cumWd += usd;
+            netAmt.set(e.mint, (netAmt.get(e.mint) || 0) - e.amount);
+            cls = "withdraw (mixed)";
+          } else {
+            cls = "noise (mixed residual)";
+          }
         } else {
-          feesCollectedUSD += usd;
+          if (isLarge) {
+            withdrawnUSD += usd; cumWd += usd;
+            netAmt.set(e.mint, (netAmt.get(e.mint) || 0) - e.amount);
+            cls = "withdraw";
+          } else {
+            feesCollectedUSD += usd;
+            cls = "fee";
+          }
         }
       }
+      debugLog.push({ ts: e.ts, sig: e.sig, mint: e.mint, dir: e.dir, amount: e.amount, usd, mixed: e.mixed, cls });
     }
     // Si falta el histórico de alguna pata, el coste base es poco fiable → no mostramos PnL/IL.
     if (incomplete) { state._beStats.partial++; continue; }
@@ -1967,6 +2001,30 @@ async function enrichSolanaPnL(owner) {
     p.ageDays = ageDays;
     p.apr = (ageDays && costBasisUSD > 0) ? ((feesCollectedUSD + pendFees) / costBasisUSD) * (365 / ageDays) * 100 : null;
     p.pnlBasis = "birdeye";
+    // Debug: imprime la reconstrucción por posición en consola. Útil para
+    // verificar qué transferencias se contaron como depósito/retiro/fee/ruido
+    // y detectar clasificaciones erróneas. Símbolos resueltos via tokenList.
+    try {
+      const sym = (m) => {
+        const md = state.tokenList && state.tokenList.get(m);
+        return (md && md.symbol) || (m ? m.slice(0, 4) + "…" + m.slice(-4) : "?");
+      };
+      const rows = debugLog.map((d) => ({
+        date: new Date(d.ts * 1000).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }),
+        token: sym(d.mint),
+        dir: d.dir,
+        amount: +d.amount.toFixed(6),
+        usd: +d.usd.toFixed(2),
+        mixed: d.mixed,
+        cls: d.cls,
+        sig: d.sig ? d.sig.slice(0, 8) + "…" : "",
+      }));
+      const pair = `${sym(p.token0?.mint)}/${sym(p.token1?.mint)}`;
+      console.groupCollapsed(`%c[PnL-debug]%c ${pair} dep:$${costBasisUSD.toFixed(2)} wdr:$${withdrawnUSD.toFixed(2)} fees:$${feesCollectedUSD.toFixed(2)}`,
+        "color:#60a5fa;font-weight:bold", "color:#94a3b8");
+      console.table(rows);
+      console.groupEnd();
+    } catch (e) { /* nunca rompemos el análisis por un log */ }
     // Marca si alguna pata de esta LP usó el fallback Yahoo (xStock) → la card
     // mostrará "Birdeye + Yahoo fallback" en lugar de solo "Birdeye".
     const yh = state._yahooFallbackMints;
