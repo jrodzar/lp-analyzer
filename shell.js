@@ -1796,11 +1796,14 @@ function idleTokensBlock(tokens, opts = {}) {
   if (opts.open) wrap.open = true;
   // Borde lateral marrón al estilo "maletín" 💼 (mismo lenguaje visual que el de las
   // cabeceras de dirección con border-l-4 de color).
-  wrap.className = "rounded-xl border border-slate-800 border-l-4 bg-slate-900/40 p-3 mb-4 text-sm";
+  // `pf-section` reutiliza el CSS global (en index.html) que oculta el marcador
+  // nativo del <summary> y rota el `▾` (.pf-chev) según el estado [open].
+  wrap.className = "pf-section rounded-xl border border-slate-800 border-l-4 bg-slate-900/40 p-3 mb-4 text-sm";
   wrap.style.borderLeftColor = "#92604A";
   const head = document.createElement("summary");
-  head.className = "flex items-center gap-2 cursor-pointer select-none text-slate-300 flex-wrap";
+  head.className = "flex items-center gap-2 cursor-pointer select-none text-slate-300 flex-wrap hover:brightness-125 transition";
   head.innerHTML = `
+    <span class="pf-chev inline-block text-slate-400 transition-transform">▾</span>
     <span class="text-base">💼</span>
     <span class="font-semibold">Tokens en wallet (idle)</span>
     <span class="text-[11px] text-slate-500 hidden sm:inline">— fuera de LPs</span>
