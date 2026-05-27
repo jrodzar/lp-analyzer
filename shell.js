@@ -1746,7 +1746,7 @@ function renderPortfolio() {
           <span class="text-slate-600">·</span>
           <span class="font-semibold text-slate-100">${fmtUSD(subVal)}</span><span class="text-slate-500 text-[11px] ml-1">DeFi</span>${subIdle > 0 ? ` <span class="text-slate-600">+</span> <span class="font-semibold text-slate-100">${fmtUSD(subIdle)}</span><span class="text-slate-500 text-[11px] ml-1">idle</span>` : ""}
           <span class="text-slate-600">·</span>
-          <span>fees <span class="font-semibold text-emerald-400">${fmtUSD(subFees)}</span></span>
+          <span title="Suma de fees cobradas + fees pendientes de todas las posiciones del wallet">fees totales <span class="font-semibold text-emerald-400">${fmtUSD(subFees)}</span></span>
         </span>
       </div>`;
     section.appendChild(head);
