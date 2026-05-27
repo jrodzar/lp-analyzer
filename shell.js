@@ -1661,7 +1661,9 @@ function renderQuickIdleTokens(tokens) {
   const wrap = document.getElementById("quick-idle");
   if (!wrap) return;
   wrap.innerHTML = "";
-  const block = idleTokensBlock(tokens || [], { open: true });
+  // Bloque cerrado por defecto — el resumen del header ya muestra el total y
+  // el conteo, así que la lista detallada solo interesa cuando el usuario la pide.
+  const block = idleTokensBlock(tokens || []);
   if (block) { wrap.appendChild(block); wrap.classList.remove("hidden"); }
   else wrap.classList.add("hidden");
 }
@@ -1752,8 +1754,9 @@ function renderPortfolio() {
     const body = document.createElement("div");
     body.className = "px-4 pb-4 pt-1";
 
-    // 1) Tokens "idle" primero (expandidos por defecto)
-    const idleBlock = idleTokensBlock(r.idleTokens || [], { open: true });
+    // 1) Tokens "idle" primero (cerrados por defecto — el header del bloque ya
+    //    muestra conteo y total. El usuario despliega solo si quiere el detalle).
+    const idleBlock = idleTokensBlock(r.idleTokens || []);
     if (idleBlock) body.appendChild(idleBlock);
 
     // 2) Posiciones LP / lending de la dirección
