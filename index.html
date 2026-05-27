@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "162";</script>
+  <script>window.APP_VERSION = "163";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -119,9 +119,11 @@
     </div>
   </div>
 
-  <!-- Modal: progreso de análisis -->
+  <!-- Modal: progreso de análisis. Muestra estado por dirección (○ pendiente,
+       ◐ en curso, ✓ lista, ✕ error) para que el usuario sepa exactamente qué
+       se está procesando en cada carril (EVM y SOL van en paralelo). -->
   <div id="analyzing-modal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-2xl p-6 text-center space-y-4 shadow-2xl">
+    <div class="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-6 text-center space-y-4 shadow-2xl">
       <div class="flex justify-center">
         <svg class="animate-spin w-10 h-10 text-[#ECE600]" viewBox="0 0 24 24" fill="none">
           <circle class="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -133,7 +135,10 @@
       <div class="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
         <div id="analyzing-bar" class="h-full bg-[#ECE600] transition-all duration-300" style="width:0%"></div>
       </div>
-      <p class="text-[11px] text-slate-500">Esto puede tardar unos segundos por dirección (RPC, subgraphs, precios…).</p>
+      <!-- Lista per-dirección con estado en tiempo real. Renderizada por
+           renderAnalyzingList() en shell.js; se rellena/limpia desde analyzeAll(). -->
+      <div id="analyzing-list" class="hidden text-left text-xs space-y-1 max-h-56 overflow-y-auto scrollbar pr-1"></div>
+      <p id="analyzing-footnote" class="text-[11px] text-slate-500">Cada dirección tarda unos segundos: posiciones LP, fees pendientes, precios y, si aplica, histórico de capital.</p>
     </div>
   </div>
 

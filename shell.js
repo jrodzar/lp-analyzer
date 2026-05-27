@@ -40,6 +40,7 @@ const els = {
   connectRabby: $("connect-rabby"), connectPhantom: $("connect-phantom"),
   disconnectRabby: $("disconnect-rabby"), disconnectPhantom: $("disconnect-phantom"),
   analyzingModal: $("analyzing-modal"), analyzingMsg: $("analyzing-msg"), analyzingBar: $("analyzing-bar"),
+  analyzingList: $("analyzing-list"),
   // portfolio results
   pfSummary: $("pf-summary"), gValue: $("g-value"), gFees: $("g-fees"), gFeesSub: $("g-fees-sub"),
   gIl: $("g-il"), gIlSub: $("g-il-sub"), gPnl: $("g-pnl"), gPnlSub: $("g-pnl-sub"),
@@ -1434,7 +1435,10 @@ function renderPortfolioSkeleton() {
   }</div>`;
 }
 
-// Modal de progreso mientras se consultan las direcciones
+// Modal de progreso mientras se consultan las direcciones.
+// Estado per-dirección: "pending" | "running" | "done" | "error".
+// Se guarda en state._analyzeStatus (Map<idx, status>) para que renderAnalyzingList
+// pueda repintar sin que la lógica de analyzeAll tenga que reconstruir el DOM.
 function openAnalyzingModal(msg, showBar = true) {
   if (msg) els.analyzingMsg.textContent = msg;
   if (els.analyzingBar) {
@@ -1442,13 +1446,49 @@ function openAnalyzingModal(msg, showBar = true) {
     if (els.analyzingBar.parentElement) els.analyzingBar.parentElement.classList.toggle("hidden", !showBar);
   }
   els.analyzingModal.classList.remove("hidden");
+  // Estado por dirección: todas en "pending" al abrir.
+  state._analyzeStatus = new Map(state.portfolio.map((_, i) => [i, "pending"]));
+  renderAnalyzingList();
 }
 function updateAnalyzingModal(msg, doneCount, total) {
   if (msg) els.analyzingMsg.textContent = msg;
   if (els.analyzingBar && total > 0) els.analyzingBar.style.width = `${Math.round((doneCount / total) * 100)}%`;
+  renderAnalyzingList();
+}
+function setAnalyzeStatus(idx, status) {
+  if (!state._analyzeStatus) return;
+  state._analyzeStatus.set(idx, status);
+  renderAnalyzingList();
+}
+// Renderiza la lista per-dirección con icono de estado, badge de red, label y
+// dirección abreviada. Mantiene el orden original del portfolio.
+function renderAnalyzingList() {
+  if (!els.analyzingList || !state._analyzeStatus) return;
+  if (!state.portfolio.length) { els.analyzingList.classList.add("hidden"); return; }
+  els.analyzingList.classList.remove("hidden");
+  const spinner = `<svg class="inline w-3 h-3 animate-spin text-cyan-400" viewBox="0 0 24 24" fill="none"><circle class="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>`;
+  els.analyzingList.innerHTML = state.portfolio.map((p, i) => {
+    const st = state._analyzeStatus.get(i) || "pending";
+    const icon = st === "done"    ? `<span class="text-emerald-400 font-bold">✓</span>`
+               : st === "running" ? spinner
+               : st === "error"   ? `<span class="text-rose-400 font-bold">✕</span>`
+               :                    `<span class="text-slate-600">○</span>`;
+    const badge = p.type === "evm"
+      ? `<span class="chip bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30">EVM</span>`
+      : `<span class="chip bg-purple-500/15 text-purple-300 border border-purple-500/30">SOL</span>`;
+    const dim = st === "pending" ? "opacity-50" : "";
+    const labelSafe = (p.label || "").replace(/</g, "&lt;");
+    return `<div class="flex items-center gap-2 px-2 py-1 rounded ${st === "running" ? "bg-cyan-500/5 ring-1 ring-cyan-500/20" : ""} ${dim}">
+      <span class="w-4 flex-shrink-0 text-center">${icon}</span>
+      ${badge}
+      <span class="text-slate-200 truncate min-w-0 flex-1 text-left">${labelSafe}</span>
+      <span class="font-mono text-slate-500 flex-shrink-0">${shortAddr(p.address)}</span>
+    </div>`;
+  }).join("");
 }
 function closeAnalyzingModal() {
   els.analyzingModal.classList.add("hidden");
+  state._analyzeStatus = null;
 }
 
 // ============================================================================
@@ -1497,8 +1537,13 @@ async function analyzeAll(opts = {}) {
       // Worker a 1000/60s podemos ser más agresivos que el 400 ms inicial.
       if (!firstInLane) await new Promise((r) => setTimeout(r, 250));
       firstInLane = false;
+      // Marcar "en curso" antes del await: la lista del modal muestra spinner.
+      if (!silent) setAnalyzeStatus(i, "running");
       const r = await analyzeAddressHeadless(entry.address, entry.type);
       results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [], analysisStatus: r.analysisStatus || null, idleTokens: r.idleTokens || [] };
+      // Estado final: error si timeout o status problemático; done en otro caso.
+      const isError = (r.status || "").toLowerCase().includes("timeout") || (r.status || "").toLowerCase().includes("error");
+      if (!silent) setAnalyzeStatus(i, isError ? "error" : "done");
       done++;
       const msg = `Analizando direcciones (${done}/${n})…`;
       if (!silent) { setPfStatus(msg); updateAnalyzingModal(msg, done, n); state.results = results.filter(Boolean); renderPortfolio(); }
