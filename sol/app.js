@@ -1953,8 +1953,10 @@ async function enrichSolanaPnL(owner) {
         // heurística refinada:
         //   - tx PURA (sólo flujos vault→wallet): grande = retiro, pequeño = fee
         //   - tx MIXTA (también hubo wallet→vault → rebalance/compound):
-        //     un residuo "in" NUNCA es una fee. Es la asimetría del rebalance.
-        //     Grande = retiro real; pequeño = ruido del rebalance (ignorar).
+        //       grande = retiro real (close-and-reopen con menor redepósito)
+        //       pequeño = REEMBOLSO del depósito (Orca devuelve tokens
+        //                  sobrantes/de otro lado al hacer add_liquidity).
+        //                  Reduce coste base; NO es fee ni retiro.
         const isLarge = usd > 0.05 * Math.max(cumDep - cumWd, 1);
         if (e.mixed) {
           if (isLarge) {
@@ -1962,7 +1964,11 @@ async function enrichSolanaPnL(owner) {
             netAmt.set(e.mint, (netAmt.get(e.mint) || 0) - e.amount);
             cls = "withdraw (mixed)";
           } else {
-            cls = "noise (mixed residual)";
+            // refund: el pool te devolvió tokens durante una operación de
+            // depósito. Resta del coste base y de los tokens netos depositados.
+            costBasisUSD -= usd; cumDep -= usd;
+            netAmt.set(e.mint, (netAmt.get(e.mint) || 0) - e.amount);
+            cls = "refund (mixed)";
           }
         } else {
           if (isLarge) {
