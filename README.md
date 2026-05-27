@@ -11,7 +11,9 @@ Web app para **analizar posiciones de liquidez** (LP) de una o varias wallets, m
 
 - **EVM** — Uniswap V3 en Ethereum, Arbitrum, Optimism, Polygon, Base y BNB Chain · **HyperEVM** (lectura on-chain directa) · **Revert Lend** (lending vaults ERC-4626).
 - **Solana** — Orca Whirlpools y Raydium CLMM, leídos directamente del programa (sin SDK pesado) · **Jupiter Lend** (vault-share tokens jl* detectados desde Helius DAS).
-- Por cada posición: **valor actual**, **fees cobradas vs pendientes**, **APR de fees**, **IL vs HODL**, **PnL neto**, **range bar** visual con tu posición dentro/fuera del rango.
+- Por cada posición: **valor actual**, **fees cobradas vs pendientes**, **APR de fees**, **IL vs HODL**, **PnL neto** y **range bar** visual con tu posición dentro/fuera del rango.
+  - **PnL en USD y en token base** (ej. `≈ -0.00046 WBTC` en pools con tokens volátiles) — útil cuando lo que te importa es acumular tokens, no dólares.
+  - **Desglose colapsable** del PnL en sus 3 componentes: **Δ precio tokens** (efecto mercado puro / HODL equivalente), **IL vs HODL** (divergencia entre los dos tokens del par) y **Fees totales** (cobradas + pendientes). Te dice exactamente de dónde viene cada euro ganado o perdido.
 - **Tokens "idle"**: además de las LPs, cada dirección muestra los tokens que están sueltos en el wallet (fuera de posiciones) con su valor en USD. Solana vía Helius DAS + Jupiter; EVM vía Blockscout + DefiLlama (sin claves extra).
 - **Tres vistas**:
   1. **Quick** — análisis de una wallet.
