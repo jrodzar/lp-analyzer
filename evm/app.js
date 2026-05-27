@@ -1855,12 +1855,12 @@ function positionCard(p) {
         })()}
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees</div>
-        <div class="font-semibold text-emerald-400 leading-tight">${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400" title="${p.histBasis === true
-          ? "Valor en USD calculado con el precio de cada token EN EL MOMENTO de cada cobro (precios diarios tokenDayDatas del subgraph). Refleja el dinero real ganado, no afectado por movimientos de precio posteriores."
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees <span class="cursor-help" title="${p.histBasis === true
+          ? "Fees cobradas valoradas con el precio de cada token EN EL MOMENTO de cada cobro (tokenDayDatas del subgraph). Refleja el dinero real ganado, no afectado por movimientos de precio posteriores."
           : p.histBasis === false
-            ? "Valor en USD calculado parcialmente con precios históricos del subgraph y parcialmente con el precio actual de los tokens (algunas fechas no tenían dato histórico)."
-            : "Valor en USD calculado multiplicando la cantidad acumulada de fees por el precio ACTUAL de los tokens. NO refleja lo que valían cuando se cobraron."}">cobradas${p.histBasis === true ? " 📜" : ""}</span></div>
+            ? "Fees cobradas valoradas parcialmente con precios históricos del subgraph y parcialmente con el precio actual (algunas fechas no tenían dato histórico). 'Pendientes' siempre usa precio actual."
+            : "Fees cobradas valoradas con el precio ACTUAL de los tokens (no se pudo reconstruir histórico — sin snapshots o sin tokenDayDatas). NO refleja lo que valían cuando se cobraron. 'Pendientes' usa precio actual."}">ⓘ</span>${p.histBasis === true ? " <span title='Cálculo histórico'>📜</span>" : ""}</div>
+        <div class="font-semibold text-emerald-400 leading-tight">${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>
         <div class="text-amber-300 font-semibold leading-tight">${p.uncollectedUSD === null ? "n/d" : fmtUSD(p.uncollectedUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>
         <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${isFinite(p.apr) ? p.apr.toFixed(1) + "%" : "—"}</div>
       </div>
