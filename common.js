@@ -80,6 +80,77 @@ function pnlColor(n) {
   return "text-slate-300";
 }
 
+// ─── PnL en token base + desglose ─────────────────────────────────────────────
+// El PnL en USD es informativo pero engañoso en pares con tokens muy volátiles:
+// si depositaste 1 ETH cuando valía $4000 y ahora vale $3500, tu LP vale menos
+// USD pero puede que tengas casi 1 ETH equivalente. Por eso ofrecemos también
+// el PnL convertido al token "base" (el no-stable del par) a precio actual.
+
+// ¿El símbolo parece una stablecoin? Cubre el set común + cualquier cosa con
+// "USD" en el nombre (USDC, USDT, USDC.e, USDÞ0, USDe, USDP, USDS, sUSD…).
+function isStableSymbol(sym) {
+  if (!sym) return false;
+  const s = String(sym).toUpperCase();
+  if (["DAI", "FRAX", "LUSD", "MIM", "SUSD", "PYUSD", "GUSD", "TUSD"].includes(s)) return true;
+  if (s.includes("USD")) return true;
+  return false;
+}
+
+// Índice del token base del par (0 ó 1), o -1 si ambos son stables.
+// Heurística: el NO-stable es el base. Si los dos son volátiles, token0.
+// Si los dos son stables, no hay base útil (devolver -1).
+function pickBaseTokenIdx(sym0, sym1) {
+  const s0 = isStableSymbol(sym0), s1 = isStableSymbol(sym1);
+  if (s0 && !s1) return 1;
+  if (!s0 && s1) return 0;
+  if (s0 && s1) return -1;
+  return 0;
+}
+
+// Línea "≈ -0.00046 WBTC" (sin USD), color verde/rojo según signo. "" si no aplica.
+function pnlInBaseHTML(pnlUSD, sym0, sym1, price0, price1) {
+  if (pnlUSD == null || !isFinite(pnlUSD)) return "";
+  const idx = pickBaseTokenIdx(sym0, sym1);
+  if (idx < 0) return ""; // ambas stables → la conversión "≈ X USDT" no aporta
+  const sym = idx === 0 ? sym0 : sym1;
+  const price = idx === 0 ? price0 : price1;
+  if (!price || price <= 0 || !isFinite(price)) return "";
+  const tokens = pnlUSD / price;
+  const cls = pnlColor(tokens);
+  const signed = (tokens >= 0 ? "+" : "") + fmtTiny(tokens, 3);
+  return `<div class="text-[10px] ${cls} mt-0.5">≈ ${signed} ${sym}</div>`;
+}
+
+// Desglose colapsable del PnL: Δ precio tokens + IL + Fees = PnL.
+// "Δ precio tokens" se calcula como residual (pnl − il − fees) para que la
+// suma cuadre siempre, incluso con retiradas (donde el HODL exacto es ambiguo
+// porque depende del precio del token EN EL MOMENTO de cada retirada).
+function pnlBreakdownHTML(pnlUSD, ilUSD, feesAllUSD) {
+  if (pnlUSD == null || !isFinite(pnlUSD)) return "";
+  const il = (ilUSD == null || !isFinite(ilUSD)) ? 0 : ilUSD;
+  const fees = (feesAllUSD == null || !isFinite(feesAllUSD)) ? 0 : feesAllUSD;
+  const priceChg = pnlUSD - il - fees;
+  const row = (label, val, tipKey) => {
+    const tip = tipKey ? ` <span class="cursor-help" title="${tipKey}">ⓘ</span>` : "";
+    return `<div class="flex justify-between gap-2"><span class="text-slate-400">${label}${tip}</span><span class="${pnlColor(val)} font-mono">${fmtUSD(val)}</span></div>`;
+  };
+  return `
+    <details class="mt-1 group">
+      <summary class="text-[10px] text-slate-500 cursor-pointer hover:text-slate-300 select-none list-none">
+        <span class="group-open:hidden">▾ desglose</span><span class="hidden group-open:inline">▴ desglose</span>
+      </summary>
+      <div class="mt-1 space-y-0.5 text-[10px]">
+        ${row("Δ precio tokens", priceChg, "Cambio de valor de los tokens depositados a precios actuales: lo que ganarías o perderías por haberlos mantenido sin proveer liquidez. Es el efecto puro del mercado.")}
+        ${row("IL vs HODL", il, "Pérdida (o ganancia) por estar en LP en vez de HODL: divergencia de precios entre los dos tokens del par.")}
+        ${row("Fees totales", fees, "Suma de fees cobradas + fees pendientes (lo que has ganado proveyendo liquidez).")}
+        <div class="flex justify-between gap-2 pt-1 mt-0.5 border-t border-slate-800">
+          <span class="text-slate-300 font-semibold">PnL neto</span>
+          <span class="${pnlColor(pnlUSD)} font-semibold font-mono">${fmtUSD(pnlUSD)}</span>
+        </div>
+      </div>
+    </details>`;
+}
+
 // Barra gráfica de rango: precio min/max + marcador del precio actual.
 // price(tick) = 1.0001^tick * 10^(dec0-dec1)
 function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed) {
