@@ -1371,31 +1371,40 @@ async function fetchDefiLlamaPrices(chainKey, tokenIds, dates) {
   const toks = tokenIds.filter(Boolean).map((t) => t.toLowerCase());
   if (!toks.length || !dates.length) return out;
 
-  // DefiLlama acepta una sola llamada batch con TODOS los pares token×fecha.
-  const coins = {};
-  for (const tok of toks) coins[`${prefix}:${tok}`] = dates;
-
-  try {
-    const res = await fetch("https://coins.llama.fi/batchHistorical", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ coins, searchWidth: "600" }),
-    });
-    if (!res.ok) {
-      console.warn(`[defillama] HTTP ${res.status} para ${chainKey}`);
-      return out;
-    }
-    const data = await res.json();
-    for (const [coinKey, info] of Object.entries(data.coins || {})) {
-      const tok = (coinKey.split(":")[1] || "").toLowerCase();
-      for (const p of (info.prices || [])) {
-        const day = Math.floor(Number(p.timestamp) / 86400) * 86400;
-        const v = Number(p.price);
-        if (isFinite(v)) out[`${tok}:${day}`] = v;
+  // GET /prices/historical/{timestamp}/{coins} — single timestamp, multiple
+  // coins por request. El batch POST devolvía 400 con cualquier formato que
+  // probamos (la API parece haber cambiado de forma silenciosa). Este
+  // endpoint GET es público, simple, devuelve { coins: { "<chain>:<addr>":
+  // { price, decimals, symbol, timestamp, confidence } } } y funciona
+  // perfectamente (verificado con curl manual).
+  //
+  // Una request por fecha. Paralelizamos 3 a la vez para no hacer
+  // stampede a la API.
+  const coinsParam = toks.map((t) => `${prefix}:${t}`).join(",");
+  const limit = 3;
+  let firstFail = null;
+  for (let i = 0; i < dates.length; i += limit) {
+    const batch = dates.slice(i, i + limit);
+    await Promise.all(batch.map(async (date) => {
+      try {
+        const res = await fetch(`https://coins.llama.fi/prices/historical/${date}/${coinsParam}?searchWidth=4h`);
+        if (!res.ok) {
+          if (!firstFail) firstFail = `HTTP ${res.status}`;
+          return;
+        }
+        const data = await res.json();
+        for (const [coinKey, info] of Object.entries(data.coins || {})) {
+          const tok = (coinKey.split(":")[1] || "").toLowerCase();
+          const v = Number(info?.price);
+          if (isFinite(v)) out[`${tok}:${date}`] = v;
+        }
+      } catch (e) {
+        if (!firstFail) firstFail = e?.message || String(e);
       }
-    }
-  } catch (e) {
-    console.warn(`[defillama] fetch failed para ${chainKey}:`, e?.message || e);
+    }));
+  }
+  if (firstFail && Object.keys(out).length === 0) {
+    console.warn(`[defillama] ${chainKey}: ${firstFail}`);
   }
   return out;
 }
