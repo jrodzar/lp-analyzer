@@ -2675,6 +2675,37 @@ els.feesMinThreshold.addEventListener("input", () => {
 // ============================================================================
 
 // Tooltips por toque (móvil): muestra el title de los ⓘ al pulsar.
+// Event delegation: switching de tabs en los accordions de "📜 logs" de las
+// cards EVM. Los botones tienen `data-tab-btn="<id>"` + `data-uid="<unique>"`;
+// los paneles correspondientes llevan `data-tab-panel="<id>"` con el mismo
+// uid. Hacemos delegación a nivel de document para que sobreviva el round-trip
+// de postMessage (cardHTML → template.innerHTML pierde onclick inline).
+//
+// Esta función VIVE en shell.js (no en common.js) porque el shell NO carga
+// common.js, solo los iframes. Las cards re-instanciadas viven en el DOM del
+// shell, así que el handler debe estar aquí también. common.js tiene el suyo
+// análogo para Quick mode (cards en el iframe).
+function setupTabDelegation(doc) {
+  doc.addEventListener("click", (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest("[data-tab-btn]") : null;
+    if (!btn) return;
+    const uid = btn.dataset.uid;
+    const tab = btn.dataset.tabBtn;
+    if (!uid || !tab) return;
+    doc.querySelectorAll(`[data-tab-btn][data-uid="${uid}"]`).forEach((b) => {
+      const isActive = b.dataset.tabBtn === tab;
+      b.classList.toggle("border-emerald-400", isActive);
+      b.classList.toggle("text-emerald-300", isActive);
+      b.classList.toggle("font-semibold", isActive);
+      b.classList.toggle("border-transparent", !isActive);
+      b.classList.toggle("text-slate-400", !isActive);
+    });
+    doc.querySelectorAll(`[data-tab-panel][data-uid="${uid}"]`).forEach((p) => {
+      p.classList.toggle("hidden", p.dataset.tabPanel !== tab);
+    });
+  });
+}
+
 function setupTipTaps(doc) {
   let tip = null;
   const hide = () => { if (tip) { tip.remove(); tip = null; } };
@@ -2716,6 +2747,7 @@ function setupTipTaps(doc) {
   }
 
   setupTipTaps(document);
+  setupTabDelegation(document); // tabs de los accordions "📜 logs" en las cards
   setTab("quick"); // por defecto, análisis de una dirección (como hasta ahora)
   setMode(state.mode);
   renderAuthArea();
