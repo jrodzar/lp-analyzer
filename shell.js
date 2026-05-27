@@ -1714,8 +1714,12 @@ function renderPortfolio() {
   renderPortfolioCharts();
 
   // secciones por dirección — cada una es un <details> plegable con MARCO ÚNICO
-  // que engloba cabecera + tokens idle + cards LP. Abierto por defecto.
+  // que engloba cabecera + tokens idle + cards LP. Plegadas por defecto cuando
+  // hay al menos una dirección — el usuario abre solo las que le interesan.
+  // La cabecera ya muestra conteo, valor DeFi/idle y fees totales, así que la
+  // mayoría de las veces no hace falta abrir.
   els.pfSections.innerHTML = "";
+  const collapseByDefault = (state.results || []).length >= 1;
   for (const r of state.results) {
     const items = visItems(r);
     const subVal = items.reduce((s, it) => s + (it.valueUSD || 0), 0);
@@ -1729,7 +1733,7 @@ function renderPortfolio() {
       : "bg-purple-500/15 text-purple-300 border border-purple-500/30";
 
     const section = document.createElement("details");
-    section.open = true;
+    section.open = !collapseByDefault;
     section.className = `pf-section rounded-xl border border-slate-800 border-l-4 ${borderCls} ${bgCls} mb-4 overflow-hidden`;
 
     const head = document.createElement("summary");
