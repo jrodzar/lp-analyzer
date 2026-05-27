@@ -1971,9 +1971,10 @@ function eventLogHTML(p) {
   };
 
   const fmtDate = (ts) => {
+    // dd/mm/aaaa HH:mm (24h)
     const d = new Date(ts * 1000);
-    return d.toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" })
-      + ", " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+    return d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" })
+      + " " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", hour12: false });
   };
   const fmtAmt = (n) => {
     if (!n || !isFinite(n)) return "—";
@@ -2000,7 +2001,7 @@ function eventLogHTML(p) {
             </tr>
           </thead>
           <tbody>
-            ${evts.slice().reverse().map((e) => `
+            ${evts.map((e) => `
               <tr class="border-t border-slate-800">
                 <td class="px-2 py-1 text-slate-400 whitespace-nowrap">${fmtDate(e.ts)}</td>
                 <td class="px-2 py-1 whitespace-nowrap">${typeLabel[e.type] || e.type}</td>
