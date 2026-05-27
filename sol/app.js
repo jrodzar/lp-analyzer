@@ -2023,6 +2023,29 @@ async function enrichSolanaPnL(owner) {
       console.groupCollapsed(`%c[PnL-debug]%c ${pair} dep:$${costBasisUSD.toFixed(2)} wdr:$${withdrawnUSD.toFixed(2)} fees:$${feesCollectedUSD.toFixed(2)}`,
         "color:#60a5fa;font-weight:bold", "color:#94a3b8");
       console.table(rows);
+      // Resumen plano (copiable como texto) sólo de los depósitos, agrupando
+      // por tx para ver el USD total de cada operación de aporte. Útil para
+      // verificar si algún depósito específico no coincide con lo esperado.
+      const byTx = new Map();
+      for (const d of debugLog) {
+        if (d.cls !== "deposit") continue;
+        const k = d.sig || String(d.ts);
+        const cur = byTx.get(k) || { ts: d.ts, sig: d.sig, parts: [], total: 0 };
+        cur.parts.push(`${sym(d.mint)} ${d.amount.toFixed(4)} ($${d.usd.toFixed(2)})`);
+        cur.total += d.usd;
+        byTx.set(k, cur);
+      }
+      const lines = [];
+      let running = 0;
+      for (const v of [...byTx.values()].sort((a, b) => a.ts - b.ts)) {
+        running += v.total;
+        const dt = new Date(v.ts * 1000).toLocaleString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+        lines.push(`  ${dt}  $${v.total.toFixed(2).padStart(8)}  Σ$${running.toFixed(2)}  [${v.sig.slice(0, 8)}…]  ${v.parts.join(" + ")}`);
+      }
+      if (lines.length) {
+        console.log(`%cDepositos por tx (orden cronológico):%c\n${lines.join("\n")}`,
+          "color:#fbbf24;font-weight:bold", "color:inherit");
+      }
       console.groupEnd();
     } catch (e) { /* nunca rompemos el análisis por un log */ }
     // Marca si alguna pata de esta LP usó el fallback Yahoo (xStock) → la card
