@@ -72,7 +72,6 @@ const state = {
   loading: false,
   sortBy: "value",
   hideClosed: true,
-  connectedAddress: null,
 };
 
 let charts = { value: null };
@@ -1615,98 +1614,6 @@ async function analyze() {
 }
 
 // ============================================================================
-// Phantom wallet (Solana)
-// ============================================================================
-
-function getPhantom() {
-  if (window.phantom?.solana?.isPhantom) return window.phantom.solana;
-  if (window.solana?.isPhantom) return window.solana;
-  return null;
-}
-
-async function connectPhantom() {
-  const provider = getPhantom();
-  if (!provider) {
-    setStatus("No se detectó Phantom. Instálalo o desbloquéalo.", "err");
-    return;
-  }
-  try {
-    const resp = await provider.connect();
-    const pk = resp.publicKey.toString();
-    state.connectedAddress = pk;
-    const input = document.getElementById("addr-input");
-    if (input) input.value = pk;
-    renderWalletButton();
-    setStatus(`Conectada: ${shortAddr(pk)}. Pulsa Analizar.`, "ok");
-    // Notificar al shell (si estamos embebidos) tras la conexión inicial.
-    window.__notifySolWallet?.();
-    if (!provider.__lpListenersAttached) {
-      provider.on?.("accountChanged", (publicKey) => {
-        if (publicKey) {
-          state.connectedAddress = publicKey.toString();
-          const inp = document.getElementById("addr-input");
-          if (inp) inp.value = state.connectedAddress;
-          renderWalletButton();
-          setStatus(`Cuenta cambiada: ${shortAddr(state.connectedAddress)}`, "info");
-          // El usuario cambió de cuenta directamente en la extensión Phantom
-          // — propagamos al shell para que actualice "Phantom conectada
-          // 0x..." y los botones de "Añadir wallet conectada" con la nueva.
-          window.__notifySolWallet?.();
-        } else {
-          disconnectPhantom();
-        }
-      });
-      provider.__lpListenersAttached = true;
-    }
-  } catch (e) {
-    setStatus("Conexión cancelada.", "info");
-  }
-}
-
-function disconnectPhantom() {
-  const provider = getPhantom();
-  try { provider?.disconnect?.(); } catch (e) {}
-  state.connectedAddress = null;
-  renderWalletButton();
-  setStatus("Wallet desvinculada de la app.", "info");
-  // Notificar al shell para que muestre "Phantom no conectada" y deshabilite
-  // los botones de "Añadir wallet conectada".
-  window.__notifySolWallet?.();
-}
-
-function renderWalletButton() {
-  const label = document.getElementById("btn-wallet-label");
-  const btn = document.getElementById("btn-wallet");
-  if (!label || !btn) return;
-  if (state.connectedAddress) {
-    label.innerHTML = `<span class="text-emerald-400">●</span> ${shortAddr(state.connectedAddress)} <span class="text-slate-500 ml-1">✕</span>`;
-    btn.title = "Click para desconectar";
-    btn.onclick = disconnectPhantom;
-  } else {
-    label.textContent = "👻 Conectar Phantom";
-    btn.title = "Conectar Phantom";
-    btn.onclick = connectPhantom;
-  }
-}
-
-async function trySilentReconnectPhantom() {
-  const provider = getPhantom();
-  if (!provider) return;
-  try {
-    // onlyIfTrusted no abre prompt; reconecta si ya autorizaste antes
-    const resp = await provider.connect({ onlyIfTrusted: true });
-    if (resp?.publicKey) {
-      state.connectedAddress = resp.publicKey.toString();
-      const inp = document.getElementById("addr-input");
-      if (inp) inp.value = state.connectedAddress;
-      renderWalletButton();
-      // Notifica al shell también en la reconexión silenciosa al cargar.
-      window.__notifySolWallet?.();
-    }
-  } catch (e) { /* silencioso */ }
-}
-
-// ============================================================================
 // Histórico real de Solana (Orca/Raydium) vía Helius Enhanced Transactions API.
 // Reconstruye, a nivel de wallet, el capital aportado y fees en el tiempo:
 //   tx con source RAYDIUM/ORCA → transfers del owner: envía = depósito, recibe = fee/retiro.
@@ -2438,8 +2345,6 @@ async function fetchSolanaHistory(owner) {
 
 async function init() {
   renderProtocolChips();
-  renderWalletButton();
-  trySilentReconnectPhantom();
   document.getElementById("btn-settings").onclick = openSettings;
   document.getElementById("btn-analyze").onclick = analyze;
   document.getElementById("addr-input").addEventListener("keydown", (e) => {
@@ -2476,16 +2381,6 @@ document.addEventListener("DOMContentLoaded", init);
   style.textContent = "header{display:none!important}#addr-block{display:none!important}#input-section{margin-top:0}#summary-section{display:none!important}";
   document.head.appendChild(style);
   document.documentElement.classList.add("embedded");
-  function notifyWallet() {
-    const addr = (typeof state !== "undefined" && state.connectedAddress) || null;
-    try { window.parent.postMessage({ type: "lp-wallet", app: "sol", address: addr }, "*"); } catch (e) {}
-  }
-  // Expuesto en window para que handlers fuera del IIFE (connectPhantom,
-  // accountChanged, disconnectPhantom, trySilentReconnectPhantom) puedan
-  // notificar al shell sin romper el encapsulamiento. Permite que cualquier
-  // cambio de cuenta desde la extensión Phantom se refleje en la UI del
-  // shell automáticamente.
-  window.__notifySolWallet = notifyWallet;
   // Normaliza las posiciones Solana para el portfolio del shell
   function toPortfolioItems() {
     return (state.positions || []).map((p) => {
@@ -2564,10 +2459,6 @@ document.addEventListener("DOMContentLoaded", init);
         });
     } else if (d.type === "lp-open-settings") {
       if (typeof openSettings === "function") openSettings();
-    } else if (d.type === "lp-connect-wallet") {
-      if (typeof connectPhantom === "function") Promise.resolve(connectPhantom()).then(notifyWallet).catch(notifyWallet);
-    } else if (d.type === "lp-disconnect-wallet") {
-      if (typeof disconnectPhantom === "function") { disconnectPhantom(); notifyWallet(); }
     } else if (d.type === "lp-set-protocols" && Array.isArray(d.protocols)) {
       state.selectedProtocols = d.protocols.slice();
       localStorage.setItem("sol:selectedProtocols", JSON.stringify(state.selectedProtocols));
@@ -2622,6 +2513,5 @@ document.addEventListener("DOMContentLoaded", init);
         });
     }
   });
-  setTimeout(notifyWallet, 1500);
   try { window.parent.postMessage({ type: "lp-ready", app: "sol" }, "*"); } catch (e) {}
 })();

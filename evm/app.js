@@ -132,7 +132,6 @@ const state = {
   chains: loadChainConfig(),
   selectedChains: JSON.parse(localStorage.getItem("lp:selectedChains") || "null") || Object.keys(DEFAULT_CHAINS),
   address: "",
-  connectedAddress: null,
   positions: [],
   loading: false,
   error: null,
@@ -2427,106 +2426,11 @@ async function analyze() {
 }
 
 // ============================================================================
-// Wallet (EIP-1193: Rabby / MetaMask / cualquier wallet inyectada)
-// ============================================================================
-
-function getInjectedProvider() {
-  if (typeof window === "undefined" || !window.ethereum) return null;
-  // si hay varios providers (Rabby + MetaMask), preferimos Rabby
-  if (Array.isArray(window.ethereum.providers) && window.ethereum.providers.length) {
-    return window.ethereum.providers.find((p) => p.isRabby) || window.ethereum.providers[0];
-  }
-  return window.ethereum;
-}
-
-async function connectWallet() {
-  const provider = getInjectedProvider();
-  if (!provider) {
-    setStatus("No detecté ninguna wallet inyectada. Instala Rabby (rabby.io) o MetaMask en tu navegador. Si la app está abierta dentro del preview de Claude Code, ábrela en Chrome.", "err");
-    return;
-  }
-  try {
-    const accounts = await provider.request({ method: "eth_requestAccounts" });
-    if (!accounts || !accounts[0]) throw new Error("la wallet no devolvió cuenta");
-    onWalletConnected(accounts[0], provider);
-  } catch (e) {
-    setStatus(`Error conectando wallet: ${e.message || e}`, "err");
-  }
-}
-
-function onWalletConnected(account, provider) {
-  state.connectedAddress = account;
-  document.getElementById("addr-input").value = account;
-  renderWalletButton();
-  setStatus(`Conectada: ${shortAddr(account)}. Pulsa Analizar.`, "ok");
-  // Notificar al shell (si estamos embebidos) — la wallet ya está conectada
-  // y la dirección activa puede haber cambiado.
-  window.__notifyEvmWallet?.();
-
-  // listeners (solo registramos una vez)
-  if (provider && !provider.__lpListenersAttached) {
-    provider.on?.("accountsChanged", (accs) => {
-      if (!accs || !accs.length) {
-        disconnectWallet();
-      } else {
-        state.connectedAddress = accs[0];
-        document.getElementById("addr-input").value = accs[0];
-        renderWalletButton();
-        setStatus(`Cuenta cambiada: ${shortAddr(accs[0])}`, "info");
-        // El usuario cambió de cuenta directamente en la extensión Rabby —
-        // propagamos al shell para que actualice "Rabby conectada 0x..."
-        // y los botones de "Añadir wallet conectada" con la nueva dirección.
-        window.__notifyEvmWallet?.();
-      }
-    });
-    provider.__lpListenersAttached = true;
-  }
-}
-
-function disconnectWallet() {
-  // los wallets no exponen un "desconectar" estándar; limpiamos nuestro estado
-  state.connectedAddress = null;
-  renderWalletButton();
-  setStatus("Wallet desvinculada de la app. La sesión sigue activa en la extensión.", "info");
-  // Notificar al shell para que muestre "Rabby no conectada" y deshabilite
-  // los botones de "Añadir wallet conectada".
-  window.__notifyEvmWallet?.();
-}
-
-function renderWalletButton() {
-  const label = document.getElementById("btn-wallet-label");
-  const btn = document.getElementById("btn-wallet");
-  if (!label || !btn) return;
-  if (state.connectedAddress) {
-    label.innerHTML = `<span class="text-emerald-400">●</span> ${shortAddr(state.connectedAddress)} <span class="text-slate-500 ml-1">✕</span>`;
-    btn.title = "Click para desconectar";
-    btn.onclick = disconnectWallet;
-  } else {
-    label.textContent = "🔗 Conectar Rabby";
-    btn.title = "Conectar Rabby / MetaMask";
-    btn.onclick = connectWallet;
-  }
-}
-
-async function trySilentReconnect() {
-  const provider = getInjectedProvider();
-  if (!provider) return;
-  try {
-    // eth_accounts no abre prompt; solo devuelve cuentas si ya hay sesión autorizada
-    const accs = await provider.request({ method: "eth_accounts" });
-    if (accs && accs[0]) onWalletConnected(accs[0], provider);
-  } catch (e) {
-    // silencioso
-  }
-}
-
-// ============================================================================
 // Init
 // ============================================================================
 
 function init() {
   renderChainChips();
-  renderWalletButton();
   document.getElementById("btn-settings").onclick = openSettings;
   document.getElementById("btn-analyze").onclick = analyze;
   document.getElementById("addr-input").addEventListener("keydown", (e) => {
@@ -2540,8 +2444,6 @@ function init() {
     state.hideClosed = e.target.checked;
     renderPositions();
   });
-
-  trySilentReconnect();
 
   if (!state.apiKey && !PROXY_BASE) {
     setStatus("Configura tu API key de The Graph en Settings antes de analizar.", "info");
@@ -2561,15 +2463,6 @@ document.addEventListener("DOMContentLoaded", init);
   style.textContent = "header{display:none!important}#addr-block{display:none!important}#input-section{margin-top:0}#summary-section{display:none!important}";
   document.head.appendChild(style);
   document.documentElement.classList.add("embedded");
-  function notifyWallet() {
-    const addr = (typeof state !== "undefined" && state.connectedAddress) || null;
-    try { window.parent.postMessage({ type: "lp-wallet", app: "evm", address: addr }, "*"); } catch (e) {}
-  }
-  // Expuesto en window para que handlers fuera del IIFE (onWalletConnected,
-  // accountsChanged, disconnectWallet) puedan notificar al shell sin romper el
-  // encapsulamiento. Permite que cualquier cambio de cuenta desde la extensión
-  // Rabby/MetaMask se refleje en la UI del shell automáticamente.
-  window.__notifyEvmWallet = notifyWallet;
   // Normaliza las posiciones EVM para el portfolio del shell
   function toPortfolioItems() {
     return (state.positions || []).map((p) => {
@@ -2647,10 +2540,6 @@ document.addEventListener("DOMContentLoaded", init);
         });
     } else if (d.type === "lp-open-settings") {
       if (typeof openSettings === "function") openSettings();
-    } else if (d.type === "lp-connect-wallet") {
-      if (typeof connectWallet === "function") Promise.resolve(connectWallet()).then(notifyWallet).catch(notifyWallet);
-    } else if (d.type === "lp-disconnect-wallet") {
-      if (typeof disconnectWallet === "function") { disconnectWallet(); notifyWallet(); }
     } else if (d.type === "lp-set-chains" && Array.isArray(d.chains)) {
       state.selectedChains = d.chains.slice();
       localStorage.setItem("lp:selectedChains", JSON.stringify(state.selectedChains));
@@ -2711,7 +2600,5 @@ document.addEventListener("DOMContentLoaded", init);
         });
     }
   });
-  // tras el reconect silencioso, avisar del estado al shell
-  setTimeout(notifyWallet, 1500);
   try { window.parent.postMessage({ type: "lp-ready", app: "evm" }, "*"); } catch (e) {}
 })();
