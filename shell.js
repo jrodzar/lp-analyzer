@@ -359,6 +359,9 @@ function quickAnalyze(opts = {}) {
 let _quickModalTimer = null;
 
 function renderWalletButton() {
+  // Feature flag: en [main] (analytics read-only) no se muestra UI de wallet.
+  // Solo [pro] (active management) tiene capacidad de conectar Rabby/Phantom.
+  if (!window.IS_ACTIVE_MGMT) { els.wallet.classList.add("hidden"); return; }
   const connected = state.wallet[state.mode];
   els.wallet.classList.remove("hidden");
   if (connected) {
@@ -1138,6 +1141,10 @@ const PHANTOM_ICON_SVG = `<img src="assets/wallets/phantom.svg" alt="Phantom Wal
 //   · Sin conectar → "🔗 Conectar Rabby"
 //   · Conectada → "✓ Rabby conectada · 0x1abc…def"
 function renderWalletAddButton(type) {
+  // Feature flag: [main] no tiene UI de wallet (analytics read-only).
+  // En ese caso los botones referenciados aquí están ocultos por CSS y los
+  // refs en `els` pueden ser null si futuro HTML los elimina del todo.
+  if (!window.IS_ACTIVE_MGMT) return;
   const addBtn = type === "evm" ? els.addRabby : els.addPhantom;
   const connectBtn = type === "evm" ? els.connectRabby : els.connectPhantom;
   const disconnectBtn = type === "evm" ? els.disconnectRabby : els.disconnectPhantom;
@@ -2655,6 +2662,19 @@ if (els.connectPhantom) els.connectPhantom.onclick = () => connectWalletOnly("so
 // conexión (visibilidad gestionada por renderWalletAddButton).
 if (els.disconnectRabby) els.disconnectRabby.onclick = () => disconnectWalletOnly("evm");
 if (els.disconnectPhantom) els.disconnectPhantom.onclick = () => disconnectWalletOnly("sol");
+// Feature flag: en [main] (analytics read-only, window.IS_ACTIVE_MGMT === false)
+// ocultamos TODA la UI de conexión de wallets. Pegar direcciones manualmente
+// sigue funcionando como siempre. En [pro] (true) la UI queda visible normal.
+// Hacemos esto AQUÍ (al final del init) para garantizar que ningún handler
+// previo ha podido mostrar accidentalmente un botón con classList.remove("hidden").
+if (!window.IS_ACTIVE_MGMT) {
+  for (const id of ["connect-rabby","disconnect-rabby","connect-phantom","disconnect-phantom",
+                    "add-rabby","add-phantom","add-wallet-row","wallet"]) {
+    const el = document.getElementById(id);
+    if (el) el.classList.add("hidden");
+  }
+}
+
 // Render inicial de los botones (estado "no conectada" hasta que llegue el
 // primer `lp-wallet`). Tras login + iframes ready, los engines reportarán
 // sus wallets actuales si las hay, y `renderWalletAddButton` se llama desde

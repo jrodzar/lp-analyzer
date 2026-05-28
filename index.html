@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "171";</script>
+  <script>window.APP_VERSION = "172"; window.IS_ACTIVE_MGMT = false;</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -289,7 +289,7 @@
               <button id="pf-add" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm font-semibold">+ Añadir</button>
             </div>
             <div id="pf-add-err" class="text-[11px] text-rose-400 hidden"></div>
-            <div class="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
+            <div id="add-wallet-row" class="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
               <span>Añadir wallet conectada:</span>
               <!-- El texto y el handler de estos botones se generan dinámicamente en
                    shell.js (renderWalletAddButton). Estados:
