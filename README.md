@@ -54,7 +54,7 @@ La app es una **Progressive Web App** — se puede "instalar" desde el navegador
 - 🔒 **Cifrado E2E** — tu portfolio (las direcciones que añades) se cifra en el navegador con **AES-GCM** + clave derivada por **PBKDF2** de una contraseña que solo tú conoces. Lo que se almacena en Firestore es opaco; ni el admin del proyecto puede leer tus wallets.
 - 🛡️ **Control de acceso por whitelist** — el registro está restringido a emails autorizados. Las reglas de Firestore son la barrera real (no solo el check en JS). Sirve también para proteger las APIs externas de uso indiscriminado.
 - 🧱 **Proxy con rate-limiting** — las API keys (The Graph, Helius, Birdeye) se guardan en un Cloudflare Worker que verifica el ID token de Firebase en cada petición, aplica rate-limit por IP y un tope diario por servicio.
-- 👁️ **Solo lectura** — la app no firma transacciones jamás. Tampoco se conecta a Rabby/Phantom: para analizar una wallet pegas su dirección pública (las direcciones de blockchain ya son visibles para cualquiera, no hay riesgo).
+- 👁️ **Solo lectura** — la app no firma transacciones ni tiene capacidad de conectar extensiones de wallet. Para analizar una wallet pegas su dirección pública (las direcciones on-chain ya son visibles para cualquiera; no hay riesgo).
 
 > Si pierdes la contraseña de cifrado **no se puede recuperar**. Hay un botón "Olvidé mi contraseña → empezar de cero" que borra tus direcciones cifradas para poder volver a entrar (no recupera las que tenías).
 

@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "172"; window.IS_ACTIVE_MGMT = false;</script>
+  <script>window.APP_VERSION = "173";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -272,13 +272,6 @@
               <button id="change-pass" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Cambiar contraseña de cifrado">🔑 Contraseña</button>
               <button id="delete-account" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/40 border border-slate-700 hover:border-rose-700 text-xs text-rose-300" title="Eliminar permanentemente tu cuenta y todos tus datos">🗑️ Eliminar cuenta</button>
               <button id="pf-csv" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Descargar posiciones en CSV">⬇ CSV</button>
-              <!-- Cada Conectar tiene un Desconectar ✕ pegado a su derecha que
-                   solo aparece cuando hay wallet conectada. Visibilidad la
-                   gestiona shell.js → renderWalletAddButton(type). -->
-              <button id="connect-rabby"    class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Conectar Rabby / MetaMask (EVM)">🔗 Conectar Rabby</button>
-              <button id="disconnect-rabby" class="hidden px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/40 border border-slate-700 hover:border-rose-700 text-xs text-slate-400 hover:text-rose-300" title="Desconectar Rabby">✕</button>
-              <button id="connect-phantom"  class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs" title="Conectar Phantom (Solana)">👻 Conectar Phantom</button>
-              <button id="disconnect-phantom" class="hidden px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-900/40 border border-slate-700 hover:border-rose-700 text-xs text-slate-400 hover:text-rose-300" title="Desconectar Phantom">✕</button>
               <button id="analyze-all" class="px-3 py-1.5 rounded-lg bg-[#ECE600] hover:bg-[#f5ef4d] text-slate-900 text-xs font-semibold">Analizar todo</button>
             </div>
           </div>
@@ -289,16 +282,6 @@
               <button id="pf-add" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sm font-semibold">+ Añadir</button>
             </div>
             <div id="pf-add-err" class="text-[11px] text-rose-400 hidden"></div>
-            <div id="add-wallet-row" class="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
-              <span>Añadir wallet conectada:</span>
-              <!-- El texto y el handler de estos botones se generan dinámicamente en
-                   shell.js (renderWalletAddButton). Estados:
-                     · Sin wallet conectada → "Rabby no conectada" (deshabilitado)
-                     · Conectada y NO en portfolio → "+ Añadir <shortAddr>"
-                     · Conectada y YA en portfolio → "✓ <shortAddr> ya en portfolio" -->
-              <button id="add-rabby"   class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"></button>
-              <button id="add-phantom" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"></button>
-            </div>
             <div id="pf-list" class="space-y-1.5"></div>
           </div>
         </div>
@@ -442,9 +425,8 @@
           <button id="mode-evm" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">⬡ EVM</button>
           <button id="mode-sol" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">◎ Solana</button>
         </div>
-        <!-- empuja wallet/settings a la derecha solo en móvil -->
+        <!-- empuja settings a la derecha solo en móvil -->
         <span class="flex-1 order-2 lg:hidden"></span>
-        <button id="wallet" class="hidden px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs shrink-0 order-3 lg:order-4">🔗 Conectar</button>
         <!-- dirección + analizar: fila completa en móvil, en línea en escritorio -->
         <div class="flex gap-2 min-w-0 order-4 basis-full lg:order-3 lg:basis-0 lg:flex-1">
           <input id="addr" type="text" placeholder="Dirección EVM (0x…) o Solana…" class="flex-1 min-w-0 px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono focus:outline-none focus:border-[#ECE600]" />

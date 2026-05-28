@@ -49,11 +49,16 @@ Ese CSS lo genera CI en cada push:
 - **Shell** (`index.html` + `shell.js`): barra superior, pestañas **Quick** y
   **Portfolio**, login Google, gestión del portfolio, vista agregada y gráficos.
 - **Engines** (en iframes), cada uno es una app completa autónoma:
-  - `evm/` — Uniswap V3 vía subgraphs de The Graph (6 redes). Wallet: Rabby/MetaMask.
-  - `sol/` — Orca + Raydium leyendo on-chain vía Helius RPC + DAS. Wallet: Phantom.
+  - `evm/` — Uniswap V3 vía subgraphs de The Graph (6 redes).
+  - `sol/` — Orca + Raydium leyendo on-chain vía Helius RPC + DAS.
 - El shell habla con los engines por **`postMessage`**. En modo Quick muestra el
   iframe; en modo Portfolio los usa "headless" (ocultos, siguen computando) y
   renderiza él mismo el resultado agregado.
+
+> **Nota:** este repo es **read-only** y no tiene capacidad de firmar
+> transacciones ni conectar a Rabby/Phantom. Las direcciones se introducen a
+> mano. La funcionalidad de active management (firmar txs, cobrar fees,
+> compounding, integración wallet) vive en un repo privado separado.
 
 ### Protocolo postMessage (shell → engine)
 - `lp-analyze {address}` — análisis visible (modo Quick).
@@ -61,10 +66,10 @@ Ese CSS lo genera CI en cada push:
   `lp-result {reqId, address, items, status}` con posiciones **normalizadas**.
 - `lp-set-chains {chains}` (EVM) / `lp-set-protocols {protocols}` (SOL) — fija qué
   redes/protocolos analizar (según preferencias del usuario).
-- `lp-open-settings`, `lp-connect-wallet`, `lp-disconnect-wallet`.
+- `lp-open-settings`.
 
 ### Engine → shell
-- `lp-ready {app}`, `lp-wallet {app, address}`, `lp-result {...}`.
+- `lp-ready {app}`, `lp-result {...}`.
 
 ### Item normalizado del portfolio
 `{ kind: "evm"|"sol", venue, pair, valueUSD, feesUSD, feesPendingUSD, ilUSD, pnlUSD, inRange, closed, id }`
