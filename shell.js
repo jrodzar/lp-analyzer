@@ -288,8 +288,33 @@ function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
   if (!Array.isArray(aggRows) || aggRows.length === 0) return "";
   // Orden cronológico ascendente (antiguo arriba), igual que la tabla previa.
   const shown = (opts.limit ? aggRows.slice(0, opts.limit) : aggRows).slice().reverse();
-  const aprCls = (apr) => apr == null ? "text-slate-500" : (apr >= 0 ? "text-emerald-400" : "text-rose-400");
   const aprStr = (apr) => apr == null ? "—" : (apr >= 0 ? "+" : "") + apr.toFixed(1) + "%";
+
+  // ── Heatmap: fondo de intensidad proporcional al valor ───────────────────
+  // Curva sqrt para que valores medios-bajos sigan teniendo color visible pese
+  // a outliers altos (p.ej. un pool a +66% no debe dejar al resto en blanco).
+  // APR negativo → rojo (rose); todo lo demás → verde (emerald). `ref` es el
+  // valor de intensidad máxima (el mayor del conjunto mostrado).
+  const heatBg = (value, ref, allowNeg) => {
+    if (value == null || !isFinite(value) || !(ref > 0)) return "";
+    const t = Math.min(1, Math.sqrt(Math.abs(value) / ref));
+    const a = (0.06 + 0.44 * t).toFixed(3);
+    const rgb = (allowNeg && value < 0) ? "244,63,94" : "16,185,129";
+    return `background:rgba(${rgb},${a})`;
+  };
+  const aprTextCls = (apr) => apr == null ? "text-slate-500" : (apr >= 0 ? "text-emerald-100" : "text-rose-100");
+  // Celda numérica con pill heatmap. `extraCls` para color de texto del APR.
+  const heatPill = (txt, style, extraCls) =>
+    `<span class="inline-block px-1.5 py-0.5 rounded ${extraCls || "text-emerald-100"}" ${style ? `style="${style}"` : ""}>${txt}</span>`;
+
+  // Referencias de intensidad. APR comparte escala global (mes + pools) para
+  // que un mismo % tenga el mismo color en toda la tabla. Las fees usan escalas
+  // separadas (mes vs pool) porque sus magnitudes son de órdenes distintos.
+  const poolList = shown.flatMap((r) => poolsByMonthKey.get(r.monthKey) || []);
+  const refApr = Math.max(1, ...shown.map((r) => Math.abs(r.apr || 0)), ...poolList.map((p) => Math.abs(p.apr || 0)));
+  const refFeesAgg = Math.max(0.01, ...shown.map((r) => r.feesUSD || 0));
+  const refFeesPool = Math.max(0.01, ...poolList.map((p) => p.feesUSD || 0));
+
   const rowsHTML = shown.map((r) => {
     const pools = (poolsByMonthKey.get(r.monthKey) || []).slice().sort((a, b) => b.feesUSD - a.feesUSD);
     const ongoingBadge = r.isOngoing ? ` <span class="text-amber-300 text-[9px]">·en curso</span>` : "";
@@ -297,9 +322,9 @@ function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
     const poolRowsHTML = pools.map((p) => `
       <tr class="${pools.length > 1 ? "border-b border-slate-800/40 last:border-0" : ""}">
         <td class="py-1"><span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full shrink-0" style="background:${p.color || "#64748b"}"></span><span class="text-slate-300">${p.label}</span>${p.venue ? `<span class="text-slate-500 text-[9px]">${p.venue}</span>` : ""}</span></td>
-        <td class="py-1 pr-3 text-right text-emerald-400 font-mono">${fmtUSD(p.feesUSD)}</td>
+        <td class="py-1 pr-3 text-right font-mono">${heatPill(fmtUSD(p.feesUSD), heatBg(p.feesUSD, refFeesPool, false))}</td>
         <td class="py-1 pr-3 text-right text-slate-400 font-mono">${fmtUSD(p.capitalAvg)}</td>
-        <td class="py-1 text-right font-mono font-semibold ${aprCls(p.apr)}">${aprStr(p.apr)}</td>
+        <td class="py-1 text-right font-mono font-semibold">${heatPill(aprStr(p.apr), heatBg(p.apr, refApr, true), aprTextCls(p.apr))}</td>
       </tr>`).join("");
     const detailInner = poolRowsHTML
       ? `<table class="w-full text-[10px]">
@@ -315,9 +340,9 @@ function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
     return `
       <tr class="apr-month-row border-b border-slate-800/50 cursor-pointer hover:bg-slate-800/40" data-apr-month="${r.monthKey}">
         <td class="py-1.5"><span class="inline-flex items-center gap-1.5"><span class="apr-chev text-slate-500 text-[9px]">▸</span><span class="text-slate-200 font-medium whitespace-nowrap">${r.monthLabel}</span>${ongoingBadge}${countLbl}</span></td>
-        <td class="py-1.5 pr-3 text-right text-emerald-400 font-mono">${fmtUSD(r.feesUSD)}</td>
+        <td class="py-1.5 pr-3 text-right font-mono">${heatPill(fmtUSD(r.feesUSD), heatBg(r.feesUSD, refFeesAgg, false))}</td>
         <td class="py-1.5 pr-3 text-right text-slate-400 font-mono">${fmtUSD(r.capitalAvg)}</td>
-        <td class="py-1.5 text-right font-mono font-semibold ${aprCls(r.apr)}">${aprStr(r.apr)}</td>
+        <td class="py-1.5 text-right font-mono font-semibold">${heatPill(aprStr(r.apr), heatBg(r.apr, refApr, true), aprTextCls(r.apr))}</td>
       </tr>
       <tr class="apr-detail-row" data-apr-detail="${r.monthKey}" hidden><td colspan="4" class="p-0">
         <div class="bg-slate-800/30 border-l-2 border-slate-600 px-3 py-2 mb-1 ml-3 rounded-r-lg">${detailInner}</div>
