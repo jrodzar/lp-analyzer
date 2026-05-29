@@ -1724,8 +1724,28 @@ async function birdeyePriceAt(mint, unixSec) {
   if ((!state.birdeyeKey && !PROXY_BASE) || !mint || !unixSec) return null;
   if (!state._beStats) state._beStats = { ok: 0, denied: 0, rate: 0, error: 0, partial: 0 };
   if (!state._bePriceCache) state._bePriceCache = new Map();
-  const dayKey = mint + ":" + Math.floor(unixSec / 86400);
+  const dayNum = Math.floor(unixSec / 86400);
+  const dayKey = mint + ":" + dayNum;
   if (state._bePriceCache.has(dayKey)) return state._bePriceCache.get(dayKey);
+  // Caché PERSISTENTE en localStorage: el precio histórico de un DÍA PASADO es
+  // inmutable, así que se cachea para siempre. Esto evita repetir el storm de
+  // llamadas (y de 429) en cada recarga/reanálisis — el caso real del usuario.
+  // El día ACTUAL no se persiste (su precio aún se mueve): solo vive en memoria
+  // esta sesión. Tampoco persistimos `null` (un fallo transitorio no debe
+  // envenenar el caché para siempre).
+  const todayNum = Math.floor(Date.now() / 86400000);
+  const lsKey = dayNum < todayNum ? ("be:p:" + dayKey) : null;
+  if (lsKey) {
+    try {
+      const cached = localStorage.getItem(lsKey);
+      if (cached !== null) {
+        const v = parseFloat(cached);
+        const p = isFinite(v) ? v : null;
+        state._bePriceCache.set(dayKey, p);
+        return p;
+      }
+    } catch (_) { /* localStorage lleno/denegado → seguimos con la red */ }
+  }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // Espaciar respecto a la llamada Birdeye anterior (proactivo anti-429).
   await beThrottle();
@@ -1790,6 +1810,10 @@ async function birdeyePriceAt(mint, unixSec) {
     }
   }
   state._bePriceCache.set(dayKey, price);
+  // Persistir solo precios reales de días pasados (ver nota arriba).
+  if (lsKey && price != null && isFinite(price)) {
+    try { localStorage.setItem(lsKey, String(price)); } catch (_) {}
+  }
   return price;
 }
 
