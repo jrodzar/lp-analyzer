@@ -973,10 +973,10 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
     inc0 += word(l.data, 1); inc1 += word(l.data, 2);
     const ts = parseInt(l.timeStamp, 16);
     if (mintTs === null || ts < mintTs) mintTs = ts;
-    events.push({ ts, type: "inc", a0: word(l.data, 1), a1: word(l.data, 2) });
+    events.push({ ts, type: "inc", a0: word(l.data, 1), a1: word(l.data, 2), tx: l.transactionHash });
   }
-  for (const l of decLogs) { dec0r += word(l.data, 1); dec1r += word(l.data, 2); events.push({ ts: parseInt(l.timeStamp, 16), type: "dec", a0: word(l.data, 1), a1: word(l.data, 2) }); }
-  for (const l of colLogs) { col0 += word(l.data, 1); col1 += word(l.data, 2); events.push({ ts: parseInt(l.timeStamp, 16), type: "col", a0: word(l.data, 1), a1: word(l.data, 2) }); }
+  for (const l of decLogs) { dec0r += word(l.data, 1); dec1r += word(l.data, 2); events.push({ ts: parseInt(l.timeStamp, 16), type: "dec", a0: word(l.data, 1), a1: word(l.data, 2), tx: l.transactionHash }); }
+  for (const l of colLogs) { col0 += word(l.data, 1); col1 += word(l.data, 2); events.push({ ts: parseInt(l.timeStamp, 16), type: "col", a0: word(l.data, 1), a1: word(l.data, 2), tx: l.transactionHash }); }
 
   const max0 = (a, b) => (a > b ? a - b : 0n);
   const data = {
@@ -1189,6 +1189,10 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
       _rpcOnly: true, // marca para el UI
       // serie temporal (depósitos + fees) reconstruida de eventos para el histórico
       timelineSeries: hist && hist.events ? buildTimelineFromEvents(hist.events, t0.decimals, t1.decimals, p0, p1) : null,
+      // eventos crudos inc/dec/col para el acordeón de logs (HyperEVM no tiene
+      // subgraph → eventLogHTML los clasifica vía classifyRpcEvents en vez de
+      // classifyEvents(snapshots)).
+      _rpcEvents: hist && hist.events ? hist.events : null,
     });
   }
   return result;
@@ -1947,10 +1951,41 @@ function classifyEvents(snapshots) {
   return events;
 }
 
-// Devuelve HTML para el accordion de logs. Vacío si no hay snapshots
-// (típico en HyperEVM RPC-only o cuando snapshots aún no se fetched).
+// Variante para redes SIN subgraph (HyperEVM): clasifica los eventos crudos
+// inc/dec/col del PositionManager (leídos por RPC, `p._rpcEvents`) al mismo
+// shape que `classifyEvents` → reusa el render de eventLogHTML.
+// Agrupa por tx porque un retiro on-chain = DecreaseLiquidity + Collect en la
+// misma tx, y el Collect incluye principal + fees → fee = max(0, col − dec).
+function classifyRpcEvents(rpcEvents, dec0, dec1) {
+  if (!rpcEvents || !rpcEvents.length) return [];
+  const toN = (v, d) => Number(v) / 10 ** d;
+  const sub = (a, b) => (a > b ? a - b : 0n);
+  const byTx = new Map();
+  for (const e of rpcEvents) {
+    const k = (e.tx || e.ts) + "";
+    const g = byTx.get(k) || { ts: e.ts, tx: e.tx || "", inc0: 0n, inc1: 0n, dec0: 0n, dec1: 0n, col0: 0n, col1: 0n };
+    if (e.type === "inc") { g.inc0 += e.a0; g.inc1 += e.a1; }
+    else if (e.type === "dec") { g.dec0 += e.a0; g.dec1 += e.a1; }
+    else if (e.type === "col") { g.col0 += e.a0; g.col1 += e.a1; }
+    if (e.ts < g.ts) g.ts = e.ts;
+    byTx.set(k, g);
+  }
+  const out = [];
+  for (const g of byTx.values()) {
+    if (g.inc0 > 0n || g.inc1 > 0n) out.push({ ts: g.ts, type: "deposit", amount0: toN(g.inc0, dec0), amount1: toN(g.inc1, dec1), txHash: g.tx });
+    if (g.dec0 > 0n || g.dec1 > 0n) out.push({ ts: g.ts, type: "withdraw", amount0: toN(g.dec0, dec0), amount1: toN(g.dec1, dec1), txHash: g.tx });
+    const fee0 = sub(g.col0, g.dec0), fee1 = sub(g.col1, g.dec1);
+    if (fee0 > 0n || fee1 > 0n) out.push({ ts: g.ts, type: "collect", amount0: toN(fee0, dec0), amount1: toN(fee1, dec1), txHash: g.tx });
+  }
+  return out.sort((a, b) => a.ts - b.ts);
+}
+
+// Devuelve HTML para el accordion de logs. Usa snapshots del subgraph si los
+// hay; si no (HyperEVM RPC-only) cae a los eventos crudos inc/dec/col.
 function eventLogHTML(p) {
-  const events = classifyEvents(p._snapshots || []);
+  const events = (p._snapshots && p._snapshots.length)
+    ? classifyEvents(p._snapshots)
+    : classifyRpcEvents(p._rpcEvents, Number(p.token0.decimals), Number(p.token1.decimals));
   if (!events.length) return "";
 
   // Cash flows = movimientos de capital (deposit/withdraw, no fees)
