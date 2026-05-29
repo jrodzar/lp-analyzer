@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "174";</script>
+  <script>window.APP_VERSION = "175";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -526,6 +526,19 @@
             <span id="hist-note" class="text-[11px] text-slate-400"></span>
           </div>
           <div class="relative h-80"><canvas id="chart-projection"></canvas></div>
+        </div>
+
+        <!-- Tabla de APR por mes natural — agregado de todo el portfolio.
+             Se rellena en shell.js → renderHistorico() y solo aparece si
+             hay al menos un mes con fees > 0. Cada card individual tiene
+             además su propia mini-tabla ("📅 APR mensual" dentro de cada
+             posición) con la misma lógica per-pool. -->
+        <div id="hist-monthly-apr-panel" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold">📅 APR por mes natural <span class="cursor-help text-slate-500 text-[11px]" title="APR_mes = (fees_del_mes / capital_medio_mes) × (365 / días_activos) × 100. Es una proyección lineal anualizada; no descuenta IL ni gas. Agregado sumando fees y capital de TODAS las posiciones del portfolio.">ⓘ</span></h3>
+            <span class="text-[11px] text-slate-400">portfolio agregado</span>
+          </div>
+          <div id="hist-monthly-apr" class="overflow-x-auto"></div>
         </div>
       </div>
     </section>

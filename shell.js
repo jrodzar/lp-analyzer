@@ -61,6 +61,7 @@ const els = {
   // histórico
   histEmpty: $("hist-empty"), histContent: $("hist-content"),
   histAportado: $("hist-aportado"), histValor: $("hist-valor"), histGanado: $("hist-ganado"), histGanadoSub: $("hist-ganado-sub"),
+  histMonthlyAprPanel: $("hist-monthly-apr-panel"), histMonthlyApr: $("hist-monthly-apr"),
   histPnl: $("hist-pnl"), histPnlSub: $("hist-pnl-sub"), histIl: $("hist-il"), histIlSub: $("hist-il-sub"),
   histNote: $("hist-note"), chartProjection: $("chart-projection"),
 };
@@ -2171,6 +2172,48 @@ function buildHistoricalCurves() {
   return { aportado, valor, lastAportado, lastValor, ganado: lastValor - lastAportado, hasFlat: flat.length > 0 };
 }
 
+// Construye una serie temporal agregada del portfolio en el shape estándar
+// `timelineSeries` ([{ ts, depositedUSD, withdrawnUSD, feesUSD }]) sumando los
+// últimos valores conocidos de TODAS las posiciones en cada timestamp único.
+// Usada por `computeMonthlyAPRs` para sacar el APR mensual del portfolio.
+function aggregatedPortfolioTimeline() {
+  const allSeries = state.results.flatMap((r) => r.timeline || []);
+  const timed = allSeries.filter((s) => !s.flat && s.points && s.points.length);
+  if (!timed.length) return [];
+  // Eventos de todas las posiciones ordenados cronológicamente.
+  const events = [];
+  for (const s of timed) {
+    for (const pt of s.points) {
+      events.push({
+        ts: pt.ts,
+        posId: s.posId || s.label,
+        dep: pt.depositedUSD || 0,
+        wd: pt.withdrawnUSD || 0,
+        fees: pt.feesUSD || 0,
+      });
+    }
+  }
+  events.sort((a, b) => a.ts - b.ts);
+  // Para cada evento, mantenemos el último estado conocido por posición y
+  // emitimos un snapshot agregado (sumando dep/wd/fees de todas).
+  const lastDep = new Map(), lastWd = new Map(), lastFees = new Map();
+  const byDay = new Map();
+  for (const ev of events) {
+    lastDep.set(ev.posId, ev.dep);
+    lastWd.set(ev.posId, ev.wd);
+    lastFees.set(ev.posId, ev.fees);
+    const day = Math.floor(ev.ts / 86400000) * 86400000;
+    const sum = (m) => [...m.values()].reduce((s, v) => s + v, 0);
+    byDay.set(day, {
+      ts: day,
+      depositedUSD: sum(lastDep),
+      withdrawnUSD: sum(lastWd),
+      feesUSD: sum(lastFees),
+    });
+  }
+  return [...byDay.values()].sort((a, b) => a.ts - b.ts);
+}
+
 function renderHistorico() {
   if (typeof Chart === "undefined" || !els.chartProjection) return;
   const curves = buildHistoricalCurves();
@@ -2275,6 +2318,20 @@ function renderHistorico() {
       },
     },
   });
+
+  // Tabla agregada "APR por mes natural" — opción A. Solo se muestra si hay
+  // al menos un mes con fees > 0 reconstruido. Las cards individuales tienen
+  // su propia mini-tabla "📅 APR mensual" con esta misma lógica per-pool.
+  if (els.histMonthlyAprPanel && els.histMonthlyApr) {
+    const monthlyRows = computeMonthlyAPRs(aggregatedPortfolioTimeline());
+    const hasData = monthlyRows.some((r) => r.feesUSD > 0);
+    if (hasData) {
+      els.histMonthlyApr.innerHTML = monthlyAprTableHTML(monthlyRows, { limit: 24, showCapital: true });
+      els.histMonthlyAprPanel.classList.remove("hidden");
+    } else {
+      els.histMonthlyAprPanel.classList.add("hidden");
+    }
+  }
 }
 
 // ============================================================================

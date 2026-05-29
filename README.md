@@ -14,6 +14,7 @@ Web app para **analizar posiciones de liquidez** (LP) de una o varias wallets, m
 - Por cada posición: **valor actual**, **fees cobradas vs pendientes**, **APR de fees**, **IL vs HODL**, **PnL neto** y **range bar** visual con tu posición dentro/fuera del rango.
   - **PnL en USD y en token base** (ej. `≈ -0.00046 WBTC` en pools con tokens volátiles) — útil cuando lo que te importa es acumular tokens, no dólares.
   - **Desglose colapsable** del PnL en sus 3 componentes: **Δ precio tokens** (efecto mercado puro / HODL equivalente), **IL vs HODL** (divergencia entre los dos tokens del par) y **Fees totales** (cobradas + pendientes). Te dice exactamente de dónde viene cada euro ganado o perdido.
+  - **📅 APR mensual** — tabla colapsable con el APR de fees obtenido en cada mes natural cubierto por el histórico. Disponible tanto agregada en la pestaña **Histórico** (todo el portfolio sumado, ponderado por capital medio del mes) como en cada card individual.
 - **Tokens "idle"**: además de las LPs, cada dirección muestra los tokens que están sueltos en el wallet (fuera de posiciones) con su valor en USD. Solana vía Helius DAS + Jupiter; EVM vía Blockscout + DefiLlama (sin claves extra).
 - **Tres vistas**:
   1. **Quick** — análisis de una wallet.
