@@ -1696,6 +1696,25 @@ async function xstockPriceAt(ticker, unixSec) {
   }
 }
 
+// Throttle GLOBAL de llamadas a Birdeye: serializa + espacia ~280ms entre
+// requests para no disparar el rate-limit del proxy (429). Antes las llamadas
+// salían en ráfaga (varias posiciones × varios días) y el proxy devolvía 429 en
+// masa; el backoff reactivo (700-2800ms por intento) recuperaba pero floodeaba
+// la consola y ralentizaba el análisis. Espaciar proactivamente evita el 429 de
+// entrada; el backoff sigue cubriendo algún 429 puntual. ~3.5 req/s.
+let _beQueue = Promise.resolve();
+let _beLastTs = 0;
+const BE_MIN_GAP_MS = 280;
+function beThrottle() {
+  const turn = _beQueue.then(async () => {
+    const wait = BE_MIN_GAP_MS - (Date.now() - _beLastTs);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    _beLastTs = Date.now();
+  });
+  _beQueue = turn.catch(() => {}); // la cadena nunca se rompe por un error
+  return turn;
+}
+
 // Precio USD histórico de un token en un instante (unix segundos) vía Birdeye.
 // Cachea por (mint, día) para minimizar llamadas. Stables → 1.
 // Fallback xStocks: si Birdeye no lo cubre y el token es un xStock conocido
@@ -1708,6 +1727,8 @@ async function birdeyePriceAt(mint, unixSec) {
   const dayKey = mint + ":" + Math.floor(unixSec / 86400);
   if (state._bePriceCache.has(dayKey)) return state._bePriceCache.get(dayKey);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Espaciar respecto a la llamada Birdeye anterior (proactivo anti-429).
+  await beThrottle();
   const qs = `address=${mint}&unixtime=${unixSec}`;
   const url = state.birdeyeKey
     ? `https://public-api.birdeye.so/defi/historical_price_unix?${qs}`              // key propia
