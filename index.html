@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "182";</script>
+  <script>window.APP_VERSION = "183";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -329,7 +329,7 @@
               <div id="g-value-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
             </div>
             <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <div class="text-[11px] uppercase tracking-wide text-slate-400">Rentabilidad fees <span class="cursor-help text-slate-500" title="APR de fees (cobradas + pendientes) sobre el valor LP, anualizado por la edad de cada posición y ponderado por valor. No descuenta IL — para la rentabilidad neta vs HODL mira PnL neto.">ⓘ</span></div>
+              <div class="text-[11px] uppercase tracking-wide text-slate-400">Rentabilidad fees <span class="cursor-help text-slate-500" title="Rentabilidad de las fees expresada como APR (no APY: las fees de un LP no se auto-componen). · La cifra grande es MENSUAL = lo que rinden las fees en ~30 días, en % del capital. · Debajo, ANUAL = ese mismo ritmo anualizado de forma SIMPLE (mensual × 365/30), sin reinvertir. · 'N/M pos.' = N posiciones aportan dato sobre M totales. Base del cálculo: fees cobradas + pendientes sobre el valor de cada posición, anualizado por su antigüedad y ponderado por valor. No descuenta IL (para la rentabilidad neta vs HODL mira PnL neto). NOTA: no es lo mismo que el 'APR por mes natural' del Histórico, que mide solo las fees COBRADAS de cada mes concreto.">ⓘ</span></div>
               <div id="g-yield" class="text-xl font-bold mt-1">—</div>
               <div id="g-yield-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
             </div>
@@ -448,7 +448,7 @@
             <div id="q-value-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
           </div>
           <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <div class="text-[11px] uppercase tracking-wide text-slate-400">Rentabilidad fees <span class="cursor-help text-slate-500" title="APR de fees (cobradas + pendientes) sobre el valor LP, anualizado por la edad de cada posición y ponderado por valor. No descuenta IL — para la rentabilidad neta vs HODL mira PnL neto.">ⓘ</span></div>
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">Rentabilidad fees <span class="cursor-help text-slate-500" title="Rentabilidad de las fees expresada como APR (no APY: las fees de un LP no se auto-componen). · La cifra grande es MENSUAL = lo que rinden las fees en ~30 días, en % del capital. · Debajo, ANUAL = ese mismo ritmo anualizado de forma SIMPLE (mensual × 365/30), sin reinvertir. · 'N/M pos.' = N posiciones aportan dato sobre M totales. Base del cálculo: fees cobradas + pendientes sobre el valor de cada posición, anualizado por su antigüedad y ponderado por valor. No descuenta IL (para la rentabilidad neta vs HODL mira PnL neto). NOTA: no es lo mismo que el 'APR por mes natural' del Histórico, que mide solo las fees COBRADAS de cada mes concreto.">ⓘ</span></div>
             <div id="q-yield" class="text-xl font-bold mt-1">—</div>
             <div id="q-yield-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
           </div>

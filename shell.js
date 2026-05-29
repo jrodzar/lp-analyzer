@@ -1690,7 +1690,7 @@ function fillSummary(prefix, items, extra = {}) {
       const color = aprAnual >= 0 ? "text-emerald-400" : "text-rose-400";
       $i("yield").className = "text-xl font-bold mt-1 " + color;
       $i("yield").innerHTML = `${aprMensual >= 0 ? "+" : ""}${aprMensual.toFixed(2)}% <span class="text-[11px] text-slate-400 font-normal">mensual</span>`;
-      if ($i("yield-sub")) $i("yield-sub").innerHTML = `<span class="${color} font-semibold">${aprAnual >= 0 ? "+" : ""}${aprAnual.toFixed(2)}%</span> anual · ${n}/${items.length} pos.`;
+      if ($i("yield-sub")) $i("yield-sub").innerHTML = `<span class="${color} font-semibold">${aprAnual >= 0 ? "+" : ""}${aprAnual.toFixed(2)}%</span> anual (APR) · ${n}/${items.length} pos.`;
     } else {
       $i("yield").className = "text-xl font-bold mt-1";
       $i("yield").textContent = "—";
