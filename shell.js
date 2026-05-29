@@ -1797,13 +1797,26 @@ function renderPortfolio() {
     clearAnalysisBanner(els.pfBanner);
   } else {
     const allErrors = [];
+    let failedAddrs = 0;
     for (const r of state.results) {
-      const errs = r.analysisStatus?.errors || [];
       const label = (r.entry?.label) || shortAddr(r.entry?.address || "");
+      // Errores por chain/protocolo que el engine sí reportó (analysisStatus).
+      const errs = r.analysisStatus?.errors || [];
       for (const e of errs) allErrors.push({ source: `${label} · ${e.source}`, reason: e.reason });
+      // Fallo de la dirección ENTERA: timeout (el engine no respondió en 90s) o
+      // error (excepción en el engine). Esto NO viene en analysisStatus, así que
+      // sin esto el banner salía VERDE aunque la dirección no se analizara.
+      // `status` lleva los sentinels exactos "timeout"/"error" (ver
+      // analyzeAddressHeadless y el catch del postMessage del engine).
+      const st = (r.status || "").trim().toLowerCase();
+      if (st === "timeout") { allErrors.push({ source: label, reason: "timeout — el análisis tardó demasiado (reintenta o revisa el proxy/RPC)" }); failedAddrs++; }
+      else if (st === "error") { allErrors.push({ source: label, reason: "error en el análisis de la dirección" }); failedAddrs++; }
     }
     const addrCount = state.results.length;
-    const summary = `${all.length} posiciones en ${addrCount} ${addrCount === 1 ? "dirección" : "direcciones"}`;
+    const okAddrs = addrCount - failedAddrs;
+    const summary = failedAddrs > 0
+      ? `${all.length} posiciones · ${okAddrs}/${addrCount} direcciones OK, ${failedAddrs} con fallo`
+      : `${all.length} posiciones en ${addrCount} ${addrCount === 1 ? "dirección" : "direcciones"}`;
     renderAnalysisBanner(els.pfBanner, { errors: allErrors, summary });
   }
 
