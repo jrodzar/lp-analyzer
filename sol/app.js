@@ -1373,15 +1373,6 @@ function lendingCard(p) {
             : "Histórico de depósitos no disponible (sin Helius). Valor actual = shares × precio Jupiter."}</div>
       </div>
     </details>
-    ${(() => {
-      // Mini-tabla APR mensual en cards lending Solana (Jupiter Lend).
-      const monthly = computeMonthlyAPRs(p.timelineSeries).filter((r) => r.feesUSD > 0);
-      if (!monthly.length) return ""; // solo meses con fees cobradas reales
-      return `<details class="text-xs">
-        <summary class="text-slate-400 hover:text-slate-200 cursor-pointer select-none">📅 APR mensual</summary>
-        <div class="mt-2 max-h-48 overflow-y-auto scrollbar pr-1">${monthlyAprTableHTML(monthly, { limit: 24 })}</div>
-      </details>`;
-    })()}
     ${managementFooterHTML(managementLinkSol(p))}`;
   return el;
 }
@@ -1473,17 +1464,6 @@ function positionCard(p) {
           : "Birdeye"} (estimación; fees vs retiros por heurística).</div>` : ""}
       </div>
     </details>
-    ${(() => {
-      // Mini-tabla APR mensual (opción A). Solo aparece cuando el módulo
-      // tx-scan reconstruyó timelineSeries (depende de Birdeye/Helius
-      // funcionando para la posición).
-      const monthly = computeMonthlyAPRs(p.timelineSeries).filter((r) => r.feesUSD > 0);
-      if (!monthly.length) return ""; // solo meses con fees cobradas reales
-      return `<details class="text-xs">
-        <summary class="text-slate-400 hover:text-slate-200 cursor-pointer select-none">📅 APR mensual</summary>
-        <div class="mt-2 max-h-48 overflow-y-auto scrollbar pr-1">${monthlyAprTableHTML(monthly, { limit: 24 })}</div>
-      </details>`;
-    })()}
     ${managementFooterHTML(managementLinkSol(p))}
   `;
   return el;

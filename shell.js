@@ -278,6 +278,87 @@ function monthlyAprTableHTML(rows, opts = {}) {
     </table>`;
 }
 
+// Tabla del Histórico: APR por mes natural del portfolio agregado, con cada
+// mes desplegable para ver el desglose por pool de ESE mes. `aggRows` = filas
+// agregadas de computeMonthlyAPRs (reciente-primero). `poolsByMonthKey` =
+// Map monthKey -> [{ label, venue, color, feesUSD, capitalAvg, apr }] ya
+// filtrado a pools con fees > 0 ese mes. El toggle lo gestiona un listener
+// delegado instalado una sola vez sobre #hist-monthly-apr (ver renderHistorico).
+function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
+  if (!Array.isArray(aggRows) || aggRows.length === 0) return "";
+  // Orden cronológico ascendente (antiguo arriba), igual que la tabla previa.
+  const shown = (opts.limit ? aggRows.slice(0, opts.limit) : aggRows).slice().reverse();
+  const aprCls = (apr) => apr == null ? "text-slate-500" : (apr >= 0 ? "text-emerald-400" : "text-rose-400");
+  const aprStr = (apr) => apr == null ? "—" : (apr >= 0 ? "+" : "") + apr.toFixed(1) + "%";
+  const rowsHTML = shown.map((r) => {
+    const pools = (poolsByMonthKey.get(r.monthKey) || []).slice().sort((a, b) => b.feesUSD - a.feesUSD);
+    const ongoingBadge = r.isOngoing ? ` <span class="text-amber-300 text-[9px]">·en curso</span>` : "";
+    const countLbl = pools.length ? `<span class="text-slate-500 text-[9px]">${pools.length} ${pools.length === 1 ? "pool" : "pools"}</span>` : "";
+    const poolRowsHTML = pools.map((p) => `
+      <tr class="${pools.length > 1 ? "border-b border-slate-800/40 last:border-0" : ""}">
+        <td class="py-1"><span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full shrink-0" style="background:${p.color || "#64748b"}"></span><span class="text-slate-300">${p.label}</span>${p.venue ? `<span class="text-slate-500 text-[9px]">${p.venue}</span>` : ""}</span></td>
+        <td class="py-1 pr-3 text-right text-emerald-400 font-mono">${fmtUSD(p.feesUSD)}</td>
+        <td class="py-1 pr-3 text-right text-slate-400 font-mono">${fmtUSD(p.capitalAvg)}</td>
+        <td class="py-1 text-right font-mono font-semibold ${aprCls(p.apr)}">${aprStr(p.apr)}</td>
+      </tr>`).join("");
+    const detailInner = poolRowsHTML
+      ? `<table class="w-full text-[10px]">
+           <thead><tr class="text-[9px] uppercase text-slate-500 border-b border-slate-700">
+             <th class="text-left pb-1 font-semibold">Pool</th>
+             <th class="text-right pb-1 pr-3 font-semibold">Fees</th>
+             <th class="text-right pb-1 pr-3 font-semibold">Capital</th>
+             <th class="text-right pb-1 font-semibold">APR</th>
+           </tr></thead>
+           <tbody>${poolRowsHTML}</tbody>
+         </table>`
+      : `<div class="text-[10px] text-slate-500 py-1">Sin desglose por pool para este mes (las fees vienen de posiciones sin histórico temporal).</div>`;
+    return `
+      <tr class="apr-month-row border-b border-slate-800/50 cursor-pointer hover:bg-slate-800/40" data-apr-month="${r.monthKey}">
+        <td class="py-1.5"><span class="inline-flex items-center gap-1.5"><span class="apr-chev text-slate-500 text-[9px]">▸</span><span class="text-slate-200 font-medium whitespace-nowrap">${r.monthLabel}</span>${ongoingBadge}${countLbl}</span></td>
+        <td class="py-1.5 pr-3 text-right text-emerald-400 font-mono">${fmtUSD(r.feesUSD)}</td>
+        <td class="py-1.5 pr-3 text-right text-slate-400 font-mono">${fmtUSD(r.capitalAvg)}</td>
+        <td class="py-1.5 text-right font-mono font-semibold ${aprCls(r.apr)}">${aprStr(r.apr)}</td>
+      </tr>
+      <tr class="apr-detail-row" data-apr-detail="${r.monthKey}" hidden><td colspan="4" class="p-0">
+        <div class="bg-slate-800/30 border-l-2 border-slate-600 px-3 py-2 mb-1 ml-3 rounded-r-lg">${detailInner}</div>
+      </td></tr>`;
+  }).join("");
+  return `
+    <table class="w-full text-[11px] border-collapse">
+      <thead>
+        <tr class="text-[9px] uppercase text-slate-500 border-b border-slate-700">
+          <th class="text-left pb-2 font-semibold">Mes</th>
+          <th class="text-right pb-2 pr-3 font-semibold">Fees</th>
+          <th class="text-right pb-2 pr-3 font-semibold">Capital medio</th>
+          <th class="text-right pb-2 font-semibold">APR</th>
+        </tr>
+      </thead>
+      <tbody>${rowsHTML}</tbody>
+    </table>`;
+}
+
+// Listener delegado (una sola vez) para desplegar/plegar el desglose por pool
+// de cada mes en la tabla del Histórico. Se instala sobre el contenedor
+// persistente #hist-monthly-apr; renderHistorico reescribe su innerHTML en
+// cada análisis pero el contenedor no cambia, así que el listener sobrevive.
+function installMonthlyAprToggle() {
+  const cont = els.histMonthlyApr;
+  if (!cont || cont.__aprToggleInstalled) return;
+  cont.__aprToggleInstalled = true;
+  cont.addEventListener("click", (e) => {
+    const row = e.target.closest("[data-apr-month]");
+    if (!row || !cont.contains(row)) return;
+    const key = row.dataset.aprMonth;
+    const detail = cont.querySelector(`[data-apr-detail="${(window.CSS && CSS.escape) ? CSS.escape(key) : key}"]`);
+    if (!detail) return;
+    const willOpen = detail.hasAttribute("hidden");
+    if (willOpen) detail.removeAttribute("hidden"); else detail.setAttribute("hidden", "");
+    row.classList.toggle("open", willOpen);
+    const chev = row.querySelector(".apr-chev");
+    if (chev) chev.textContent = willOpen ? "▾" : "▸";
+  });
+}
+
 // Color por red/protocolo. Una posición es de una sola red (EVM chain o protocolo
 // Solana o lending de una chain), así que mapeamos `venue` (el campo que envía el
 // engine como label, p. ej. "Ethereum", "HyperEVM", "Orca Whirlpools", "Revert Lend ·
@@ -2429,9 +2510,11 @@ function renderHistorico() {
     },
   });
 
-  // Tabla agregada "APR por mes natural" — opción A. Las cards individuales
-  // tienen su propia mini-tabla "📅 APR mensual" con la misma lógica per-pool.
+  // Tabla "APR por mes natural" — agregado del portfolio, con cada mes
+  // desplegable para ver el desglose POR POOL de ese mes. La mini-tabla que
+  // antes vivía en cada card se eliminó: el detalle por pool vive solo aquí.
   if (els.histMonthlyAprPanel && els.histMonthlyApr) {
+    installMonthlyAprToggle(); // listener delegado (idempotente)
     const monthlyRows = computeMonthlyAPRs(aggregatedPortfolioTimeline());
     // Solo meses con fees efectivamente cobradas: un mes sin cobros tiene
     // APR 0% trivial y solo añade ruido (ej. el mes en que empezaste a abrir
@@ -2439,7 +2522,28 @@ function renderHistorico() {
     const positiveRows = monthlyRows.filter((r) => r.feesUSD > 0);
     els.histMonthlyAprPanel.classList.remove("hidden");
     if (positiveRows.length) {
-      els.histMonthlyApr.innerHTML = monthlyAprTableHTML(positiveRows, { limit: 24, showCapital: true });
+      // Desglose por pool: para cada serie temporal (no "flat"), calculamos su
+      // propio APR mensual y lo agrupamos por mes. El color/venue del pool se
+      // resuelve cruzando posId/label con los items analizados.
+      const venueByPosId = new Map(), venueByLabel = new Map();
+      for (const r of state.results) {
+        for (const it of (r.items || [])) {
+          if (it.id) venueByPosId.set(String(it.id), it.venue || "");
+          if (it.pair) venueByLabel.set(it.pair, it.venue || "");
+        }
+      }
+      const poolsByMonth = new Map(); // monthKey -> [{label, venue, color, feesUSD, capitalAvg, apr}]
+      for (const s of state.results.flatMap((r) => r.timeline || [])) {
+        if (s.flat || !s.points || !s.points.length) continue; // flat = sin distribución mensual
+        const venue = venueByPosId.get(String(s.posId)) || venueByLabel.get(s.label) || "";
+        const color = venueColor(venue) || venueColor(s.label) || "#64748b";
+        for (const m of computeMonthlyAPRs(s.points)) {
+          if (!(m.feesUSD > 0)) continue;
+          if (!poolsByMonth.has(m.monthKey)) poolsByMonth.set(m.monthKey, []);
+          poolsByMonth.get(m.monthKey).push({ label: s.label, venue, color, feesUSD: m.feesUSD, capitalAvg: m.capitalAvg, apr: m.apr });
+        }
+      }
+      els.histMonthlyApr.innerHTML = monthlyAprByMonthHTML(positiveRows, poolsByMonth, { limit: 24 });
     } else {
       // Caso típico: las fees están reflejadas como "pendientes" (no se han
       // ejecutado collect() reales), así que el delta de fees cobradas entre
