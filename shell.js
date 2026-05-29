@@ -2319,27 +2319,46 @@ function renderHistorico() {
     },
   });
 
-  // Tabla agregada "APR por mes natural" — opción A. Las cards individuales
-  // tienen su propia mini-tabla "📅 APR mensual" con esta misma lógica per-pool.
-  // Render siempre visible: si no hay datos suficientes, mostramos un aviso
-  // que explica por qué (más útil que ocultar el panel sin contexto).
-  if (els.histMonthlyAprPanel && els.histMonthlyApr) {
-    const aggregatedSeries = aggregatedPortfolioTimeline();
-    const monthlyRows = computeMonthlyAPRs(aggregatedSeries);
-    const positiveRows = monthlyRows.filter((r) => r.feesUSD > 0);
-    els.histMonthlyAprPanel.classList.remove("hidden");
-    if (positiveRows.length) {
-      els.histMonthlyApr.innerHTML = monthlyAprTableHTML(monthlyRows, { limit: 24, showCapital: true });
+  // Tabla agregada "APR por mes natural" — opción A. Render SIEMPRE visible
+  // con diagnóstico explícito si no hay datos, para que el usuario sepa por
+  // qué la tabla está vacía en vez de ver simplemente nada.
+  try {
+    if (!els.histMonthlyAprPanel || !els.histMonthlyApr) {
+      console.warn("[apr-mensual] elementos DOM no encontrados:", els.histMonthlyAprPanel, els.histMonthlyApr);
     } else {
-      // Diagnóstico para el usuario: por qué no hay tabla útil.
-      const seriesCount = state.results.flatMap((r) => r.timeline || []).length;
-      const reason = seriesCount === 0
-        ? "Aún no hay timeline reconstruida — analiza el portfolio primero (botón <strong>Analizar todo</strong>)."
-        : monthlyRows.length === 0
-          ? `Series presentes (${seriesCount}) pero sin puntos temporales — quizás los snapshots del subgraph no han llegado todavía.`
-          : `Series presentes (${seriesCount}), agregadas en ${monthlyRows.length} mes(es), pero el delta de fees acumuladas es 0 en todos — significa que ningún mes registró fees nuevas cobradas (las pendientes no cuentan hasta cobrarse, y los snapshots históricos pueden no reflejar fees recién cobradas).`;
-      els.histMonthlyApr.innerHTML = `<div class="text-xs text-slate-400 py-2">${reason}</div>`;
+      els.histMonthlyAprPanel.classList.remove("hidden");
+      const allSeries = state.results.flatMap((r) => r.timeline || []);
+      const timedSeries = allSeries.filter((s) => !s.flat && s.points && s.points.length);
+      const totalPoints = timedSeries.reduce((s, x) => s + x.points.length, 0);
+      const aggregatedSeries = aggregatedPortfolioTimeline();
+      const monthlyRows = computeMonthlyAPRs(aggregatedSeries);
+      const positiveRows = monthlyRows.filter((r) => r.feesUSD > 0);
+      console.log("[apr-mensual] series:", allSeries.length, "timed:", timedSeries.length, "points:", totalPoints, "agg.points:", aggregatedSeries.length, "months:", monthlyRows.length, "positive:", positiveRows.length);
+      if (positiveRows.length) {
+        els.histMonthlyApr.innerHTML = monthlyAprTableHTML(monthlyRows, { limit: 24, showCapital: true });
+      } else {
+        els.histMonthlyApr.innerHTML = `
+          <div class="text-xs text-slate-400 py-2 space-y-1">
+            <div>No hay datos suficientes para construir la tabla todavía.</div>
+            <div class="text-[10px] text-slate-500 font-mono">
+              series=${allSeries.length} · timed=${timedSeries.length} · puntos=${totalPoints} · agg.puntos=${aggregatedSeries.length} · meses=${monthlyRows.length} · meses_con_fees=${positiveRows.length}
+            </div>
+            <div class="text-[10px] text-slate-500">
+              ${allSeries.length === 0
+                ? "Causa probable: el análisis Portfolio aún no ha terminado. Pulsa Analizar todo desde Portfolio."
+                : timedSeries.length === 0
+                  ? "Causa probable: todas las series son 'planas' (Solana sin Birdeye histórico). Faltan snapshots temporales."
+                  : monthlyRows.length === 0
+                    ? "Causa probable: los puntos temporales no se agruparon en ningún mes (timestamps inválidos?)"
+                    : "Causa probable: el delta de fees acumuladas es 0 en todos los meses. Los snapshots del subgraph pueden no reflejar las últimas fees cobradas, o las fees están todas pendientes y aún no se han ejecutado collect()."}
+            </div>
+          </div>`;
+      }
     }
+  } catch (e) {
+    console.error("[apr-mensual] error renderizando tabla:", e);
+    if (els.histMonthlyAprPanel) els.histMonthlyAprPanel.classList.remove("hidden");
+    if (els.histMonthlyApr) els.histMonthlyApr.innerHTML = `<div class="text-xs text-rose-400 py-2">Error: ${e.message || e}</div>`;
   }
 }
 
