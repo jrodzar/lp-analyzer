@@ -2319,17 +2319,26 @@ function renderHistorico() {
     },
   });
 
-  // Tabla agregada "APR por mes natural" — opción A. Solo se muestra si hay
-  // al menos un mes con fees > 0 reconstruido. Las cards individuales tienen
-  // su propia mini-tabla "📅 APR mensual" con esta misma lógica per-pool.
+  // Tabla agregada "APR por mes natural" — opción A. Las cards individuales
+  // tienen su propia mini-tabla "📅 APR mensual" con esta misma lógica per-pool.
+  // Render siempre visible: si no hay datos suficientes, mostramos un aviso
+  // que explica por qué (más útil que ocultar el panel sin contexto).
   if (els.histMonthlyAprPanel && els.histMonthlyApr) {
-    const monthlyRows = computeMonthlyAPRs(aggregatedPortfolioTimeline());
-    const hasData = monthlyRows.some((r) => r.feesUSD > 0);
-    if (hasData) {
+    const aggregatedSeries = aggregatedPortfolioTimeline();
+    const monthlyRows = computeMonthlyAPRs(aggregatedSeries);
+    const positiveRows = monthlyRows.filter((r) => r.feesUSD > 0);
+    els.histMonthlyAprPanel.classList.remove("hidden");
+    if (positiveRows.length) {
       els.histMonthlyApr.innerHTML = monthlyAprTableHTML(monthlyRows, { limit: 24, showCapital: true });
-      els.histMonthlyAprPanel.classList.remove("hidden");
     } else {
-      els.histMonthlyAprPanel.classList.add("hidden");
+      // Diagnóstico para el usuario: por qué no hay tabla útil.
+      const seriesCount = state.results.flatMap((r) => r.timeline || []).length;
+      const reason = seriesCount === 0
+        ? "Aún no hay timeline reconstruida — analiza el portfolio primero (botón <strong>Analizar todo</strong>)."
+        : monthlyRows.length === 0
+          ? `Series presentes (${seriesCount}) pero sin puntos temporales — quizás los snapshots del subgraph no han llegado todavía.`
+          : `Series presentes (${seriesCount}), agregadas en ${monthlyRows.length} mes(es), pero el delta de fees acumuladas es 0 en todos — significa que ningún mes registró fees nuevas cobradas (las pendientes no cuentan hasta cobrarse, y los snapshots históricos pueden no reflejar fees recién cobradas).`;
+      els.histMonthlyApr.innerHTML = `<div class="text-xs text-slate-400 py-2">${reason}</div>`;
     }
   }
 }
