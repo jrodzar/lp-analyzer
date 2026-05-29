@@ -2269,8 +2269,26 @@ function buildHistoricalCurves() {
 function aggregatedPortfolioTimeline() {
   const allSeries = state.results.flatMap((r) => r.timeline || []);
   const timed = allSeries.filter((s) => !s.flat && s.points && s.points.length);
+  const flat = allSeries.filter((s) => s.flat && s.points && s.points.length);
   if (!timed.length) return [];
-  // Eventos de todas las posiciones ordenados cronológicamente.
+
+  // Capital y fees de las series "planas" (Solana sin histórico temporal:
+  // Jupiter Lend, RWA sin Birdeye). No tienen evolución en el tiempo, así que
+  // las tratamos como una base CONSTANTE presente en todo el periodo —
+  // exactamente igual que buildHistoricalCurves para que el capital de la
+  // tabla cuadre con el gráfico de arriba. (Aproximación: asume que esas
+  // posiciones existían durante todos los meses mostrados; sin fecha de
+  // apertura no podemos hacerlo mejor.)
+  // Solo sumamos su CAPITAL al denominador. Sus "fees" (interés de lending)
+  // no tienen distribución temporal conocida — atribuirlas a un mes concreto
+  // sería arbitrario, así que se omiten del numerador mensual.
+  let flatDep = 0;
+  for (const s of flat) {
+    const pt = s.points[s.points.length - 1];
+    flatDep += Math.max(0, (pt.depositedUSD || 0) - (pt.withdrawnUSD || 0));
+  }
+
+  // Eventos de las series temporales ordenados cronológicamente.
   const events = [];
   for (const s of timed) {
     for (const pt of s.points) {
@@ -2285,7 +2303,7 @@ function aggregatedPortfolioTimeline() {
   }
   events.sort((a, b) => a.ts - b.ts);
   // Para cada evento, mantenemos el último estado conocido por posición y
-  // emitimos un snapshot agregado (sumando dep/wd/fees de todas).
+  // emitimos un snapshot agregado (sumando dep/wd/fees de todas + base flat).
   const lastDep = new Map(), lastWd = new Map(), lastFees = new Map();
   const byDay = new Map();
   for (const ev of events) {
@@ -2296,8 +2314,10 @@ function aggregatedPortfolioTimeline() {
     const sum = (m) => [...m.values()].reduce((s, v) => s + v, 0);
     byDay.set(day, {
       ts: day,
-      depositedUSD: sum(lastDep),
-      withdrawnUSD: sum(lastWd),
+      // depositedUSD aquí es ya neto (dep - wd) por posición; sumamos la base
+      // flat de Solana. withdrawnUSD se deja en 0 porque ya está descontado.
+      depositedUSD: sum(lastDep) - sum(lastWd) + flatDep,
+      withdrawnUSD: 0,
       feesUSD: sum(lastFees),
     });
   }
@@ -2413,10 +2433,13 @@ function renderHistorico() {
   // tienen su propia mini-tabla "📅 APR mensual" con la misma lógica per-pool.
   if (els.histMonthlyAprPanel && els.histMonthlyApr) {
     const monthlyRows = computeMonthlyAPRs(aggregatedPortfolioTimeline());
+    // Solo meses con fees efectivamente cobradas: un mes sin cobros tiene
+    // APR 0% trivial y solo añade ruido (ej. el mes en que empezaste a abrir
+    // posiciones pero aún no habías cobrado nada).
     const positiveRows = monthlyRows.filter((r) => r.feesUSD > 0);
     els.histMonthlyAprPanel.classList.remove("hidden");
     if (positiveRows.length) {
-      els.histMonthlyApr.innerHTML = monthlyAprTableHTML(monthlyRows, { limit: 24, showCapital: true });
+      els.histMonthlyApr.innerHTML = monthlyAprTableHTML(positiveRows, { limit: 24, showCapital: true });
     } else {
       // Caso típico: las fees están reflejadas como "pendientes" (no se han
       // ejecutado collect() reales), así que el delta de fees cobradas entre

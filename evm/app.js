@@ -1895,8 +1895,8 @@ function lendingCard(p) {
     </details>
     ${(() => {
       // Mini-tabla APR mensual también en cards lending (opción A).
-      const monthly = computeMonthlyAPRs(p.timelineSeries);
-      if (!monthly.length) return "";
+      const monthly = computeMonthlyAPRs(p.timelineSeries).filter((r) => r.feesUSD > 0);
+      if (!monthly.length) return ""; // solo meses con fees cobradas reales
       return `<details class="text-xs">
         <summary class="text-slate-400 hover:text-slate-200 cursor-pointer select-none">📅 APR mensual</summary>
         <div class="mt-2 max-h-48 overflow-y-auto scrollbar pr-1">${monthlyAprTableHTML(monthly, { limit: 24 })}</div>
@@ -2129,8 +2129,8 @@ function positionCard(p) {
       // Mini-tabla de APR por mes natural (opción A). Solo aparece si la
       // posición tiene `timelineSeries` (reconstruida durante analyze) con
       // suficientes puntos para cubrir al menos un mes con delta de fees > 0.
-      const monthly = computeMonthlyAPRs(p.timelineSeries);
-      if (!monthly.length) return "";
+      const monthly = computeMonthlyAPRs(p.timelineSeries).filter((r) => r.feesUSD > 0);
+      if (!monthly.length) return ""; // solo meses con fees cobradas reales
       return `<details class="text-xs">
         <summary class="text-slate-400 hover:text-slate-200 cursor-pointer select-none">📅 APR mensual</summary>
         <div class="mt-2 max-h-48 overflow-y-auto scrollbar pr-1">${monthlyAprTableHTML(monthly, { limit: 24 })}</div>
