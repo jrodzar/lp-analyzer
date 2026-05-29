@@ -1384,6 +1384,100 @@ function lendingCard(p) {
   return el;
 }
 
+// Acordeón "📜 logs" para cards Solana (Orca / Raydium), análogo al de EVM.
+// La fuente son los eventos clasificados que `enrichSolanaPnL` reconstruye desde
+// las txs de Helius y guarda en `p._eventLog` ({ts, sig, mint, dir, amount, usd,
+// mixed, cls}). cls ∈ deposit | withdraw | withdraw (mixed) | refund (mixed) | fee.
+// A diferencia de EVM (par token0/token1 por fila), aquí cada evento es de UN
+// mint, así que la tabla muestra Token + Cantidad + USD por fila.
+function solEventLogHTML(p) {
+  const events = (p._eventLog || []).filter((e) => e && e.amount > 0);
+  if (!events.length) return "";
+
+  const symOf = (m) => {
+    if (p.token0 && p.token0.mint === m) return p.token0.symbol;
+    if (p.token1 && p.token1.mint === m) return p.token1.symbol;
+    const md = state.tokenList && state.tokenList.get(m);
+    return (md && md.symbol) || (m ? m.slice(0, 4) + "…" + m.slice(-4) : "?");
+  };
+
+  // Cash flows = movimientos de capital (depósito/retiro/reembolso).
+  // Fees = fees cobradas. (Solana no tiene "compound" trackeado como EVM.)
+  const isFee = (e) => e.cls === "fee";
+  const cashFlows = events.filter((e) => !isFee(e));
+  const fees = events.filter(isFee);
+
+  const uid = `sollog-${p.mint}`;
+  const typeLabel = (cls) => {
+    if (cls === "deposit") return `<span class="text-emerald-300 font-semibold">Depósito</span>`;
+    if (cls === "fee") return `<span class="text-cyan-300 font-semibold">Fee cobrada</span>`;
+    if (cls && cls.indexOf("refund") === 0) return `<span class="text-amber-300 font-semibold">Reembolso</span>`;
+    if (cls && cls.indexOf("withdraw") === 0) return `<span class="text-rose-300 font-semibold">Retiro</span>`;
+    return `<span class="text-slate-400">${cls || "?"}</span>`;
+  };
+  const fmtDate = (ts) => {
+    const d = new Date(ts * 1000);
+    return d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" })
+      + " " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", hour12: false });
+  };
+  const fmtAmt = (n) => {
+    if (!n || !isFinite(n)) return "—";
+    if (n >= 1) return n.toFixed(4);
+    if (n >= 0.0001) return n.toFixed(6);
+    return n.toExponential(2);
+  };
+  const fmtUsd = (n) => (n != null && isFinite(n)) ? "$" + n.toFixed(2) : "—";
+  const fmtTx = (sig) => sig
+    ? `<a href="https://solscan.io/tx/${sig}" target="_blank" class="font-mono text-fuchsia-300 hover:underline">${sig.slice(0, 6)}…${sig.slice(-4)}</a>`
+    : `<span class="text-slate-600">—</span>`;
+
+  const tableFor = (evts, emptyMsg) => {
+    if (!evts.length) return `<div class="text-xs text-slate-500 italic py-3 text-center">${emptyMsg}</div>`;
+    return `
+      <div class="overflow-x-auto -mx-1 mt-1">
+        <table class="text-[11px] w-full min-w-[420px]">
+          <thead>
+            <tr class="text-slate-500 text-left">
+              <th class="px-2 py-1 font-medium whitespace-nowrap">Fecha</th>
+              <th class="px-2 py-1 font-medium">Tipo</th>
+              <th class="px-2 py-1 font-medium">Token</th>
+              <th class="px-2 py-1 font-medium text-right">Cantidad</th>
+              <th class="px-2 py-1 font-medium text-right">USD</th>
+              <th class="px-2 py-1 font-medium text-right">Tx</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${evts.map((e) => `
+              <tr class="border-t border-slate-800">
+                <td class="px-2 py-1 text-slate-400 whitespace-nowrap">${fmtDate(e.ts)}</td>
+                <td class="px-2 py-1 whitespace-nowrap">${typeLabel(e.cls)}</td>
+                <td class="px-2 py-1 text-slate-300">${symOf(e.mint)}</td>
+                <td class="px-2 py-1 font-mono text-slate-300 text-right">${fmtAmt(e.amount)}</td>
+                <td class="px-2 py-1 font-mono text-slate-400 text-right">${fmtUsd(e.usd)}</td>
+                <td class="px-2 py-1 text-right">${fmtTx(e.sig)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  };
+
+  return `
+    <details class="text-xs">
+      <summary class="text-slate-400 hover:text-slate-200 cursor-pointer select-none">📜 logs (${events.length})</summary>
+      <div class="mt-2">
+        <div class="flex gap-1 border-b border-slate-800 mb-1 text-[11px]">
+          <button data-tab-btn="cashflows" data-uid="${uid}" class="px-3 py-1.5 border-b-2 border-emerald-400 text-emerald-300 font-semibold">Cash flows (${cashFlows.length})</button>
+          <button data-tab-btn="fees" data-uid="${uid}" class="px-3 py-1.5 border-b-2 border-transparent text-slate-400 hover:text-slate-200">Fees (${fees.length})</button>
+        </div>
+        <div data-tab-panel="cashflows" data-uid="${uid}">${tableFor(cashFlows, "Sin depósitos ni retiros registrados.")}</div>
+        <div data-tab-panel="fees" data-uid="${uid}" class="hidden">${tableFor(fees, "Sin fees cobradas registradas.")}</div>
+      </div>
+    </details>
+  `;
+}
+
 function positionCard(p) {
   if (p._lending) return lendingCard(p);
   const proto = PROTOCOLS[p.protocol];
@@ -1471,6 +1565,7 @@ function positionCard(p) {
           : "Birdeye"} (estimación; fees vs retiros por heurística).</div>` : ""}
       </div>
     </details>
+    ${solEventLogHTML(p)}
     ${managementFooterHTML(managementLinkSol(p))}
   `;
   return el;
@@ -1943,6 +2038,10 @@ async function enrichSolanaPnL(owner) {
       }
       debugLog.push({ ts: e.ts, sig: e.sig, mint: e.mint, dir: e.dir, amount: e.amount, usd, mixed: e.mixed, cls });
     }
+    // Guardar los eventos clasificados en la posición para el acordeón de logs
+    // (solEventLogHTML). Se hace ANTES de los `continue` de PnL incompleto para
+    // que el log aparezca aunque no se pueda calcular PnL/IL fiable.
+    p._eventLog = debugLog;
     // Si falta el histórico de alguna pata, el coste base es poco fiable → no mostramos PnL/IL.
     if (incomplete) { state._beStats.partial++; continue; }
     if (costBasisUSD <= 0) continue; // no pudimos reconstruir nada útil
