@@ -83,11 +83,18 @@ let noble = null; // { sha256, ed25519 } cargado vía script type=module
 
 function ensureNoble() {
   if (window.SolNoble) { noble = window.SolNoble; return Promise.resolve(); }
-  return new Promise((resolve) => {
-    window.addEventListener("solnoble-ready", () => {
-      noble = window.SolNoble;
-      resolve();
-    }, { once: true });
+  return new Promise((resolve, reject) => {
+    // El loader de sol/index.html dispara `solnoble-ready` (ok) o
+    // `solnoble-failed` (todos los CDNs fallaron). Resolvemos en cuanto haya
+    // SolNoble; rechazamos con mensaje claro si falló o si pasan 25s sin
+    // noticias (no colgar el análisis indefinidamente ante un CDN caído).
+    const settle = () => {
+      if (window.SolNoble) { noble = window.SolNoble; resolve(); }
+      else reject(new Error("No se pudo cargar la librería de cifrado de Solana (@noble) desde ningún CDN. Revisa tu conexión y reintenta."));
+    };
+    window.addEventListener("solnoble-ready", settle, { once: true });
+    window.addEventListener("solnoble-failed", settle, { once: true });
+    setTimeout(settle, 25000);
   });
 }
 
@@ -1512,7 +1519,8 @@ function renderValueChart() {
 // ============================================================================
 
 async function analyze() {
-  await ensureNoble();
+  try { await ensureNoble(); }
+  catch (e) { setStatus(e.message || "Error cargando cifrado Solana", "err"); return; }
   const addr = document.getElementById("addr-input").value.trim();
   if (!isValidSolanaAddress(addr)) { setStatus("Dirección Solana no válida (base58, 32-44 chars).", "err"); return; }
   if (!state.heliusKey && !PROXY_BASE) { setStatus("Falta Helius API key. Abre Settings.", "err"); openSettings(); return; }
@@ -2359,7 +2367,9 @@ async function init() {
     renderPositions();
   });
 
-  await ensureNoble();
+  // Pre-carga el cifrado (no crítico aquí; analyze() lo re-asegura). Toleramos
+  // fallo para no provocar un unhandled rejection en el init.
+  try { await ensureNoble(); } catch (e) { console.warn("[noble] pre-carga falló:", e.message); }
 
   if (!state.heliusKey && !PROXY_BASE) {
     setStatus("Configura tu Helius API key en Settings antes de analizar.", "info");

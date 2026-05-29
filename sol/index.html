@@ -25,13 +25,39 @@
   </script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
-  <!-- Crypto mínimo: @noble (fiable en CDN). Evitamos @solana/web3.js entero
-       porque su bundle base58 falla en esm.sh (.fill is not a function). -->
+  <!-- Crypto mínimo: @noble. Evitamos @solana/web3.js entero porque su bundle
+       base58 falla en esm.sh (.fill is not a function).
+       Carga RESILIENTE: prueba varios CDNs (esm.sh → esm.run/jsdelivr) con
+       reintento. Si esm.sh tiene un hipo (ERR_CONNECTION_CLOSED visto en prod),
+       el fallback evita que el engine Solana se quede colgado esperando
+       `solnoble-ready` para siempre. Dispara `solnoble-ready` al cargar o
+       `solnoble-failed` si TODOS los CDNs fallan (ensureNoble lo maneja). -->
   <script type="module">
-    import { sha256 } from "https://esm.sh/@noble/hashes@1.4.0/sha256";
-    import { ed25519 } from "https://esm.sh/@noble/curves@1.4.0/ed25519";
-    window.SolNoble = { sha256, ed25519 };
-    window.dispatchEvent(new CustomEvent("solnoble-ready"));
+    const CDNS = [
+      { h: "https://esm.sh/@noble/hashes@1.4.0/sha256",  c: "https://esm.sh/@noble/curves@1.4.0/ed25519" },
+      { h: "https://esm.run/@noble/hashes@1.4.0/sha256", c: "https://esm.run/@noble/curves@1.4.0/ed25519" },
+    ];
+    async function tryCdn(src) {
+      const [h, c] = await Promise.all([import(src.h), import(src.c)]);
+      if (!h.sha256 || !c.ed25519) throw new Error("exports vacíos");
+      return { sha256: h.sha256, ed25519: c.ed25519 };
+    }
+    (async () => {
+      for (let i = 0; i < CDNS.length; i++) {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            window.SolNoble = await tryCdn(CDNS[i]);
+            if (i > 0 || attempt > 0) console.log(`[noble] cargado desde CDN #${i + 1} (intento ${attempt + 1})`);
+            window.dispatchEvent(new CustomEvent("solnoble-ready"));
+            return;
+          } catch (e) {
+            console.warn(`[noble] CDN #${i + 1} intento ${attempt + 1} falló:`, e?.message || e);
+          }
+        }
+      }
+      console.error("[noble] todos los CDNs fallaron — funciones Solana no disponibles");
+      window.dispatchEvent(new CustomEvent("solnoble-failed"));
+    })();
   </script>
 
   <style>
