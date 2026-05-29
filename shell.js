@@ -188,6 +188,78 @@ function fmtUSDc(n) {
 function pnlColor(n) { if (!isFinite(n)) return "text-slate-400"; return n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "text-slate-300"; }
 function distinctColor(i) { const h = Math.round((i * 137.508) % 360); return `hsl(${h} 70% 60%)`; }
 
+// ─── APR por mes natural ───────────────────────────────────────────────────
+// DUPLICADO de common.js: el shell NO carga common.js (solo los iframes), pero
+// renderHistorico() necesita estas funciones para la tabla agregada del
+// portfolio. Mantener sincronizado con common.js si se cambia la lógica.
+// (Las cards individuales usan la copia de common.js dentro de cada engine.)
+function computeMonthlyAPRs(points) {
+  if (!Array.isArray(points) || points.length === 0) return [];
+  const sorted = [...points].sort((a, b) => a.ts - b.ts);
+  const MONTH_NAMES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+  const monthKey = (ts) => { const d = new Date(ts); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };
+  const monthLabel = (ts) => { const d = new Date(ts); return `${MONTH_NAMES[d.getUTCMonth()]} ${d.getUTCFullYear()}`; };
+  const daysInMonth = (ts) => { const d = new Date(ts); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate(); };
+  const monthsMap = new Map();
+  for (const p of sorted) {
+    const k = monthKey(p.ts);
+    if (!monthsMap.has(k)) monthsMap.set(k, { key: k, label: monthLabel(p.ts), points: [], firstTs: p.ts, lastTs: p.ts });
+    const m = monthsMap.get(k);
+    m.points.push(p);
+    if (p.ts < m.firstTs) m.firstTs = p.ts;
+    if (p.ts > m.lastTs) m.lastTs = p.ts;
+  }
+  const months = [...monthsMap.values()].sort((a, b) => a.key.localeCompare(b.key));
+  const result = [];
+  let prevCumulativeFees = 0;
+  const nowMs = Date.now();
+  for (let i = 0; i < months.length; i++) {
+    const m = months[i];
+    const cumFeesEnd = m.points[m.points.length - 1].feesUSD || 0;
+    const feesMonth = Math.max(0, cumFeesEnd - prevCumulativeFees);
+    const capPoints = m.points.map((p) => Math.max(0, (p.depositedUSD || 0) - (p.withdrawnUSD || 0)));
+    const capitalAvg = capPoints.reduce((s, v) => s + v, 0) / capPoints.length;
+    const firstDayMs = Math.floor(m.firstTs / 86400000) * 86400000;
+    const lastDayMs = Math.floor(m.lastTs / 86400000) * 86400000;
+    const daysActive = Math.max(1, Math.round((lastDayMs - firstDayMs) / 86400000) + 1);
+    const isOngoing = (i === months.length - 1) && (nowMs - m.lastTs < 7 * 86400000);
+    const apr = (capitalAvg > 0 && daysActive >= 1) ? (feesMonth / capitalAvg) * (365 / daysActive) * 100 : null;
+    result.push({ monthKey: m.key, monthLabel: m.label, feesUSD: feesMonth, capitalAvg, daysActive, daysInMonth: daysInMonth(m.firstTs), apr, isOngoing });
+    prevCumulativeFees = cumFeesEnd;
+  }
+  return result.reverse();
+}
+function monthlyAprTableHTML(rows, opts = {}) {
+  if (!Array.isArray(rows) || rows.length === 0) return "";
+  const shown = opts.limit ? rows.slice(0, opts.limit) : rows;
+  const showCap = !!opts.showCapital;
+  const rowsHTML = shown.map((r) => {
+    const aprCls = r.apr == null ? "text-slate-500" : (r.apr >= 0 ? "text-emerald-400" : "text-rose-400");
+    const aprStr = r.apr == null ? "—" : (r.apr >= 0 ? "+" : "") + r.apr.toFixed(1) + "%";
+    const ongoingBadge = r.isOngoing ? ` <span class="text-amber-300 text-[9px]">·en curso</span>` : "";
+    const capCell = showCap ? `<td class="py-1 pr-2 text-right font-mono text-slate-400">${fmtUSD(r.capitalAvg)}</td>` : "";
+    return `<tr class="border-b border-slate-800/50 last:border-0">
+      <td class="py-1 pr-2 text-slate-300 whitespace-nowrap">${r.monthLabel}${ongoingBadge}</td>
+      <td class="py-1 pr-2 text-right text-emerald-400 font-mono">${fmtUSD(r.feesUSD)}</td>
+      ${capCell}
+      <td class="py-1 text-right font-mono font-semibold ${aprCls}">${aprStr}</td>
+    </tr>`;
+  }).join("");
+  const capHeader = showCap ? `<th class="text-right pb-1 pr-2 font-semibold">Capital</th>` : "";
+  return `
+    <table class="w-full text-[10px]">
+      <thead>
+        <tr class="text-[9px] uppercase text-slate-500 border-b border-slate-700">
+          <th class="text-left pb-1 font-semibold">Mes</th>
+          <th class="text-right pb-1 pr-2 font-semibold">Fees</th>
+          ${capHeader}
+          <th class="text-right pb-1 font-semibold">APR</th>
+        </tr>
+      </thead>
+      <tbody>${rowsHTML}</tbody>
+    </table>`;
+}
+
 // Color por red/protocolo. Una posición es de una sola red (EVM chain o protocolo
 // Solana o lending de una chain), así que mapeamos `venue` (el campo que envía el
 // engine como label, p. ej. "Ethereum", "HyperEVM", "Orca Whirlpools", "Revert Lend ·
@@ -2319,46 +2391,21 @@ function renderHistorico() {
     },
   });
 
-  // Tabla agregada "APR por mes natural" — opción A. Render SIEMPRE visible
-  // con diagnóstico explícito si no hay datos, para que el usuario sepa por
-  // qué la tabla está vacía en vez de ver simplemente nada.
-  try {
-    if (!els.histMonthlyAprPanel || !els.histMonthlyApr) {
-      console.warn("[apr-mensual] elementos DOM no encontrados:", els.histMonthlyAprPanel, els.histMonthlyApr);
+  // Tabla agregada "APR por mes natural" — opción A. Las cards individuales
+  // tienen su propia mini-tabla "📅 APR mensual" con la misma lógica per-pool.
+  if (els.histMonthlyAprPanel && els.histMonthlyApr) {
+    const monthlyRows = computeMonthlyAPRs(aggregatedPortfolioTimeline());
+    const positiveRows = monthlyRows.filter((r) => r.feesUSD > 0);
+    els.histMonthlyAprPanel.classList.remove("hidden");
+    if (positiveRows.length) {
+      els.histMonthlyApr.innerHTML = monthlyAprTableHTML(monthlyRows, { limit: 24, showCapital: true });
     } else {
-      els.histMonthlyAprPanel.classList.remove("hidden");
-      const allSeries = state.results.flatMap((r) => r.timeline || []);
-      const timedSeries = allSeries.filter((s) => !s.flat && s.points && s.points.length);
-      const totalPoints = timedSeries.reduce((s, x) => s + x.points.length, 0);
-      const aggregatedSeries = aggregatedPortfolioTimeline();
-      const monthlyRows = computeMonthlyAPRs(aggregatedSeries);
-      const positiveRows = monthlyRows.filter((r) => r.feesUSD > 0);
-      console.log("[apr-mensual] series:", allSeries.length, "timed:", timedSeries.length, "points:", totalPoints, "agg.points:", aggregatedSeries.length, "months:", monthlyRows.length, "positive:", positiveRows.length);
-      if (positiveRows.length) {
-        els.histMonthlyApr.innerHTML = monthlyAprTableHTML(monthlyRows, { limit: 24, showCapital: true });
-      } else {
-        els.histMonthlyApr.innerHTML = `
-          <div class="text-xs text-slate-400 py-2 space-y-1">
-            <div>No hay datos suficientes para construir la tabla todavía.</div>
-            <div class="text-[10px] text-slate-500 font-mono">
-              series=${allSeries.length} · timed=${timedSeries.length} · puntos=${totalPoints} · agg.puntos=${aggregatedSeries.length} · meses=${monthlyRows.length} · meses_con_fees=${positiveRows.length}
-            </div>
-            <div class="text-[10px] text-slate-500">
-              ${allSeries.length === 0
-                ? "Causa probable: el análisis Portfolio aún no ha terminado. Pulsa Analizar todo desde Portfolio."
-                : timedSeries.length === 0
-                  ? "Causa probable: todas las series son 'planas' (Solana sin Birdeye histórico). Faltan snapshots temporales."
-                  : monthlyRows.length === 0
-                    ? "Causa probable: los puntos temporales no se agruparon en ningún mes (timestamps inválidos?)"
-                    : "Causa probable: el delta de fees acumuladas es 0 en todos los meses. Los snapshots del subgraph pueden no reflejar las últimas fees cobradas, o las fees están todas pendientes y aún no se han ejecutado collect()."}
-            </div>
-          </div>`;
-      }
+      // Caso típico: las fees están reflejadas como "pendientes" (no se han
+      // ejecutado collect() reales), así que el delta de fees cobradas entre
+      // snapshots es 0. La tabla necesita fees efectivamente cobradas para
+      // calcular el APR realizado de cada mes.
+      els.histMonthlyApr.innerHTML = `<div class="text-xs text-slate-400 py-2">Aún no hay fees <strong>cobradas</strong> repartidas por meses. El APR mensual se calcula sobre fees efectivamente cobradas (no las pendientes). Aparecerá en cuanto cobres fees o el histórico registre cobros pasados.</div>`;
     }
-  } catch (e) {
-    console.error("[apr-mensual] error renderizando tabla:", e);
-    if (els.histMonthlyAprPanel) els.histMonthlyAprPanel.classList.remove("hidden");
-    if (els.histMonthlyApr) els.histMonthlyApr.innerHTML = `<div class="text-xs text-rose-400 py-2">Error: ${e.message || e}</div>`;
   }
 }
 
