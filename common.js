@@ -213,9 +213,29 @@ function computeMonthlyAPRs(points) {
     const cumFeesEnd = m.points[m.points.length - 1].feesUSD || 0;
     const feesMonth = Math.max(0, cumFeesEnd - prevCumulativeFees);
 
-    // Capital medio: max(0, dep - wd) promediado sobre los puntos del mes.
-    const capPoints = m.points.map((p) => Math.max(0, (p.depositedUSD || 0) - (p.withdrawnUSD || 0)));
-    const capitalAvg = capPoints.reduce((s, v) => s + v, 0) / capPoints.length;
+    // Capital medio del mes, PONDERADO POR TIEMPO (no por nº de snapshots).
+    // Cada punto fija un nivel de capital `max(0, dep - wd)` que se mantiene
+    // hasta el siguiente punto; ponderamos cada nivel por los días que estuvo
+    // vigente dentro del mes. Esto evita el sesgo de promediar snapshots:
+    // si abriste posiciones progresivamente, los primeros snapshots (capital
+    // bajo) no deben pesar igual que un nivel que duró 3 semanas.
+    const mp = m.points; // ya ordenados ascendente (vienen de sorted)
+    const monthStart = Date.UTC(new Date(m.firstTs).getUTCFullYear(), new Date(m.firstTs).getUTCMonth(), 1);
+    const monthEnd = Date.UTC(new Date(m.firstTs).getUTCFullYear(), new Date(m.firstTs).getUTCMonth() + 1, 1);
+    let capWeighted = 0, totalSpan = 0;
+    for (let j = 0; j < mp.length; j++) {
+      const cap = Math.max(0, (mp[j].depositedUSD || 0) - (mp[j].withdrawnUSD || 0));
+      const from = Math.max(mp[j].ts, monthStart);
+      // vigente hasta el siguiente punto, o hasta fin de mes / ahora (lo que antes ocurra)
+      const nextTs = (j + 1 < mp.length) ? mp[j + 1].ts : Math.min(monthEnd, Date.now());
+      const span = Math.max(0, nextTs - from);
+      capWeighted += cap * span;
+      totalSpan += span;
+    }
+    // Fallback al promedio simple si el span total es 0 (un único snapshot).
+    const capitalAvg = totalSpan > 0
+      ? capWeighted / totalSpan
+      : mp.reduce((s, p) => s + Math.max(0, (p.depositedUSD || 0) - (p.withdrawnUSD || 0)), 0) / mp.length;
 
     // Días activos en ESTE mes: rango de fechas con datos (mínimo 1).
     const firstDayMs = Math.floor(m.firstTs / 86400000) * 86400000;
@@ -252,7 +272,10 @@ function computeMonthlyAPRs(points) {
 //   · showCapital (boolean) — añadir columna "Capital medio"
 function monthlyAprTableHTML(rows, opts = {}) {
   if (!Array.isArray(rows) || rows.length === 0) return "";
-  const shown = opts.limit ? rows.slice(0, opts.limit) : rows;
+  // `rows` viene del más reciente al más antiguo (para que `limit` recorte los
+  // meses recientes). Pero la tabla se pinta en orden CRONOLÓGICO ascendente:
+  // mes más antiguo arriba, mes en curso abajo del todo.
+  const shown = (opts.limit ? rows.slice(0, opts.limit) : rows).slice().reverse();
   const showCap = !!opts.showCapital;
 
   const rowsHTML = shown.map((r) => {

@@ -217,8 +217,24 @@ function computeMonthlyAPRs(points) {
     const m = months[i];
     const cumFeesEnd = m.points[m.points.length - 1].feesUSD || 0;
     const feesMonth = Math.max(0, cumFeesEnd - prevCumulativeFees);
-    const capPoints = m.points.map((p) => Math.max(0, (p.depositedUSD || 0) - (p.withdrawnUSD || 0)));
-    const capitalAvg = capPoints.reduce((s, v) => s + v, 0) / capPoints.length;
+    // Capital medio ponderado por tiempo (no por nº de snapshots) — evita el
+    // sesgo de promediar estados intermedios cuando las posiciones se abren
+    // progresivamente. Ver comentario detallado en common.js.
+    const mp = m.points;
+    const monthStart = Date.UTC(new Date(m.firstTs).getUTCFullYear(), new Date(m.firstTs).getUTCMonth(), 1);
+    const monthEnd = Date.UTC(new Date(m.firstTs).getUTCFullYear(), new Date(m.firstTs).getUTCMonth() + 1, 1);
+    let capWeighted = 0, totalSpan = 0;
+    for (let j = 0; j < mp.length; j++) {
+      const cap = Math.max(0, (mp[j].depositedUSD || 0) - (mp[j].withdrawnUSD || 0));
+      const from = Math.max(mp[j].ts, monthStart);
+      const nextTs = (j + 1 < mp.length) ? mp[j + 1].ts : Math.min(monthEnd, Date.now());
+      const span = Math.max(0, nextTs - from);
+      capWeighted += cap * span;
+      totalSpan += span;
+    }
+    const capitalAvg = totalSpan > 0
+      ? capWeighted / totalSpan
+      : mp.reduce((s, p) => s + Math.max(0, (p.depositedUSD || 0) - (p.withdrawnUSD || 0)), 0) / mp.length;
     const firstDayMs = Math.floor(m.firstTs / 86400000) * 86400000;
     const lastDayMs = Math.floor(m.lastTs / 86400000) * 86400000;
     const daysActive = Math.max(1, Math.round((lastDayMs - firstDayMs) / 86400000) + 1);
@@ -231,7 +247,9 @@ function computeMonthlyAPRs(points) {
 }
 function monthlyAprTableHTML(rows, opts = {}) {
   if (!Array.isArray(rows) || rows.length === 0) return "";
-  const shown = opts.limit ? rows.slice(0, opts.limit) : rows;
+  // Orden cronológico ascendente en la tabla (antiguo arriba, actual abajo);
+  // `rows` llega reciente-primero para que `limit` recorte los meses recientes.
+  const shown = (opts.limit ? rows.slice(0, opts.limit) : rows).slice().reverse();
   const showCap = !!opts.showCapital;
   const rowsHTML = shown.map((r) => {
     const aprCls = r.apr == null ? "text-slate-500" : (r.apr >= 0 ? "text-emerald-400" : "text-rose-400");
