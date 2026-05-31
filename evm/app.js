@@ -1972,10 +1972,19 @@ function classifyRpcEvents(rpcEvents, dec0, dec1) {
   }
   const out = [];
   for (const g of byTx.values()) {
-    if (g.inc0 > 0n || g.inc1 > 0n) out.push({ ts: g.ts, type: "deposit", amount0: toN(g.inc0, dec0), amount1: toN(g.inc1, dec1), txHash: g.tx });
-    if (g.dec0 > 0n || g.dec1 > 0n) out.push({ ts: g.ts, type: "withdraw", amount0: toN(g.dec0, dec0), amount1: toN(g.dec1, dec1), txHash: g.tx });
     const fee0 = sub(g.col0, g.dec0), fee1 = sub(g.col1, g.dec1);
-    if (fee0 > 0n || fee1 > 0n) out.push({ ts: g.ts, type: "collect", amount0: toN(fee0, dec0), amount1: toN(fee1, dec1), txHash: g.tx });
+    const hasInc = g.inc0 > 0n || g.inc1 > 0n;
+    const hasFee = fee0 > 0n || fee1 > 0n;
+    // Compound = en la MISMA tx se cobran fees (col − dec > 0) Y se aporta
+    // liquidez (inc). Es una re-inversión de fees, no un depósito suelto + un
+    // cobro suelto. El "amount" del evento es lo cobrado/reinvertido (las fees).
+    if (hasInc && hasFee) {
+      out.push({ ts: g.ts, type: "compound", amount0: toN(fee0, dec0), amount1: toN(fee1, dec1), txHash: g.tx });
+      continue;
+    }
+    if (hasInc) out.push({ ts: g.ts, type: "deposit", amount0: toN(g.inc0, dec0), amount1: toN(g.inc1, dec1), txHash: g.tx });
+    if (g.dec0 > 0n || g.dec1 > 0n) out.push({ ts: g.ts, type: "withdraw", amount0: toN(g.dec0, dec0), amount1: toN(g.dec1, dec1), txHash: g.tx });
+    if (hasFee) out.push({ ts: g.ts, type: "collect", amount0: toN(fee0, dec0), amount1: toN(fee1, dec1), txHash: g.tx });
   }
   return out.sort((a, b) => a.ts - b.ts);
 }
@@ -1989,7 +1998,10 @@ function eventLogHTML(p) {
   if (!events.length) return "";
 
   // Cash flows = movimientos de capital (deposit/withdraw, no fees)
-  // Compoundings = eventos relacionados con fees (compound auto + collect manual)
+  // Fees = eventos de fees: "Fee Collect" (cobro simple) + "Fee Compound"
+  // (cobro + re-inversión en la misma tx). La columna "Tipo" distingue ambos;
+  // la pestaña se llama "Fees" porque agrupa los dos (antes decía
+  // "Compoundings", lo que era falso para un cobro simple).
   const cashFlows = events.filter((e) => e.type === "deposit" || e.type === "withdraw");
   const compounds = events.filter((e) => e.type === "compound" || e.type === "collect");
 
@@ -2056,7 +2068,7 @@ function eventLogHTML(p) {
       <div class="mt-2">
         <div class="flex gap-1 border-b border-slate-800 mb-1 text-[11px]">
           <button data-tab-btn="cashflows" data-uid="${uid}" class="px-3 py-1.5 border-b-2 border-emerald-400 text-emerald-300 font-semibold">Cash flows (${cashFlows.length})</button>
-          <button data-tab-btn="compounds" data-uid="${uid}" class="px-3 py-1.5 border-b-2 border-transparent text-slate-400 hover:text-slate-200">Compoundings (${compounds.length})</button>
+          <button data-tab-btn="compounds" data-uid="${uid}" class="px-3 py-1.5 border-b-2 border-transparent text-slate-400 hover:text-slate-200">Fees (${compounds.length})</button>
         </div>
         <div data-tab-panel="cashflows" data-uid="${uid}">${tableFor(cashFlows, "Sin depósitos ni retiros registrados.")}</div>
         <div data-tab-panel="compounds" data-uid="${uid}" class="hidden">${tableFor(compounds, "Sin compounds ni cobros de fees registrados.")}</div>
