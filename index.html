@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "190";</script>
+  <script>window.APP_VERSION = "191";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -362,8 +362,12 @@
         <!-- Distribución del valor -->
         <section id="pf-charts" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <h3 class="text-sm font-semibold mb-3">Valor por dirección</h3>
-            <div class="relative h-64"><canvas id="chart-by-address"></canvas></div>
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-semibold">Valor por dirección</h3>
+              <button id="addr-view-toggle" class="text-[11px] px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300" title="Alternar entre gráfico y tabla">Tabla</button>
+            </div>
+            <div id="addr-chart-wrap" class="relative h-64"><canvas id="chart-by-address"></canvas></div>
+            <div id="addr-table-wrap" class="hidden overflow-x-auto"></div>
           </div>
           <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <h3 class="text-sm font-semibold mb-3">Valor por red / protocolo</h3>

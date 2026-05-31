@@ -44,6 +44,7 @@ const els = {
   gPositions: $("g-positions"), gPositionsSub: $("g-positions-sub"), gAddresses: $("g-addresses"),
   pfSections: $("pf-sections"),
   pfCharts: $("pf-charts"), chartByAddress: $("chart-by-address"), chartByVenue: $("chart-by-venue"), chartByFees: $("chart-by-fees"),
+  addrViewToggle: $("addr-view-toggle"), addrChartWrap: $("addr-chart-wrap"), addrTableWrap: $("addr-table-wrap"),
   quickBanner: $("quick-banner"), pfBanner: $("pf-banner"),
   pfFeesTimeline: $("pf-fees-timeline"), chartFeesTimeline: $("chart-fees-timeline"),
   pfFeesTimelineTotal: $("pf-fees-timeline-total"), chartFeesTimelineTotal: $("chart-fees-timeline-total"),
@@ -2000,7 +2001,8 @@ function renderPortfolioCharts() {
     .filter((x) => x.value > 0);
 
   els.pfCharts.classList.toggle("hidden", byAddr.length === 0);
-  drawDoughnut("addr", els.chartByAddress, byAddr);
+  state._lastByAddr = byAddr;       // cache para alternar gráfico/tabla sin re-analizar
+  applyAddrView();                  // pinta doughnut o tabla según preferencia
   drawDoughnut("venue", els.chartByVenue, byVenue);
   drawDoughnut("fees", els.chartByFees, byFees);
   renderFeesTimelineChart();
@@ -2122,6 +2124,44 @@ function renderFeesTimelineTotalChart() {
     data: { datasets: [{ label: "Total fees", data, borderColor: "#10b981", backgroundColor: "rgba(16,185,129,0.08)", fill: true, stepped: "after", pointRadius: 0, borderWidth: 2 }] },
     options: lineOptions,
   });
+}
+
+// Tabla alternativa al doughnut "Valor por dirección": MISMO orden (portfolio)
+// y MISMOS colores que el gráfico (distinctColor por índice); columnas
+// Dirección · % · Valor (al final) + fila Total.
+function buildAddrTableHTML(byAddr) {
+  if (!byAddr || !byAddr.length) return "";
+  const total = byAddr.reduce((s, d) => s + d.value, 0);
+  const rows = byAddr.map((d, i) => {
+    const color = distinctColor(i); // mismo color que el segmento del doughnut
+    const pct = total > 0 ? (d.value / total) * 100 : 0;
+    return `<tr class="border-b border-slate-800/60">
+      <td class="py-1.5"><span class="inline-flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:${color}"></span><span class="text-slate-200">${d.label}</span></span></td>
+      <td class="py-1.5 pr-3 text-right font-mono text-slate-300 tabular-nums">${pct.toFixed(1)}%</td>
+      <td class="py-1.5 text-right font-mono font-semibold text-slate-100">${fmtUSD(d.value)}</td>
+    </tr>`;
+  }).join("");
+  return `<table class="w-full text-sm">
+    <thead><tr class="text-[10px] uppercase tracking-wide text-slate-500 border-b border-slate-700">
+      <th class="text-left pb-1.5 font-semibold">Dirección</th>
+      <th class="text-right pb-1.5 pr-3 font-semibold">%</th>
+      <th class="text-right pb-1.5 font-semibold">Valor</th>
+    </tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+
+// Aplica la vista elegida (gráfico/tabla) al panel "Valor por dirección".
+// Persiste en localStorage; usa state._lastByAddr (cacheado al renderizar) para
+// poder alternar sin re-analizar.
+function applyAddrView() {
+  if (!els.addrChartWrap || !els.addrTableWrap) return;
+  const isTable = localStorage.getItem("lp:addrView") === "table";
+  els.addrChartWrap.classList.toggle("hidden", isTable);
+  els.addrTableWrap.classList.toggle("hidden", !isTable);
+  if (els.addrViewToggle) els.addrViewToggle.textContent = isTable ? "Gráfico" : "Tabla";
+  const data = state._lastByAddr || [];
+  if (isTable) els.addrTableWrap.innerHTML = buildAddrTableHTML(data);
+  else drawDoughnut("addr", els.chartByAddress, data); // redibuja al volver a gráfico
 }
 
 function drawDoughnut(key, canvas, data) {
@@ -2805,6 +2845,10 @@ els.pfCsv.onclick = exportPortfolioCSV;
 els.autoRefresh.onchange = applyAutoRefresh;
 els.refreshNow.onclick = refreshActiveTab;
 els.pfManageToggle.onclick = togglePfManage;
+if (els.addrViewToggle) els.addrViewToggle.onclick = () => {
+  localStorage.setItem("lp:addrView", localStorage.getItem("lp:addrView") === "table" ? "chart" : "table");
+  applyAddrView();
+};
 els.feesMinThreshold.addEventListener("input", () => {
   localStorage.setItem("lp:feesMinThreshold", String(els.feesMinThreshold.value || 0));
   renderFeesTimelineChart();
