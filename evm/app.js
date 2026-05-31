@@ -2548,6 +2548,21 @@ document.addEventListener("DOMContentLoaded", init);
       const inp = document.getElementById("addr-input"); if (inp) inp.value = "";
     } else if (d.type === "lp-set-token") {
       proxyToken = d.token || "";
+    } else if (d.type === "lp-invalidate-hist") {
+      // Tras un cobro/compound, el módulo active/ (solo en [pro]) pide invalidar
+      // el caché del histórico de una posición (clave `${apiBase}:${tokenId}`)
+      // para que el siguiente análisis relea los eventos on-chain y muestre el
+      // cobro nuevo en los logs sin esperar a que expire HIST_CACHE_TTL (10 min).
+      // Si no viene tokenId, limpia todo el caché de histórico. En [main] nadie
+      // envía este mensaje (no hay módulos active), así que es no-op.
+      try {
+        if (d.tokenId != null) {
+          const suffix = ":" + String(d.tokenId);
+          for (const k of [..._histCache.keys()]) if (k.endsWith(suffix)) _histCache.delete(k);
+        } else {
+          _histCache.clear();
+        }
+      } catch (_) {}
     } else if (d.type === "lp-set-fx") {
       if (typeof setCurrency === "function") setCurrency(d.rate, d.sym);
       if (typeof renderAll === "function" && (state.positions || []).length) renderAll();
