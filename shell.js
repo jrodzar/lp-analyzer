@@ -2136,7 +2136,7 @@ function buildAddrTableHTML(byAddr) {
     const color = distinctColor(i); // mismo color que el segmento del doughnut
     const pct = total > 0 ? (d.value / total) * 100 : 0;
     return `<tr class="border-b border-slate-800/60">
-      <td class="py-1.5"><span class="inline-flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full shrink-0" style="background:${color}"></span><span class="text-slate-200">${d.label}</span></span></td>
+      <td class="py-1.5"><span class="inline-flex items-center gap-2"><span class="w-2 h-2 rounded-full shrink-0" style="display:inline-block;width:9px;height:9px;border-radius:9999px;background:${color}"></span><span class="text-slate-200">${d.label}</span></span></td>
       <td class="py-1.5 pr-3 text-right font-mono text-slate-300 tabular-nums">${pct.toFixed(1)}%</td>
       <td class="py-1.5 text-right font-mono font-semibold text-slate-100">${fmtUSD(d.value)}</td>
     </tr>`;
