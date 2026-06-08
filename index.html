@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "197";</script>
+  <script>window.APP_VERSION = "198";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -567,31 +567,34 @@
             class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-lg font-bold focus:outline-none focus:border-[#ECE600]">
         </div>
 
-        <div class="rounded-xl border border-slate-800 bg-slate-900 overflow-hidden">
+        <div class="rounded-xl border border-slate-800 bg-slate-900 overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
               <tr class="text-[10px] uppercase tracking-wide text-slate-400 border-b border-slate-800">
-                <th class="text-left px-3 py-2">Pilar</th>
-                <th class="text-center px-2 py-2">%</th>
-                <th class="text-center px-2 py-2">Nº pools</th>
-                <th class="text-right px-3 py-2">Dinero pilar</th>
+                <th class="text-left px-2 py-2">Pilar</th>
+                <th class="text-center px-1 py-2">%</th>
+                <th class="text-center px-1 py-2">Pools</th>
+                <th class="text-right px-2 py-2">Dinero pilar</th>
                 <th class="text-right px-3 py-2">Por pool</th>
               </tr>
             </thead>
             <tbody id="alloc-rows"></tbody>
             <tfoot>
               <tr class="border-t border-slate-700 font-semibold">
-                <td class="px-3 py-2">Total</td>
-                <td class="text-center px-2 py-2 whitespace-nowrap"><span id="alloc-sumpct" class="font-bold">—</span><button id="alloc-fix" type="button" class="hidden ml-2 text-[10px] px-2 py-0.5 rounded bg-[#ECE600] text-slate-900 font-bold hover:bg-[#f5ef4d] align-middle">Ajustar a 100%</button></td>
-                <td class="text-center px-2 py-2" id="alloc-sumpools">—</td>
-                <td class="text-right px-3 py-2 font-mono text-[#ECE600]" id="alloc-sumtotal">—</td>
-                <td class="text-right px-3 py-2"></td>
+                <td class="px-2 py-2">Total</td>
+                <td class="text-center px-1 py-2"><span id="alloc-sumpct" class="font-bold">—</span></td>
+                <td class="text-center px-1 py-2" id="alloc-sumpools">—</td>
+                <td class="text-right px-2 py-2 font-mono text-[#ECE600]" id="alloc-sumtotal">—</td>
+                <td class="text-right px-2 py-2"></td>
               </tr>
             </tfoot>
           </table>
         </div>
 
-        <div id="alloc-warn" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg px-3 py-2"></div>
+        <div id="alloc-warnbox" class="hidden flex items-center gap-2 flex-wrap text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg px-3 py-2">
+          <span id="alloc-warn" class="flex-1 min-w-0"></span>
+          <button id="alloc-fix" type="button" class="text-[11px] px-2.5 py-1 rounded bg-[#ECE600] text-slate-900 font-bold hover:bg-[#f5ef4d] whitespace-nowrap shrink-0">Ajustar a 100%</button>
+        </div>
 
         <div class="flex items-center justify-between gap-2">
           <button id="alloc-reset" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">Restablecer por defecto</button>

@@ -253,11 +253,11 @@ function renderAllocator() {
   const tbody = $("alloc-rows");
   tbody.innerHTML = alloc.pillars.map((p, i) => `
     <tr class="border-b border-slate-800/50">
-      <td class="px-3 py-2 font-semibold">${p.key}</td>
-      <td class="px-2 py-1.5 text-center"><input data-alloc-i="${i}" data-alloc-pct type="number" min="0" step="any" inputmode="decimal" value="${p.pct}" class="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-right text-sm focus:outline-none focus:border-[#ECE600]"></td>
-      <td class="px-2 py-1.5 text-center"><input data-alloc-i="${i}" data-alloc-pools type="number" min="0" step="1" inputmode="numeric" value="${p.pools}" class="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-right text-sm focus:outline-none focus:border-[#ECE600]"></td>
-      <td class="px-3 py-2 text-right font-mono" data-alloc-money="${i}">—</td>
-      <td class="px-3 py-2 text-right font-mono text-slate-300" data-alloc-perpool="${i}">—</td>
+      <td class="px-2 py-2 font-semibold">${p.key}</td>
+      <td class="px-1 py-1.5 text-center"><input data-alloc-i="${i}" data-alloc-pct type="number" min="0" step="any" inputmode="decimal" value="${p.pct}" class="w-14 bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-center text-sm focus:outline-none focus:border-[#ECE600]"></td>
+      <td class="px-1 py-1.5 text-center"><input data-alloc-i="${i}" data-alloc-pools type="number" min="0" step="1" inputmode="numeric" value="${p.pools}" class="w-14 bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-center text-sm focus:outline-none focus:border-[#ECE600]"></td>
+      <td class="px-2 py-2 text-right font-mono" data-alloc-money="${i}">—</td>
+      <td class="px-2 py-2 text-right font-mono text-slate-300" data-alloc-perpool="${i}">—</td>
     </tr>`).join("");
 
   tbody.querySelectorAll("input[data-alloc-pct]").forEach((inp) => {
@@ -317,14 +317,12 @@ function recalcAllocator() {
   const ok = Math.abs(sumPct - 100) < 0.01;
   const round2 = (x) => Math.round(x * 100) / 100;
   const sp = $("alloc-sumpct"); if (sp) { sp.textContent = round2(sumPct) + "%"; sp.className = "font-bold " + (ok ? "text-emerald-400" : "text-rose-400"); }
-  const fixBtn = $("alloc-fix"); if (fixBtn) fixBtn.classList.toggle("hidden", ok); // solo si ≠100%
   const spo = $("alloc-sumpools"); if (spo) spo.textContent = String(sumPools);
   const st = $("alloc-sumtotal"); if (st) st.textContent = fmtAlloc(sumMoney);
-  const warn = $("alloc-warn");
-  if (warn) {
-    if (ok) warn.classList.add("hidden");
-    else { warn.classList.remove("hidden"); warn.textContent = `⚠️ Los porcentajes suman ${round2(sumPct)}% (deben sumar 100%). Ajústalos para que el reparto sea correcto.`; }
-  }
+  // Bloque de aviso (con el botón "Ajustar a 100%" dentro): solo si los % ≠ 100.
+  const warnbox = $("alloc-warnbox"), warn = $("alloc-warn");
+  if (warnbox) warnbox.classList.toggle("hidden", ok);
+  if (warn && !ok) warn.textContent = `⚠️ Los porcentajes suman ${round2(sumPct)}% (deben sumar 100%). Selecciona un pilar y pulsa "Ajustar a 100%", o edítalos.`;
 }
 function distinctColor(i) { const h = Math.round((i * 137.508) % 360); return `hsl(${h} 70% 60%)`; }
 
