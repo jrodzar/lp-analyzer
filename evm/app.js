@@ -136,7 +136,7 @@ const state = {
   loading: false,
   error: null,
   sortBy: "value",
-  hideClosed: true,
+  hideClosed: false, // por defecto se MUESTRAN las cerradas (el shell sincroniza showClosed)
 };
 
 let charts = { fees: null, value: null };
@@ -1536,7 +1536,7 @@ async function buildPortfolioTimeline(bundles) {
       p.feesCollectedUSD = fees; // shim para shell.js
     }
     const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, c) => a.ts - c.ts);
-    if (points.length) result.push({ posId: p.id, label: `${p.token0.symbol}/${p.token1.symbol}`, points });
+    if (points.length) result.push({ posId: p.id, label: `${p.token0.symbol}/${p.token1.symbol}`, points, closed: !!p.closed });
   }
   return result;
 }
@@ -1796,7 +1796,8 @@ function renderSummary() {
   const section = document.getElementById("summary-section");
   if (!state.positions.length) { section.classList.add("hidden"); return; }
   section.classList.remove("hidden");
-  const agg = aggregate(state.positions);
+  // Cuando se ocultan las cerradas, NO cuentan en los totales del resumen.
+  const agg = aggregate(state.positions.filter((p) => !state.hideClosed || !p.closed));
   document.getElementById("sum-positions").textContent = state.positions.length;
   document.getElementById("sum-positions-sub").textContent = state.hideClosed
     ? `${agg.open} abiertas`
@@ -2247,7 +2248,7 @@ function assignColors(list) {
 async function updateFeesChart() {
   let series = [];
   // 1) Posiciones de subgraph → snapshots (fees cobradas acumuladas)
-  const subgraphPos = (state.positions || []).filter((p) => !p._lending && !p._rpcOnly && p.id && !p.closed);
+  const subgraphPos = (state.positions || []).filter((p) => !p._lending && !p._rpcOnly && p.id && (!state.hideClosed || !p.closed));
   let didHist = false;
   if (subgraphPos.length) {
     try {
@@ -2488,8 +2489,9 @@ function init() {
     renderPositions();
   });
   document.getElementById("hide-closed").addEventListener("change", (e) => {
-    state.hideClosed = e.target.checked;
-    renderPositions();
+    state.hideClosed = !e.target.checked; // check "Mostrar cerradas": marcado = mostrar
+    renderAll(); updateFeesChart();
+    try { window.parent.postMessage({ type: "lp-show-closed-changed", showClosed: e.target.checked }, "*"); } catch (_) {}
   });
 
   if (!state.apiKey && !PROXY_BASE) {
@@ -2606,6 +2608,11 @@ document.addEventListener("DOMContentLoaded", init);
       state.selectedChains = d.chains.slice();
       localStorage.setItem("lp:selectedChains", JSON.stringify(state.selectedChains));
       if (typeof renderChainChips === "function") renderChainChips();
+    } else if (d.type === "lp-set-show-closed") {
+      // El shell empuja el ajuste "Mostrar cerradas"; re-renderiza sin re-fetch.
+      state.hideClosed = !d.showClosed;
+      const cb = document.getElementById("hide-closed"); if (cb) cb.checked = !!d.showClosed;
+      if ((state.positions || []).length) { renderAll(); updateFeesChart(); }
     } else if (d.type === "lp-portfolio-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
@@ -2617,7 +2624,9 @@ document.addEventListener("DOMContentLoaded", init);
           // Snapshots para línea temporal de fees
           let timeline = [];
           try {
-            const toFetch = (state.positions || []).filter((p) => !p.closed).slice(0, 20);
+            // Incluimos también las cerradas (tienen snapshots históricos); el
+            // shell decide si pintarlas según showClosed (cada serie va tagueada).
+            const toFetch = (state.positions || []).slice(0, 20);
             if (toFetch.length) {
               const bundles = await Promise.all(toFetch.map(async (p) => {
                 try {
@@ -2649,7 +2658,7 @@ document.addEventListener("DOMContentLoaded", init);
           for (const p of (state.positions || [])) {
             if (p.timelineSeries && p.timelineSeries.length) {
               const label = p._lending ? `Revert Lend ${p.chainName}` : `${p.token0.symbol}/${p.token1.symbol}`;
-              timeline.push({ posId: p.id || p.vault || label, label, points: p.timelineSeries });
+              timeline.push({ posId: p.id || p.vault || label, label, points: p.timelineSeries, closed: !!p.closed });
             }
           }
           const status = (document.getElementById("status-msg") || {}).textContent || "";

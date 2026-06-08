@@ -108,6 +108,9 @@ const state = {
   user: null,
   portfolio: [],          // [{ address, type, label }]
   prefs: structuredClone(DEFAULT_PREFS),
+  // Mostrar posiciones cerradas (lista + totales + gráfico). Default true.
+  // Persistido en localStorage siempre y en Firestore prefs.showClosed con login.
+  showClosed: localStorage.getItem("lp:showClosed") !== "false",
   results: [],            // [{ entry, items, status }]
   // Quién ha pintado lo que se ve actualmente en cada iframe: "quick" | "portfolio" | null.
   // Si entras a Quick y el iframe lo pintó Portfolio, hay que limpiar.
@@ -1317,6 +1320,14 @@ async function loadPortfolio(uid) {
       protocols: Array.isArray(data.prefs?.protocols) ? data.prefs.protocols : DEFAULT_PREFS.protocols.slice(),
       allocator: sanitizeAllocator(data.prefs?.allocator), // repartidor de capital
     };
+    // "Mostrar cerradas": prefs de Firestore tiene prioridad sobre localStorage.
+    if (typeof data.prefs?.showClosed === "boolean") {
+      state.showClosed = data.prefs.showClosed;
+      try { localStorage.setItem("lp:showClosed", String(state.showClosed)); } catch (e) {}
+    }
+    state.prefs.showClosed = state.showClosed;
+    const _scb = $("pf-show-closed"); if (_scb) _scb.checked = state.showClosed;
+    pushShowClosed();
     if (Number(data.prefsVersion || 0) < 1) {
       if (!state.prefs.chains.includes("hyperevm")) state.prefs.chains.push("hyperevm");
       await fb.fsMod.setDoc(ref, { prefs: state.prefs, prefsVersion: 1 }, { merge: true }).catch(() => {});
@@ -1544,6 +1555,7 @@ function togglePref(kind, key) {
 function pushPrefsToEngines() {
   if (els.frameEvm.contentWindow) els.frameEvm.contentWindow.postMessage({ type: "lp-set-chains", chains: state.prefs.chains }, "*");
   if (els.frameSol.contentWindow) els.frameSol.contentWindow.postMessage({ type: "lp-set-protocols", protocols: state.prefs.protocols }, "*");
+  pushShowClosed();
 }
 
 // Envía el ID token de Firebase a los iframes para que puedan usar el proxy.
@@ -1606,6 +1618,24 @@ async function savePrefs() {
     const ref = fb.fsMod.doc(fb.db, "users", state.user.uid);
     await fb.fsMod.setDoc(ref, { prefs: state.prefs }, { merge: true });
   } catch (e) { console.error("savePrefs", e); }
+}
+
+// ── "Mostrar posiciones cerradas" — toggle único Quick+Portfolio, persistido ──
+// Empuja el ajuste a los dos motores (iframes) para que el Quick lo respete.
+function pushShowClosed() {
+  const msg = { type: "lp-set-show-closed", showClosed: state.showClosed };
+  [els.frameEvm, els.frameSol].forEach((f) => { if (f && f.contentWindow) f.contentWindow.postMessage(msg, "*"); });
+}
+// Cambia el ajuste: persiste (localStorage siempre + Firestore con login),
+// sincroniza el check del Portfolio, empuja a los motores y re-renderiza.
+function setShowClosed(v) {
+  state.showClosed = !!v;
+  try { localStorage.setItem("lp:showClosed", String(state.showClosed)); } catch (e) {}
+  if (state.user) { state.prefs.showClosed = state.showClosed; savePrefs(); }
+  const cb = $("pf-show-closed"); if (cb) cb.checked = state.showClosed;
+  pushShowClosed();
+  renderPortfolio();
+  if (state.tab === "projection") renderHistorico();
 }
 
 function setPfStatus(msg, kind) {
@@ -1698,6 +1728,7 @@ function analyzeAddressHeadless(address, type) {
       // fijar redes/protocolos según prefs antes de analizar (entrega ordenada por target)
       if (type === "evm") frame.contentWindow.postMessage({ type: "lp-set-chains", chains: state.prefs.chains }, "*");
       else frame.contentWindow.postMessage({ type: "lp-set-protocols", protocols: state.prefs.protocols }, "*");
+      frame.contentWindow.postMessage({ type: "lp-set-show-closed", showClosed: state.showClosed }, "*");
       frame.contentWindow.postMessage({ type: "lp-portfolio-analyze", reqId, address }, "*");
       // El iframe se está pintando con datos del Portfolio; al cambiar a Quick habrá que limpiar
       state.iframeOwnedBy[type] = "portfolio";
@@ -1908,7 +1939,7 @@ function renderQuickIdleTokens(tokens) {
 
 function renderPortfolio() {
   // ocultamos las posiciones cerradas en toda la vista de portfolio
-  const visItems = (r) => (r.items || []).filter((it) => !it.closed);
+  const visItems = (r) => (r.items || []).filter((it) => state.showClosed || !it.closed);
   const all = state.results.flatMap(visItems);
   // colores estables por red/protocolo. TODAS las posiciones de la misma red usan
   // el mismo color (Ethereum siempre azul, Arbitrum azul claro, …). Para posiciones
@@ -2127,7 +2158,7 @@ function idleTokensBlock(tokens, opts = {}) {
 }
 
 function renderPortfolioCharts() {
-  const open = (r) => (r.items || []).filter((it) => !it.closed); // sin cerradas
+  const open = (r) => (r.items || []).filter((it) => state.showClosed || !it.closed); // sin cerradas
   // valor por dirección
   const byAddr = state.results
     .map((r) => ({ label: r.entry.label || shortAddr(r.entry.address), value: open(r).reduce((s, it) => s + (it.valueUSD || 0), 0) }))
@@ -2154,7 +2185,7 @@ function renderFeesTimelineChart() {
   if (pfCharts.timeline) { pfCharts.timeline.destroy(); pfCharts.timeline = null; }
   els.pfFeesSummary.classList.add("hidden");
   // Recoger todas las series por posición de todas las direcciones
-  const allSeries = state.results.flatMap((r) => r.timeline || []);
+  const allSeries = state.results.flatMap((r) => r.timeline || []).filter((s) => state.showClosed || !s.closed);
   els.pfFeesTimeline.classList.toggle("hidden", allSeries.length === 0);
   if (!allSeries.length || typeof Chart === "undefined") return;
 
@@ -2224,7 +2255,7 @@ function renderFeesTimelineChart() {
 function renderFeesTimelineTotalChart() {
   if (pfCharts.timelineTotal) { pfCharts.timelineTotal.destroy(); pfCharts.timelineTotal = null; }
   // Agregar todas las series por posición en una sola curva total
-  const allSeries = state.results.flatMap((r) => r.timeline || []);
+  const allSeries = state.results.flatMap((r) => r.timeline || []).filter((s) => state.showClosed || !s.closed);
   els.pfFeesTimelineTotal.classList.toggle("hidden", allSeries.length === 0);
   if (!allSeries.length || typeof Chart === "undefined") return;
   // Para cada ts conocido, sumar el valor más reciente de cada posición
@@ -2484,6 +2515,11 @@ window.addEventListener("message", (e) => {
     state.ready[d.app] = true;
     pushTokenToEngines(); // dar al engine recién listo el token actual (si hay sesión)
     if (crypto_.key) pushKeysToEngines(); // y las API keys descifradas, si ya las tenemos
+    pushShowClosed(); // sincroniza "mostrar cerradas" con el engine recién listo
+  } else if (d.type === "lp-show-closed-changed") {
+    // Un motor (Quick) cambió "mostrar cerradas" → propaga: persiste, sincroniza
+    // el check del Portfolio, empuja al otro motor y re-renderiza.
+    setShowClosed(!!d.showClosed);
   } else if (d.type === "lp-result" && pendingReqs.has(d.reqId)) {
     const resolve = pendingReqs.get(d.reqId);
     pendingReqs.delete(d.reqId);
@@ -2519,7 +2555,7 @@ window.addEventListener("message", (e) => {
 // Construye dos curvas diarias agregadas a partir de los timelines de las posiciones.
 // timeline por posición: [{ posId, points: [{ ts(ms), feesUSD, depositedUSD, withdrawnUSD }] }]
 function buildHistoricalCurves() {
-  const allSeries = state.results.flatMap((r) => r.timeline || []);
+  const allSeries = state.results.flatMap((r) => r.timeline || []).filter((s) => state.showClosed || !s.closed);
   if (!allSeries.length) return null;
   const timed = allSeries.filter((s) => !s.flat && s.points && s.points.length);
   const flat = allSeries.filter((s) => s.flat && s.points && s.points.length);
@@ -2567,7 +2603,7 @@ function buildHistoricalCurves() {
 // últimos valores conocidos de TODAS las posiciones en cada timestamp único.
 // Usada por `computeMonthlyAPRs` para sacar el APR mensual del portfolio.
 function aggregatedPortfolioTimeline() {
-  const allSeries = state.results.flatMap((r) => r.timeline || []);
+  const allSeries = state.results.flatMap((r) => r.timeline || []).filter((s) => state.showClosed || !s.closed);
   const timed = allSeries.filter((s) => !s.flat && s.points && s.points.length);
   const flat = allSeries.filter((s) => s.flat && s.points && s.points.length);
   if (!timed.length) return [];
@@ -2641,7 +2677,7 @@ function renderHistorico() {
   // Sub de "Ganado (fees)": solo fees pendientes (las cobradas ya están en el
   // valor principal — mostrarlas sería redundante). Pendientes = fees aún
   // on-chain no reclamadas, mismo cómputo que el resumen global de Portfolio.
-  const allOpen = state.results.flatMap((r) => r.items || []).filter((it) => !it.closed);
+  const allOpen = state.results.flatMap((r) => r.items || []).filter((it) => state.showClosed || !it.closed);
   const feesPending = allOpen.reduce((s, it) => s + (it.feesPendingUSD || 0), 0);
   if (els.histGanadoSub) {
     els.histGanadoSub.innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(feesPending)}</span> pendientes`;
@@ -2649,7 +2685,7 @@ function renderHistorico() {
 
   // PnL e IL agregados a partir de las posiciones analizadas (incluye variación de precio).
   // Solo cuentan las posiciones que aportan el dato (EVM siempre; Solana solo con Birdeye key).
-  const items = state.results.flatMap((r) => r.items || []).filter((it) => !it.lending && !it.closed);
+  const items = state.results.flatMap((r) => r.items || []).filter((it) => !it.lending && (state.showClosed || !it.closed));
   let pnlSum = 0, pnlN = 0, ilSum = 0, ilN = 0, valSum = 0;
   for (const it of items) {
     valSum += it.valueUSD || 0;
@@ -2671,7 +2707,7 @@ function renderHistorico() {
   // "aportado + fees" no captura).
   const realNowUSD = state.results
     .flatMap((r) => r.items || [])
-    .filter((it) => !it.closed)
+    .filter((it) => state.showClosed || !it.closed)
     .reduce((s, it) => s + (it.valueUSD || 0), 0);
   const lastTs = curves.valor[curves.valor.length - 1]?.x ?? Date.now();
   // Línea horizontal del mismo span x que la curva, con marcador en el extremo.
@@ -2752,7 +2788,7 @@ function renderHistorico() {
         }
       }
       const poolsByMonth = new Map(); // monthKey -> [{label, venue, color, feesUSD, capitalAvg, apr}]
-      for (const s of state.results.flatMap((r) => r.timeline || [])) {
+      for (const s of state.results.flatMap((r) => r.timeline || []).filter((s) => state.showClosed || !s.closed)) {
         if (s.flat || !s.points || !s.points.length) continue; // flat = sin distribución mensual
         const venue = venueByPosId.get(String(s.posId)) || venueByLabel.get(s.label) || "";
         const color = venueColor(venue) || venueColor(s.label) || "#64748b";
@@ -2991,6 +3027,16 @@ if (els.addrViewToggle) els.addrViewToggle.onclick = () => {
   localStorage.setItem("lp:addrView", localStorage.getItem("lp:addrView") === "table" ? "chart" : "table");
   applyAddrView();
 };
+// Toggle "Mostrar posiciones cerradas" del Portfolio. Refleja el estado actual
+// (default true / persistido) y delega en setShowClosed, que re-renderiza,
+// sincroniza los motores y guarda (localStorage + Firestore si hay login).
+{
+  const cb = $("pf-show-closed");
+  if (cb) {
+    cb.checked = state.showClosed;
+    cb.addEventListener("change", (e) => setShowClosed(e.target.checked));
+  }
+}
 els.feesMinThreshold.addEventListener("input", () => {
   localStorage.setItem("lp:feesMinThreshold", String(els.feesMinThreshold.value || 0));
   renderFeesTimelineChart();

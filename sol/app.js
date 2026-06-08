@@ -71,7 +71,7 @@ const state = {
   prices: {}, // mint -> usd price
   loading: false,
   sortBy: "value",
-  hideClosed: true,
+  hideClosed: false, // por defecto se MUESTRAN las cerradas (el shell sincroniza showClosed)
 };
 
 let charts = { value: null };
@@ -1257,7 +1257,8 @@ function renderSummary() {
   const section = document.getElementById("summary-section");
   if (!state.positions.length) { section.classList.add("hidden"); return; }
   section.classList.remove("hidden");
-  const agg = aggregate(state.positions);
+  // Cuando se ocultan las cerradas, NO cuentan en los totales del resumen.
+  const agg = aggregate(state.positions.filter((p) => !state.hideClosed || !p.closed));
   document.getElementById("sum-positions").textContent = state.positions.length;
   document.getElementById("sum-positions-sub").textContent = state.hideClosed
     ? `${agg.inRange} en rango · ${agg.outRange} fuera`
@@ -2507,8 +2508,9 @@ async function init() {
     renderPositions();
   });
   document.getElementById("hide-closed").addEventListener("change", (e) => {
-    state.hideClosed = e.target.checked;
-    renderPositions();
+    state.hideClosed = !e.target.checked; // check "Mostrar cerradas": marcado = mostrar
+    renderAll();
+    try { window.parent.postMessage({ type: "lp-show-closed-changed", showClosed: e.target.checked }, "*"); } catch (_) {}
   });
 
   // Pre-carga el cifrado (no crítico aquí; analyze() lo re-asegura). Toleramos
@@ -2617,6 +2619,11 @@ document.addEventListener("DOMContentLoaded", init);
       state.selectedProtocols = d.protocols.slice();
       localStorage.setItem("sol:selectedProtocols", JSON.stringify(state.selectedProtocols));
       if (typeof renderProtocolChips === "function") renderProtocolChips();
+    } else if (d.type === "lp-set-show-closed") {
+      // El shell empuja el ajuste "Mostrar cerradas"; re-renderiza sin re-fetch.
+      state.hideClosed = !d.showClosed;
+      const cb = document.getElementById("hide-closed"); if (cb) cb.checked = !!d.showClosed;
+      if ((state.positions || []).length) renderAll();
     } else if (d.type === "lp-portfolio-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
@@ -2658,6 +2665,11 @@ document.addEventListener("DOMContentLoaded", init);
             const dep = Math.max(0, (p.currentValueUSD || 0) - fees);
             timeline.push({ posId: p.mint, label: `${p.token0.symbol}/${p.token1.symbol}`, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: fees }] });
           }
+          // Taguear cada serie con `closed` (de la posición) para que el shell
+          // filtre el gráfico según showClosed. (Las cerradas sin histórico real
+          // no generan serie; las que sí — vía fetchSolanaHistory — quedan tagueadas.)
+          const _posByMint = new Map((state.positions || []).map((p) => [p.mint, p]));
+          for (const s of timeline) { const pp = _posByMint.get(s.posId); s.closed = !!(pp && pp.closed); }
           const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
           const idleTokens = state.idleTokens || [];
           window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline, analysisStatus, idleTokens }, "*");

@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "198";</script>
+  <script>window.APP_VERSION = "199";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -322,7 +322,13 @@
 
         <!-- Resumen global -->
         <section id="pf-summary" class="hidden">
-          <h2 class="text-lg font-semibold mb-3">Resumen global</h2>
+          <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
+            <h2 class="text-lg font-semibold">Resumen global</h2>
+            <label class="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer select-none" title="Incluye las posiciones cerradas (liquidez retirada) en la lista, en los totales del resumen y en el gráfico Histórico.">
+              <input id="pf-show-closed" type="checkbox" checked class="accent-emerald-500" />
+              <span>Mostrar cerradas</span>
+            </label>
+          </div>
           <div class="grid grid-cols-2 lg:grid-cols-3 gap-3">
             <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
               <div class="text-[11px] uppercase tracking-wide text-slate-400">Valor total</div>
