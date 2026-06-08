@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "194";</script>
+  <script>window.APP_VERSION = "195";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -82,6 +82,7 @@
         <button id="tab-btn-quick" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">⚡ Quick</button>
         <button id="tab-btn-portfolio" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📁 Portfolio</button>
         <button id="tab-btn-projection" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📈 Histórico</button>
+        <button id="tab-btn-allocator" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">🧮 Aporte</button>
       </div>
 
       <div class="flex-1"></div>
@@ -543,6 +544,58 @@
             <span class="text-[11px] text-slate-400">clica un mes para el desglose por pool</span>
           </div>
           <div id="hist-monthly-apr" class="overflow-x-auto"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Pestaña: Repartidor de capital ────────────────────────────────── -->
+    <section id="tab-allocator" class="hidden">
+      <div id="alloc-gate" class="hidden text-center py-16 text-slate-400">
+        <div class="text-4xl mb-3">🧮</div>
+        <p class="text-sm">Inicia sesión para usar el repartidor de capital.<br>Tus porcentajes y nº de pools se guardan en tu cuenta.</p>
+      </div>
+
+      <div id="alloc-content" class="max-w-3xl mx-auto space-y-5">
+        <div>
+          <h2 class="text-lg font-semibold">🧮 Repartidor de capital</h2>
+          <p class="text-xs text-slate-400 mt-1">Reparte una aportación entre tus 5 pilares y sus pools. Cada pool del mismo pilar recibe lo mismo. Los % y el nº de pools se guardan en tu cuenta.</p>
+        </div>
+
+        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <label for="alloc-capital" class="text-[11px] uppercase tracking-wide text-slate-400">Capital a aportar (<span id="alloc-cur">$</span>)</label>
+          <input id="alloc-capital" type="number" min="0" step="any" inputmode="decimal" placeholder="0"
+            class="mt-1 w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-lg font-bold focus:outline-none focus:border-[#ECE600]">
+        </div>
+
+        <div class="rounded-xl border border-slate-800 bg-slate-900 overflow-hidden">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-[10px] uppercase tracking-wide text-slate-400 border-b border-slate-800">
+                <th class="text-left px-3 py-2">Pilar</th>
+                <th class="text-right px-2 py-2">%</th>
+                <th class="text-right px-2 py-2">Nº pools</th>
+                <th class="text-right px-3 py-2">Dinero pilar</th>
+                <th class="text-right px-3 py-2">Por pool</th>
+              </tr>
+            </thead>
+            <tbody id="alloc-rows"></tbody>
+            <tfoot>
+              <tr class="border-t border-slate-700 font-semibold">
+                <td class="px-3 py-2">Total</td>
+                <td class="text-right px-2 py-2"><span id="alloc-sumpct" class="font-bold">—</span></td>
+                <td class="text-right px-2 py-2" id="alloc-sumpools">—</td>
+                <td class="text-right px-3 py-2 font-mono text-[#ECE600]" id="alloc-sumtotal">—</td>
+                <td class="text-right px-3 py-2"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        <div id="alloc-warn" class="hidden text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg px-3 py-2"></div>
+
+        <div class="flex items-center justify-between gap-2">
+          <button id="alloc-reset" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">Restablecer por defecto</button>
+          <span id="alloc-saved" class="text-[11px] text-slate-500"></span>
         </div>
       </div>
     </section>

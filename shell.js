@@ -12,8 +12,8 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
   // tabs
-  tabBtnPortfolio: $("tab-btn-portfolio"), tabBtnQuick: $("tab-btn-quick"), tabBtnProjection: $("tab-btn-projection"),
-  tabPortfolio: $("tab-portfolio"), tabQuick: $("tab-quick"), tabProjection: $("tab-projection"),
+  tabBtnPortfolio: $("tab-btn-portfolio"), tabBtnQuick: $("tab-btn-quick"), tabBtnProjection: $("tab-btn-projection"), tabBtnAllocator: $("tab-btn-allocator"),
+  tabPortfolio: $("tab-portfolio"), tabQuick: $("tab-quick"), tabProjection: $("tab-projection"), tabAllocator: $("tab-allocator"),
   autoRefresh: $("auto-refresh"), refreshNow: $("refresh-now"), lastUpdated: $("last-updated"),
   authArea: $("auth-area"),
   // firebase setup
@@ -187,6 +187,121 @@ function fmtUSDc(n) {
   return `${s}${S}${fmtTiny(abs, 3)}`;
 }
 function pnlColor(n) { if (!isFinite(n)) return "text-slate-400"; return n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "text-slate-300"; }
+
+// ── Repartidor de capital (pestaña 🧮 Aporte) ──────────────────────────────
+// Reparte una aportación entre 5 pilares (cada uno con su % y nº de pools);
+// cada pool del mismo pilar recibe lo mismo. % y nº de pools se guardan en
+// state.prefs.allocator (Firestore). Calculadora proporcional autocontenida:
+// trabaja en la divisa que escriba el usuario (sin re-convertir por FX).
+const DEFAULT_ALLOCATOR = { pillars: [
+  { key: "P1",  pct: 70,  pools: 0 },
+  { key: "P2",  pct: 10,  pools: 0 },
+  { key: "P3",  pct: 7.5, pools: 0 },
+  { key: "P4",  pct: 7.5, pools: 0 },
+  { key: "RWA", pct: 5,   pools: 0 },
+] };
+
+// Formato sin conversión FX (solo símbolo): el capital ya está en la divisa
+// del usuario, así que NO multiplicamos por _fx.rate (eso lo hace fmtUSD).
+function fmtAlloc(n) {
+  if (n == null || !isFinite(n)) return "—";
+  return (_fx ? _fx.sym : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Normaliza el allocator guardado (estructura/longitud fijas, clamps).
+function sanitizeAllocator(raw) {
+  if (!raw || !Array.isArray(raw.pillars)) return structuredClone(DEFAULT_ALLOCATOR);
+  const pillars = DEFAULT_ALLOCATOR.pillars.map((d) => {
+    const r = raw.pillars.find((x) => x && x.key === d.key) || {};
+    const pct = Number(r.pct);
+    const pools = Number(r.pools);
+    return {
+      key: d.key,
+      pct: isFinite(pct) && pct >= 0 ? pct : d.pct,
+      pools: isFinite(pools) && pools >= 0 ? Math.floor(pools) : 0,
+    };
+  });
+  return { pillars };
+}
+
+let _allocSaveTimer = null;
+function scheduleAllocSave() {
+  const saved = $("alloc-saved"); if (saved) saved.textContent = "guardando…";
+  if (_allocSaveTimer) clearTimeout(_allocSaveTimer);
+  _allocSaveTimer = setTimeout(async () => {
+    await savePrefs();
+    const s = $("alloc-saved");
+    if (s) { s.textContent = "✓ guardado"; setTimeout(() => { if (s.textContent === "✓ guardado") s.textContent = ""; }, 2000); }
+  }, 600);
+}
+
+// Construye las filas (al entrar a la pestaña / tras cargar prefs). Los inputs
+// se crean UNA vez aquí; el tecleo solo dispara recalcAllocator (no rebuild),
+// para no perder el foco.
+function renderAllocator() {
+  const gate = $("alloc-gate"), content = $("alloc-content");
+  if (!gate || !content) return;
+  if (!state.user) { gate.classList.remove("hidden"); content.classList.add("hidden"); return; }
+  gate.classList.add("hidden"); content.classList.remove("hidden");
+  if (!state.prefs.allocator) state.prefs.allocator = structuredClone(DEFAULT_ALLOCATOR);
+  const alloc = state.prefs.allocator;
+  const cur = _fx ? _fx.sym : "$";
+  const cl = $("alloc-cur"); if (cl) cl.textContent = cur;
+
+  const tbody = $("alloc-rows");
+  tbody.innerHTML = alloc.pillars.map((p, i) => `
+    <tr class="border-b border-slate-800/50">
+      <td class="px-3 py-2 font-semibold">${p.key}</td>
+      <td class="px-2 py-1.5"><input data-alloc-i="${i}" data-alloc-pct type="number" min="0" step="any" inputmode="decimal" value="${p.pct}" class="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-right text-sm focus:outline-none focus:border-[#ECE600]"></td>
+      <td class="px-2 py-1.5"><input data-alloc-i="${i}" data-alloc-pools type="number" min="0" step="1" inputmode="numeric" value="${p.pools}" class="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-right text-sm focus:outline-none focus:border-[#ECE600]"></td>
+      <td class="px-3 py-2 text-right font-mono" data-alloc-money="${i}">—</td>
+      <td class="px-3 py-2 text-right font-mono text-slate-300" data-alloc-perpool="${i}">—</td>
+    </tr>`).join("");
+
+  tbody.querySelectorAll("input[data-alloc-pct]").forEach((inp) => inp.oninput = () => {
+    alloc.pillars[+inp.dataset.allocI].pct = Math.max(0, parseFloat(inp.value) || 0);
+    recalcAllocator(); scheduleAllocSave();
+  });
+  tbody.querySelectorAll("input[data-alloc-pools]").forEach((inp) => inp.oninput = () => {
+    alloc.pillars[+inp.dataset.allocI].pools = Math.max(0, Math.floor(parseFloat(inp.value) || 0));
+    recalcAllocator(); scheduleAllocSave();
+  });
+  const cap = $("alloc-capital"); if (cap) cap.oninput = recalcAllocator;
+  const reset = $("alloc-reset"); if (reset) reset.onclick = () => {
+    state.prefs.allocator = structuredClone(DEFAULT_ALLOCATOR);
+    renderAllocator(); scheduleAllocSave();
+  };
+  recalcAllocator();
+}
+
+// Recalcula solo los números (sin rebuild) al cambiar capital/%/pools.
+function recalcAllocator() {
+  const alloc = state.prefs.allocator; if (!alloc) return;
+  const capital = Math.max(0, parseFloat(($("alloc-capital") || {}).value) || 0);
+  let sumPct = 0, sumPools = 0, sumMoney = 0;
+  alloc.pillars.forEach((p, i) => {
+    sumPct += p.pct; sumPools += p.pools;
+    const money = capital * p.pct / 100; sumMoney += money;
+    const perPool = p.pools > 0 ? money / p.pools : null;
+    const m = document.querySelector(`[data-alloc-money="${i}"]`);
+    const pp = document.querySelector(`[data-alloc-perpool="${i}"]`);
+    if (m) m.textContent = fmtAlloc(money);
+    if (pp) {
+      if (perPool == null) pp.textContent = "—";
+      else pp.innerHTML = fmtAlloc(perPool) + (p.pools > 1 ? ` <span class="text-slate-500 text-[11px]">×${p.pools}</span>` : "");
+    }
+  });
+  const ok = Math.abs(sumPct - 100) < 0.01;
+  const round2 = (x) => Math.round(x * 100) / 100;
+  const sp = $("alloc-sumpct"); if (sp) { sp.textContent = round2(sumPct) + "%"; sp.className = "font-bold " + (ok ? "text-emerald-400" : "text-rose-400"); }
+  const spo = $("alloc-sumpools"); if (spo) spo.textContent = String(sumPools);
+  const st = $("alloc-sumtotal"); if (st) st.textContent = fmtAlloc(sumMoney);
+  const warn = $("alloc-warn");
+  if (warn) {
+    if (ok) warn.classList.add("hidden");
+    else { warn.classList.remove("hidden"); warn.textContent = `⚠️ Los porcentajes suman ${round2(sumPct)}% (deben sumar 100%). Ajústalos para que el reparto sea correcto.`; }
+  }
+}
 function distinctColor(i) { const h = Math.round((i * 137.508) % 360); return `hsl(${h} 70% 60%)`; }
 
 // ─── APR por mes natural ───────────────────────────────────────────────────
@@ -454,10 +569,13 @@ function setTab(tab) {
   els.tabBtnPortfolio.className = tab === "portfolio" ? active : idle;
   els.tabBtnQuick.className = tab === "quick" ? active : idle;
   els.tabBtnProjection.className = tab === "projection" ? active : idle;
+  if (els.tabBtnAllocator) els.tabBtnAllocator.className = tab === "allocator" ? active : idle;
   els.tabPortfolio.classList.toggle("hidden", tab !== "portfolio");
   els.tabQuick.classList.toggle("hidden", tab !== "quick");
   els.tabProjection.classList.toggle("hidden", tab !== "projection");
+  if (els.tabAllocator) els.tabAllocator.classList.toggle("hidden", tab !== "allocator");
   if (tab === "projection") renderHistorico();
+  if (tab === "allocator") renderAllocator();
   // El iframe de Quick se comparte con "Analizar todo" (headless). Si al entrar a Quick
   // el iframe activo lo había pintado el Portfolio, hay que limpiar para no enseñar
   // datos no analizados desde la pestaña Quick.
@@ -1175,6 +1293,7 @@ async function loadPortfolio(uid) {
     state.prefs = {
       chains: Array.isArray(data.prefs?.chains) ? data.prefs.chains : DEFAULT_PREFS.chains.slice(),
       protocols: Array.isArray(data.prefs?.protocols) ? data.prefs.protocols : DEFAULT_PREFS.protocols.slice(),
+      allocator: sanitizeAllocator(data.prefs?.allocator), // repartidor de capital
     };
     if (Number(data.prefsVersion || 0) < 1) {
       if (!state.prefs.chains.includes("hyperevm")) state.prefs.chains.push("hyperevm");
@@ -2639,6 +2758,7 @@ function renderHistorico() {
 els.tabBtnPortfolio.onclick = () => setTab("portfolio");
 els.tabBtnQuick.onclick = () => setTab("quick");
 els.tabBtnProjection.onclick = () => setTab("projection");
+if (els.tabBtnAllocator) els.tabBtnAllocator.onclick = () => setTab("allocator");
 
 els.go.onclick = quickAnalyze;
 els.addr.addEventListener("keydown", (e) => { if (e.key === "Enter") quickAnalyze(); });
