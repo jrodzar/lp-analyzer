@@ -193,7 +193,7 @@ function pnlColor(n) { if (!isFinite(n)) return "text-slate-400"; return n > 0 ?
 // cada pool del mismo pilar recibe lo mismo. % y nº de pools se guardan en
 // state.prefs.allocator (Firestore). Calculadora proporcional autocontenida:
 // trabaja en la divisa que escriba el usuario (sin re-convertir por FX).
-const DEFAULT_ALLOCATOR = { pillars: [
+const DEFAULT_ALLOCATOR = { capital: 0, pillars: [
   { key: "P1",  pct: 70,  pools: 0 },
   { key: "P2",  pct: 10,  pools: 0 },
   { key: "P3",  pct: 7.5, pools: 0 },
@@ -221,7 +221,8 @@ function sanitizeAllocator(raw) {
       pools: isFinite(pools) && pools >= 0 ? Math.floor(pools) : 0,
     };
   });
-  return { pillars };
+  const capital = Number(raw.capital);
+  return { pillars, capital: isFinite(capital) && capital >= 0 ? capital : 0 };
 }
 
 let _allocSaveTimer = null;
@@ -271,7 +272,11 @@ function renderAllocator() {
     alloc.pillars[+inp.dataset.allocI].pools = Math.max(0, Math.floor(parseFloat(inp.value) || 0));
     recalcAllocator(); scheduleAllocSave();
   });
-  const cap = $("alloc-capital"); if (cap) cap.oninput = recalcAllocator;
+  const cap = $("alloc-capital");
+  if (cap) {
+    cap.value = alloc.capital > 0 ? String(alloc.capital) : "";
+    cap.oninput = () => { alloc.capital = Math.max(0, parseFloat(cap.value) || 0); recalcAllocator(); scheduleAllocSave(); };
+  }
   const reset = $("alloc-reset"); if (reset) reset.onclick = () => {
     state.prefs.allocator = structuredClone(DEFAULT_ALLOCATOR);
     renderAllocator(); scheduleAllocSave();
