@@ -16,10 +16,12 @@ Web app para **analizar posiciones de liquidez** (LP) de una o varias wallets, m
   - **Desglose colapsable** del PnL en sus 3 componentes: **Δ precio tokens** (efecto mercado puro / HODL equivalente), **IL vs HODL** (divergencia entre los dos tokens del par) y **Fees totales** (cobradas + pendientes). Te dice exactamente de dónde viene cada euro ganado o perdido.
   - **📅 APR mensual** — tabla colapsable con el APR de fees obtenido en cada mes natural cubierto por el histórico. Disponible tanto agregada en la pestaña **Histórico** (todo el portfolio sumado, ponderado por capital medio del mes) como en cada card individual.
 - **Tokens "idle"**: además de las LPs, cada dirección muestra los tokens que están sueltos en el wallet (fuera de posiciones) con su valor en USD. Solana vía Helius DAS + Jupiter; EVM vía Blockscout + DefiLlama (sin claves extra).
-- **Tres vistas**:
+- **Posiciones cerradas (toggle)** — las posiciones de las que ya retiraste la liquidez pero conservas el NFT/cuenta se muestran **por defecto**, sumando sus fees cobradas y su PnL en los totales y en el gráfico Histórico. Un check **"Mostrar cerradas"** (presente en **Quick** y **Portfolio**) permite ocultarlas para ver solo lo activo. Con login, el estado se guarda y te sigue entre dispositivos.
+- **Cuatro vistas**:
   1. **Quick** — análisis de una wallet.
   2. **Portfolio** — varias wallets agregadas, con drag-and-drop para ordenar.
   3. **Histórico** — evolución del capital aportado vs valor acumulado (aportado + fees), con una línea de referencia "Valor real hoy" en ámbar que muestra el valor actual a precios de mercado (gap por variación de precio explícito); además fees y curvas IL en el tiempo (eventos on-chain reales — EVM, HyperEVM, Revert Lend, Solana vía Birdeye).
+  4. **Aporte** — repartidor de capital: distribuye una aportación entre 5 pilares (P1/P2/P3/P4/RWA) con su % y nº de pools editables, y calcula el importe por pool. Los % y nº de pools se guardan por usuario (con login).
 - **Multi-dispositivo**: login con Google + Firestore → tu portfolio te sigue entre PC / móvil / tablet.
 - **Instalable como app (PWA)**: en Chrome aparece el botón "Instalar" en la barra; en iPhone, desde Safari → Compartir → "Añadir a pantalla de inicio". Se abre a pantalla completa, sin barra de URL.
 - **Auto-actualización** configurable (15 min por defecto) y refresh manual.

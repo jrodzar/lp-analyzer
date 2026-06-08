@@ -46,8 +46,9 @@ Ese CSS lo genera CI en cada push:
 
 ## Arquitectura
 
-- **Shell** (`index.html` + `shell.js`): barra superior, pestañas **Quick** y
-  **Portfolio**, login Google, gestión del portfolio, vista agregada y gráficos.
+- **Shell** (`index.html` + `shell.js`): barra superior, pestañas **Quick**,
+  **Portfolio**, **Histórico** y **Aporte** (repartidor de capital), login Google,
+  gestión del portfolio, vista agregada y gráficos.
 - **Engines** (en iframes), cada uno es una app completa autónoma:
   - `evm/` — Uniswap V3 vía subgraphs de The Graph (6 redes).
   - `sol/` — Orca + Raydium leyendo on-chain vía Helius RPC + DAS.
@@ -66,10 +67,26 @@ Ese CSS lo genera CI en cada push:
   `lp-result {reqId, address, items, status}` con posiciones **normalizadas**.
 - `lp-set-chains {chains}` (EVM) / `lp-set-protocols {protocols}` (SOL) — fija qué
   redes/protocolos analizar (según preferencias del usuario).
+- `lp-set-show-closed {showClosed}` — propaga el ajuste "Mostrar posiciones cerradas"
+  (ver más abajo). El engine re-renderiza con los datos ya en memoria (sin re-fetch).
 - `lp-open-settings`.
 
 ### Engine → shell
 - `lp-ready {app}`, `lp-result {...}`.
+- `lp-show-closed-changed {showClosed}` — el usuario togueó "Mostrar cerradas" en el
+  Quick del engine; el shell persiste, sincroniza el otro engine y re-renderiza.
+
+### "Mostrar posiciones cerradas" (toggle único Quick + Portfolio)
+Ajuste `state.showClosed` (default **true**, fuente de verdad = shell). Cuando está
+activo, las posiciones **cerradas** (liquidez retirada pero NFT/cuenta no quemada,
+`item.closed === true`) cuentan en lista, totales del resumen y gráfico Histórico.
+- Los engines **siempre** calculan y envían abiertas + cerradas (incluido el timeline,
+  con cada serie tagueada `closed`); el filtrado ocurre **al renderizar** → togglear es
+  instantáneo, sin re-analizar. Internamente el engine usa `state.hideClosed = !showClosed`.
+- UI: Portfolio = `#pf-show-closed` (cabecera "Resumen global"); Quick = `#hide-closed`
+  del engine (label "Mostrar cerradas", marcado ⇒ mostrar).
+- Persistencia: `localStorage["lp:showClosed"]` siempre + `prefs.showClosed` en Firestore
+  con login (prioridad al cargar). Funciones shell: `setShowClosed()`, `pushShowClosed()`.
 
 ### Item normalizado del portfolio
 `{ kind: "evm"|"sol", venue, pair, valueUSD, feesUSD, feesPendingUSD, ilUSD, pnlUSD, inRange, closed, id }`
@@ -117,7 +134,9 @@ users/{uid} → {
   portfolioEnc: { iv, ct },   // portfolio cifrado E2E (AES-GCM); addresses+labels
   apiKeysEnc:   { iv, ct },   // API keys (graph/helius/birdeye) cifradas con la misma clave
   encSalt,                    // salt PBKDF2 (no secreto)
-  prefs:     { chains: [...], protocols: [...] },   // no sensible, en claro
+  prefs:     { chains: [...], protocols: [...],     // no sensible, en claro
+               showClosed: bool,                    // toggle "Mostrar cerradas"
+               allocator: { pillars: [...] } },     // repartidor de capital (pestaña Aporte)
   prefsVersion
 }
 allowlist/{emailEnMinusculas} → { addedAt, addedBy }   // whitelist de acceso
@@ -205,9 +224,10 @@ Bootstrap: el admin entra (siempre autorizado) → "👥 Accesos" → añade ema
 
 ## Estado / pendientes
 - Hecho: EVM (incl. HyperEVM RPC + Revert Lend), Orca, Raydium, portfolios, login,
-  prefs, gráficos, fees (cobradas/pendientes), pestaña Histórico, barra de rango en
-  fichas, PnL+IL real en Solana vía Birdeye histórico, control de acceso por whitelist,
-  modal de progreso al analizar.
+  prefs, gráficos, fees (cobradas/pendientes), pestaña Histórico, pestaña Aporte
+  (repartidor de capital), toggle "Mostrar posiciones cerradas" (Quick+Portfolio,
+  persistido), barra de rango en fichas, PnL+IL real en Solana vía Birdeye histórico,
+  control de acceso por whitelist, modal de progreso al analizar.
 - Pendiente opcional: Meteora DLMM, pools clásicos Solana, fee tier de Raydium,
   códigos de invitación (autoservicio).
 - xStocks (TSLAx, MSTRx, NVDAx, CRCLx…) ya soportados via fallback Yahoo Finance
