@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "195";</script>
+  <script>window.APP_VERSION = "196";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -572,8 +572,8 @@
             <thead>
               <tr class="text-[10px] uppercase tracking-wide text-slate-400 border-b border-slate-800">
                 <th class="text-left px-3 py-2">Pilar</th>
-                <th class="text-right px-2 py-2">%</th>
-                <th class="text-right px-2 py-2">Nº pools</th>
+                <th class="text-center px-2 py-2">%</th>
+                <th class="text-center px-2 py-2">Nº pools</th>
                 <th class="text-right px-3 py-2">Dinero pilar</th>
                 <th class="text-right px-3 py-2">Por pool</th>
               </tr>
@@ -582,8 +582,8 @@
             <tfoot>
               <tr class="border-t border-slate-700 font-semibold">
                 <td class="px-3 py-2">Total</td>
-                <td class="text-right px-2 py-2"><span id="alloc-sumpct" class="font-bold">—</span></td>
-                <td class="text-right px-2 py-2" id="alloc-sumpools">—</td>
+                <td class="text-center px-2 py-2 whitespace-nowrap"><span id="alloc-sumpct" class="font-bold">—</span><button id="alloc-fix" type="button" class="hidden ml-2 text-[10px] px-2 py-0.5 rounded bg-[#ECE600] text-slate-900 font-bold hover:bg-[#f5ef4d] align-middle">Ajustar a 100%</button></td>
+                <td class="text-center px-2 py-2" id="alloc-sumpools">—</td>
                 <td class="text-right px-3 py-2 font-mono text-[#ECE600]" id="alloc-sumtotal">—</td>
                 <td class="text-right px-3 py-2"></td>
               </tr>

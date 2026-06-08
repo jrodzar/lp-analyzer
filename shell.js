@@ -225,6 +225,7 @@ function sanitizeAllocator(raw) {
 }
 
 let _allocSaveTimer = null;
+let _allocFocusedPct = 0; // índice del último input % enfocado (para "Ajustar a 100%")
 function scheduleAllocSave() {
   const saved = $("alloc-saved"); if (saved) saved.textContent = "guardando…";
   if (_allocSaveTimer) clearTimeout(_allocSaveTimer);
@@ -252,15 +253,19 @@ function renderAllocator() {
   tbody.innerHTML = alloc.pillars.map((p, i) => `
     <tr class="border-b border-slate-800/50">
       <td class="px-3 py-2 font-semibold">${p.key}</td>
-      <td class="px-2 py-1.5"><input data-alloc-i="${i}" data-alloc-pct type="number" min="0" step="any" inputmode="decimal" value="${p.pct}" class="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-right text-sm focus:outline-none focus:border-[#ECE600]"></td>
-      <td class="px-2 py-1.5"><input data-alloc-i="${i}" data-alloc-pools type="number" min="0" step="1" inputmode="numeric" value="${p.pools}" class="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-right text-sm focus:outline-none focus:border-[#ECE600]"></td>
+      <td class="px-2 py-1.5 text-center"><input data-alloc-i="${i}" data-alloc-pct type="number" min="0" step="any" inputmode="decimal" value="${p.pct}" class="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-right text-sm focus:outline-none focus:border-[#ECE600]"></td>
+      <td class="px-2 py-1.5 text-center"><input data-alloc-i="${i}" data-alloc-pools type="number" min="0" step="1" inputmode="numeric" value="${p.pools}" class="w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-right text-sm focus:outline-none focus:border-[#ECE600]"></td>
       <td class="px-3 py-2 text-right font-mono" data-alloc-money="${i}">—</td>
       <td class="px-3 py-2 text-right font-mono text-slate-300" data-alloc-perpool="${i}">—</td>
     </tr>`).join("");
 
-  tbody.querySelectorAll("input[data-alloc-pct]").forEach((inp) => inp.oninput = () => {
-    alloc.pillars[+inp.dataset.allocI].pct = Math.max(0, parseFloat(inp.value) || 0);
-    recalcAllocator(); scheduleAllocSave();
+  tbody.querySelectorAll("input[data-alloc-pct]").forEach((inp) => {
+    inp.oninput = () => {
+      alloc.pillars[+inp.dataset.allocI].pct = Math.max(0, parseFloat(inp.value) || 0);
+      recalcAllocator(); scheduleAllocSave();
+    };
+    // recordar el último campo % enfocado (para "Ajustar a 100%")
+    inp.onfocus = () => { _allocFocusedPct = +inp.dataset.allocI; };
   });
   tbody.querySelectorAll("input[data-alloc-pools]").forEach((inp) => inp.oninput = () => {
     alloc.pillars[+inp.dataset.allocI].pools = Math.max(0, Math.floor(parseFloat(inp.value) || 0));
@@ -270,6 +275,19 @@ function renderAllocator() {
   const reset = $("alloc-reset"); if (reset) reset.onclick = () => {
     state.prefs.allocator = structuredClone(DEFAULT_ALLOCATOR);
     renderAllocator(); scheduleAllocSave();
+  };
+  // "Ajustar a 100%": corrige el delta en el campo % seleccionado (último enfocado).
+  const fix = $("alloc-fix"); if (fix) fix.onclick = () => {
+    const a = state.prefs.allocator; if (!a) return;
+    const sum = a.pillars.reduce((s, p) => s + p.pct, 0);
+    const delta = 100 - sum;
+    if (Math.abs(delta) < 0.01) return;
+    const n = a.pillars.length;
+    const idx = (_allocFocusedPct != null && _allocFocusedPct >= 0 && _allocFocusedPct < n) ? _allocFocusedPct : 0;
+    a.pillars[idx].pct = Math.max(0, Math.round((a.pillars[idx].pct + delta) * 100) / 100);
+    const tgt = document.querySelector(`input[data-alloc-pct][data-alloc-i="${idx}"]`);
+    if (tgt) tgt.value = a.pillars[idx].pct;
+    recalcAllocator(); scheduleAllocSave();
   };
   recalcAllocator();
 }
@@ -294,6 +312,7 @@ function recalcAllocator() {
   const ok = Math.abs(sumPct - 100) < 0.01;
   const round2 = (x) => Math.round(x * 100) / 100;
   const sp = $("alloc-sumpct"); if (sp) { sp.textContent = round2(sumPct) + "%"; sp.className = "font-bold " + (ok ? "text-emerald-400" : "text-rose-400"); }
+  const fixBtn = $("alloc-fix"); if (fixBtn) fixBtn.classList.toggle("hidden", ok); // solo si ≠100%
   const spo = $("alloc-sumpools"); if (spo) spo.textContent = String(sumPools);
   const st = $("alloc-sumtotal"); if (st) st.textContent = fmtAlloc(sumMoney);
   const warn = $("alloc-warn");
