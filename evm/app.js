@@ -431,6 +431,33 @@ async function rpcEthCall(rpcOrList, to, data) {
   throw lastErr || new Error("todos los RPC fallaron");
 }
 
+// eth_getBalance resiliente (lista de RPC, mismo backoff que rpcEthCall). Lee el
+// saldo NATIVO en directo de la cadena (sin el retraso del caché del explorer).
+// Devuelve el hex del balance. Lanza si todos los RPC fallan.
+async function rpcGetBalance(rpcOrList, address) {
+  const rpcs = Array.isArray(rpcOrList) ? rpcOrList.filter(Boolean) : [rpcOrList].filter(Boolean);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const body = JSON.stringify({ jsonrpc: "2.0", method: "eth_getBalance", params: [address, "latest"], id: 1 });
+  let lastErr;
+  for (const rpc of rpcs) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(rpc, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+        if (res.status === 429 || res.status >= 500) { lastErr = new Error(`RPC HTTP ${res.status}`); if (attempt === 0) { await sleep(400); continue; } break; }
+        if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
+        const json = await res.json();
+        if (json.error) throw new Error(`RPC ${json.error.code}: ${json.error.message}`);
+        return json.result;
+      } catch (e) {
+        lastErr = e;
+        if (attempt === 0 && /Failed to fetch|NetworkError|timeout|aborted/i.test(String(e.message))) { await sleep(400); continue; }
+        break;
+      }
+    }
+  }
+  throw lastErr || new Error("todos los RPC fallaron");
+}
+
 // ============================================================================
 // Revert Lend — vaults ERC-4626 (lending). Lectura on-chain + histórico vía Blockscout.
 // ============================================================================
@@ -538,11 +565,17 @@ async function fetchIdleTokensEVM(chainKey, address) {
   // Procesar y filtrar tokens sin balance
   const tokens = [];
   const missingPrice = [];
-  // 1) Balance nativo (ETH, HYPE, MATIC, BNB…) — viene en `coin_balance` (wei).
-  if (addrInfo && addrInfo.coin_balance && c.nativeSymbol) {
+  // 1) Balance nativo (ETH, HYPE, MATIC, BNB…). Preferimos el RPC en VIVO
+  // (eth_getBalance) en vez del `coin_balance` del explorer, que va con retraso
+  // (cachea el balance y no refleja la actividad reciente). Fallback al explorer
+  // si el RPC falla. Read-only.
+  if (c.nativeSymbol) {
+    let raw = null;
+    try { const hex = await rpcGetBalance(c.rpcUrls || c.rpcUrl, address); if (hex) raw = BigInt(hex); }
+    catch (e) { /* RPC caído → caemos al coin_balance del explorer */ }
+    if (raw == null && addrInfo && addrInfo.coin_balance) { try { raw = BigInt(addrInfo.coin_balance); } catch (e) { raw = null; } }
     try {
-      const raw = BigInt(addrInfo.coin_balance);
-      if (raw > 0n) {
+      if (raw != null && raw > 0n) {
         const balance = bigIntToDecimal(raw, 18); // todos los nativos EVM usan 18 decimales
         const obj = {
           chain: chainKey,
