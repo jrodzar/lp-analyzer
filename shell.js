@@ -2138,13 +2138,13 @@ function idleTokensBlock(tokens, opts = {}) {
     const chip = chainName
       ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap" style="background:${chainHex}22;color:${chainHex};border:1px solid ${chainHex}44">${chainName}</span>`
       : "";
-    // Icono → gráfico de precio (DexScreener, por dirección). Read-only: solo abre
-    // un enlace externo, así que vale también en [main]. Universal (cualquier
-    // token/chain); si no hay dirección, búsqueda por símbolo.
+    // Icono → gráfico de precio. Read-only (solo abre un enlace externo) → vale en
+    // [main]. Preferimos TRADINGVIEW: xStocks → acción subyacente (CRCLx→CRCL…);
+    // nativos / cripto envuelta → par {SYM}USD; el resto de tokens on-chain →
+    // DexScreener por dirección (TradingView no tiene esos tokens sueltos).
     const dexSlug = { solana: "solana", ethereum: "ethereum", arbitrum: "arbitrum", optimism: "optimism", polygon: "polygon", base: "base", bnb: "bsc", hyperevm: "hyperevm" }[t.chain];
-    // Los tokens NATIVOS (ETH/HYPE/POL/BNB/SOL) llegan con address placeholder cero
-    // o vacío → DexScreener no tiene esa dirección. Los mapeamos a su token
-    // ENVUELTO (WETH/WHYPE/WMATIC/WBNB/WSOL), que sí tiene par y gráfico on-chain.
+    // Direcciones de nativos/envueltos por chain (SOL nativo llega como WSOL mint;
+    // los nativos EVM como placeholder 0x0…0). Se mapean a su par {SYM}USD en TV.
     const WRAPPED_NATIVE = {
       solana: "So11111111111111111111111111111111111111112",
       ethereum: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
@@ -2155,12 +2155,23 @@ function idleTokensBlock(tokens, opts = {}) {
       bnb: "0xbB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
       hyperevm: "0x5555555555555555555555555555555555555555",
     };
-    const isNative = !t.address || /^0x0+$/i.test(t.address);
-    const effAddr = isNative ? (WRAPPED_NATIVE[t.chain] || "") : t.address;
-    const chartHref = effAddr
-      ? (dexSlug ? `https://dexscreener.com/${dexSlug}/${effAddr}` : `https://dexscreener.com/search?q=${encodeURIComponent(effAddr)}`)
-      : `https://dexscreener.com/search?q=${encodeURIComponent(t.symbol || "")}`;
-    const chartIcon = `<a href="${chartHref}" target="_blank" rel="noopener noreferrer" title="Ver gráfico de precio (DexScreener)" aria-label="Gráfico de precio de ${t.symbol || ""}" class="shrink-0 text-slate-500 hover:text-cyan-300 transition"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg></a>`;
+    const tvUrl = (s) => `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(s)}`;
+    const xm = (t.symbol || "").match(/^([A-Za-z0-9]{1,8})x$/);
+    const isXStock = !!(xm && /xstock|backed/i.test(t.name || ""));
+    const nativeAddrs = new Set(Object.values(WRAPPED_NATIVE).map((a) => a.toLowerCase()));
+    const isNativeCrypto = !t.address || /^0x0+$/i.test(t.address) || nativeAddrs.has((t.address || "").toLowerCase());
+    let chartHref, chartLabel;
+    if (isXStock) {
+      const ticker = xm[1].toUpperCase();
+      chartHref = tvUrl(ticker); chartLabel = `${ticker} en TradingView`;
+    } else if (isNativeCrypto) {
+      const base = (t.symbol || "").toUpperCase().replace(/^W(?=[A-Z])/, ""); // WETH→ETH, WSOL→SOL…
+      chartHref = tvUrl(base + "USD"); chartLabel = `${base} en TradingView`;
+    } else {
+      chartHref = dexSlug ? `https://dexscreener.com/${dexSlug}/${t.address}` : `https://dexscreener.com/search?q=${encodeURIComponent(t.address || t.symbol || "")}`;
+      chartLabel = "gráfico (DexScreener)";
+    }
+    const chartIcon = `<a href="${chartHref}" target="_blank" rel="noopener noreferrer" title="Ver ${chartLabel}" aria-label="Ver ${chartLabel}" class="shrink-0 text-slate-500 hover:text-cyan-300 transition"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg></a>`;
     // Dos layouts:
     //   - Desktop (sm+): una sola fila con 5 columnas alineadas
     //     [SYMBOL w-20] [CHAIN w-24] [NAME flex-1] [BALANCE w-28 derecha] [USD w-20 derecha]
