@@ -136,7 +136,6 @@ const state = {
   loading: false,
   error: null,
   sortBy: "value",
-  hideClosed: false, // por defecto se MUESTRAN las cerradas (el shell sincroniza showClosed)
 };
 
 let charts = { fees: null, value: null };
@@ -1796,12 +1795,12 @@ function renderSummary() {
   const section = document.getElementById("summary-section");
   if (!state.positions.length) { section.classList.add("hidden"); return; }
   section.classList.remove("hidden");
-  // Cuando se ocultan las cerradas, NO cuentan en los totales del resumen.
-  const agg = aggregate(state.positions.filter((p) => !state.hideClosed || !p.closed));
+  // Las cerradas SIEMPRE cuentan en los totales del resumen.
+  const agg = aggregate(state.positions);
   document.getElementById("sum-positions").textContent = state.positions.length;
-  document.getElementById("sum-positions-sub").textContent = state.hideClosed
-    ? `${agg.open} abiertas`
-    : `${agg.open} abiertas · ${agg.closed} cerradas`;
+  document.getElementById("sum-positions-sub").textContent = agg.closed
+    ? `${agg.open} abiertas · ${agg.closed} cerradas`
+    : `${agg.open} abiertas`;
   document.getElementById("sum-current").textContent = fmtUSD(agg.current);
   const pendingSuffix = agg.uncollectedUnknown ? ` (n/d en ${agg.uncollectedUnknown})` : "";
   document.getElementById("sum-fees").textContent = `${fmtUSD(agg.fees)} +${fmtUSD(agg.uncollected)} pend${pendingSuffix}`;
@@ -1828,12 +1827,31 @@ function renderPositions() {
     apr: (a, b) => b.apr - a.apr,
     age: (a, b) => a.openedAt - b.openedAt,
   };
-  let list = [...state.positions].sort(sorters[sortKey] || sorters.value);
-  if (state.hideClosed) list = list.filter((p) => !p.closed);
+  const list = [...state.positions].sort(sorters[sortKey] || sorters.value);
+  // Las cerradas (liquidez retirada) van a una sección colapsada aparte para no
+  // estorbar; siguen contando en todos los cálculos (resumen, histórico…).
+  const openList = list.filter((p) => !p.closed);
+  const closedList = list.filter((p) => p.closed);
 
   const container = document.getElementById("positions-list");
   container.innerHTML = "";
-  for (const p of list) container.appendChild(positionCard(p));
+  for (const p of openList) container.appendChild(positionCard(p));
+
+  const closedSection = document.getElementById("closed-section");
+  const closedContainer = document.getElementById("closed-list");
+  if (closedContainer) closedContainer.innerHTML = "";
+  if (closedSection) {
+    if (closedList.length) {
+      const totVal = closedList.reduce((s, p) => s + (p.currentValueUSD || 0), 0);
+      const totFees = closedList.reduce((s, p) => s + (p.feesUSD || 0), 0);
+      const cnt = document.getElementById("closed-count");
+      if (cnt) cnt.textContent = `${closedList.length} · ${fmtUSD(totVal)} · ${fmtUSD(totFees)} fees`;
+      for (const p of closedList) closedContainer.appendChild(positionCard(p));
+      closedSection.classList.remove("hidden");
+    } else {
+      closedSection.classList.add("hidden");
+    }
+  }
 }
 
 // Devuelve { url, label } con el enlace a la web para gestionar la posición
@@ -2248,7 +2266,7 @@ function assignColors(list) {
 async function updateFeesChart() {
   let series = [];
   // 1) Posiciones de subgraph → snapshots (fees cobradas acumuladas)
-  const subgraphPos = (state.positions || []).filter((p) => !p._lending && !p._rpcOnly && p.id && (!state.hideClosed || !p.closed));
+  const subgraphPos = (state.positions || []).filter((p) => !p._lending && !p._rpcOnly && p.id);
   let didHist = false;
   if (subgraphPos.length) {
     try {
@@ -2488,11 +2506,6 @@ function init() {
     state.sortBy = e.target.value;
     renderPositions();
   });
-  document.getElementById("hide-closed").addEventListener("change", (e) => {
-    state.hideClosed = !e.target.checked; // check "Mostrar cerradas": marcado = mostrar
-    renderAll(); updateFeesChart();
-    try { window.parent.postMessage({ type: "lp-show-closed-changed", showClosed: e.target.checked }, "*"); } catch (_) {}
-  });
 
   if (!state.apiKey && !PROXY_BASE) {
     setStatus("Configura tu API key de The Graph en Settings antes de analizar.", "info");
@@ -2608,11 +2621,6 @@ document.addEventListener("DOMContentLoaded", init);
       state.selectedChains = d.chains.slice();
       localStorage.setItem("lp:selectedChains", JSON.stringify(state.selectedChains));
       if (typeof renderChainChips === "function") renderChainChips();
-    } else if (d.type === "lp-set-show-closed") {
-      // El shell empuja el ajuste "Mostrar cerradas"; re-renderiza sin re-fetch.
-      state.hideClosed = !d.showClosed;
-      const cb = document.getElementById("hide-closed"); if (cb) cb.checked = !!d.showClosed;
-      if ((state.positions || []).length) { renderAll(); updateFeesChart(); }
     } else if (d.type === "lp-portfolio-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
@@ -2624,8 +2632,8 @@ document.addEventListener("DOMContentLoaded", init);
           // Snapshots para línea temporal de fees
           let timeline = [];
           try {
-            // Incluimos también las cerradas (tienen snapshots históricos); el
-            // shell decide si pintarlas según showClosed (cada serie va tagueada).
+            // Incluimos también las cerradas (tienen snapshots históricos); siempre
+            // cuentan en el Histórico (cada serie va tagueada con `closed`).
             const toFetch = (state.positions || []).slice(0, 20);
             if (toFetch.length) {
               const bundles = await Promise.all(toFetch.map(async (p) => {

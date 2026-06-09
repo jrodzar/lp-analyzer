@@ -189,13 +189,20 @@
             <option value="value">Valor actual ↓</option>
             <option value="fees">Fees pendientes ↓</option>
           </select>
-          <label class="text-xs flex items-center gap-1.5">
-            <input id="hide-closed" type="checkbox" class="accent-purple-500" checked />
-            <span>Mostrar cerradas</span>
-          </label>
         </div>
       </div>
       <div id="positions-list" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
+      <!-- Posiciones cerradas (liquidez retirada): colapsadas para no estorbar, pero
+           siempre cuentan en el resumen/histórico. -->
+      <details id="closed-section" class="hidden mt-4 rounded-xl border border-slate-800 border-l-4 border-l-slate-600 bg-slate-900/40 p-3">
+        <summary class="flex items-center gap-2 cursor-pointer select-none text-slate-300 hover:brightness-125 transition">
+          <span class="text-base">🗃️</span>
+          <span class="font-semibold">Posiciones cerradas</span>
+          <span class="flex-1"></span>
+          <span id="closed-count" class="text-xs text-slate-400 whitespace-nowrap"></span>
+        </summary>
+        <div id="closed-list" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mt-3"></div>
+      </details>
     </section>
 
     <!-- Empty state -->

@@ -67,26 +67,25 @@ Ese CSS lo genera CI en cada push:
   `lp-result {reqId, address, items, status}` con posiciones **normalizadas**.
 - `lp-set-chains {chains}` (EVM) / `lp-set-protocols {protocols}` (SOL) — fija qué
   redes/protocolos analizar (según preferencias del usuario).
-- `lp-set-show-closed {showClosed}` — propaga el ajuste "Mostrar posiciones cerradas"
-  (ver más abajo). El engine re-renderiza con los datos ya en memoria (sin re-fetch).
 - `lp-open-settings`.
 
 ### Engine → shell
 - `lp-ready {app}`, `lp-result {...}`.
-- `lp-show-closed-changed {showClosed}` — el usuario togueó "Mostrar cerradas" en el
-  Quick del engine; el shell persiste, sincroniza el otro engine y re-renderiza.
 
-### "Mostrar posiciones cerradas" (toggle único Quick + Portfolio)
-Ajuste `state.showClosed` (default **true**, fuente de verdad = shell). Cuando está
-activo, las posiciones **cerradas** (liquidez retirada pero NFT/cuenta no quemada,
-`item.closed === true`) cuentan en lista, totales del resumen y gráfico Histórico.
-- Los engines **siempre** calculan y envían abiertas + cerradas (incluido el timeline,
-  con cada serie tagueada `closed`); el filtrado ocurre **al renderizar** → togglear es
-  instantáneo, sin re-analizar. Internamente el engine usa `state.hideClosed = !showClosed`.
-- UI: Portfolio = `#pf-show-closed` (cabecera "Resumen global"); Quick = `#hide-closed`
-  del engine (label "Mostrar cerradas", marcado ⇒ mostrar).
-- Persistencia: `localStorage["lp:showClosed"]` siempre + `prefs.showClosed` en Firestore
-  con login (prioridad al cargar). Funciones shell: `setShowClosed()`, `pushShowClosed()`.
+### Posiciones cerradas (siempre cuentan; sección colapsada)
+Las posiciones **cerradas** (liquidez retirada pero NFT/cuenta no quemada,
+`item.closed === true`) **siempre** cuentan en todos los cálculos (totales del resumen,
+PnL/IL, fees, gráfico Histórico). No hay opción para excluirlas. Para no estorbar la
+lista, se separan a una sección **🗃️ Posiciones cerradas** colapsada por defecto,
+debajo de los "Tokens idle" de cada cartera (Quick y Portfolio).
+- **Quick** (motor): `renderPositions()` reparte `state.positions` en abiertas
+  (`#positions-list`) y cerradas (`<details id="closed-section">` → `#closed-list`).
+  `aggregate()` recibe **todas** las posiciones (suma valor/fees de todas, cuenta
+  open/closed por separado para la sub-línea del resumen).
+- **Portfolio** (shell): `renderPortfolio()` separa por dirección; las cerradas van en
+  `closedPositionsBlock()` (un `<details class="pf-section">` colapsado, mismo patrón
+  visual que `idleTokensBlock()`). Todos los totales/curvas usan los items sin filtrar.
+- El timeline sigue tagueando cada serie con `closed` (metadato; el shell ya no filtra).
 
 ### Item normalizado del portfolio
 `{ kind: "evm"|"sol", venue, pair, valueUSD, feesUSD, feesPendingUSD, ilUSD, pnlUSD, inRange, closed, id }`
@@ -135,7 +134,6 @@ users/{uid} → {
   apiKeysEnc:   { iv, ct },   // API keys (graph/helius/birdeye) cifradas con la misma clave
   encSalt,                    // salt PBKDF2 (no secreto)
   prefs:     { chains: [...], protocols: [...],     // no sensible, en claro
-               showClosed: bool,                    // toggle "Mostrar cerradas"
                allocator: { pillars: [...] } },     // repartidor de capital (pestaña Aporte)
   prefsVersion
 }
@@ -225,8 +223,8 @@ Bootstrap: el admin entra (siempre autorizado) → "👥 Accesos" → añade ema
 ## Estado / pendientes
 - Hecho: EVM (incl. HyperEVM RPC + Revert Lend), Orca, Raydium, portfolios, login,
   prefs, gráficos, fees (cobradas/pendientes), pestaña Histórico, pestaña Aporte
-  (repartidor de capital), toggle "Mostrar posiciones cerradas" (Quick+Portfolio,
-  persistido), barra de rango en fichas, PnL+IL real en Solana vía Birdeye histórico,
+  (repartidor de capital), posiciones cerradas (siempre cuentan + sección colapsada
+  bajo idle), barra de rango en fichas, PnL+IL real en Solana vía Birdeye histórico,
   control de acceso por whitelist, modal de progreso al analizar.
 - Pendiente opcional: Meteora DLMM, pools clásicos Solana, fee tier de Raydium,
   códigos de invitación (autoservicio).

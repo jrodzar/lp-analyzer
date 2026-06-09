@@ -71,7 +71,6 @@ const state = {
   prices: {}, // mint -> usd price
   loading: false,
   sortBy: "value",
-  hideClosed: false, // por defecto se MUESTRAN las cerradas (el shell sincroniza showClosed)
 };
 
 let charts = { value: null };
@@ -1257,12 +1256,12 @@ function renderSummary() {
   const section = document.getElementById("summary-section");
   if (!state.positions.length) { section.classList.add("hidden"); return; }
   section.classList.remove("hidden");
-  // Cuando se ocultan las cerradas, NO cuentan en los totales del resumen.
-  const agg = aggregate(state.positions.filter((p) => !state.hideClosed || !p.closed));
+  // Las cerradas SIEMPRE cuentan en los totales del resumen.
+  const agg = aggregate(state.positions);
   document.getElementById("sum-positions").textContent = state.positions.length;
-  document.getElementById("sum-positions-sub").textContent = state.hideClosed
-    ? `${agg.inRange} en rango · ${agg.outRange} fuera`
-    : `${agg.inRange} en rango · ${agg.outRange} fuera · ${agg.closed} cerradas`;
+  document.getElementById("sum-positions-sub").textContent = agg.closed
+    ? `${agg.inRange} en rango · ${agg.outRange} fuera · ${agg.closed} cerradas`
+    : `${agg.inRange} en rango · ${agg.outRange} fuera`;
   document.getElementById("sum-current").textContent = fmtUSD(agg.current);
   document.getElementById("sum-fees").textContent = fmtUSD(agg.fees);
   document.getElementById("sum-range").textContent = `${agg.inRange}/${state.positions.length - agg.closed || 0}`;
@@ -1279,12 +1278,31 @@ function renderPositions() {
     value: (a, b) => b.currentValueUSD - a.currentValueUSD,
     fees: (a, b) => b.feesPendingUSD - a.feesPendingUSD,
   };
-  let list = [...state.positions].sort(sorters[state.sortBy] || sorters.value);
-  if (state.hideClosed) list = list.filter((p) => !p.closed);
+  const list = [...state.positions].sort(sorters[state.sortBy] || sorters.value);
+  // Las cerradas (liquidez retirada) van a una sección colapsada aparte para no
+  // estorbar; siguen contando en todos los cálculos (resumen, histórico…).
+  const openList = list.filter((p) => !p.closed);
+  const closedList = list.filter((p) => p.closed);
 
   const container = document.getElementById("positions-list");
   container.innerHTML = "";
-  for (const p of list) container.appendChild(positionCard(p));
+  for (const p of openList) container.appendChild(positionCard(p));
+
+  const closedSection = document.getElementById("closed-section");
+  const closedContainer = document.getElementById("closed-list");
+  if (closedContainer) closedContainer.innerHTML = "";
+  if (closedSection) {
+    if (closedList.length) {
+      const totVal = closedList.reduce((s, p) => s + (p.currentValueUSD || 0), 0);
+      const totFees = closedList.reduce((s, p) => s + (p.feesPendingUSD || 0), 0);
+      const cnt = document.getElementById("closed-count");
+      if (cnt) cnt.textContent = `${closedList.length} · ${fmtUSD(totVal)} · ${fmtUSD(totFees)} fees`;
+      for (const p of closedList) closedContainer.appendChild(positionCard(p));
+      closedSection.classList.remove("hidden");
+    } else {
+      closedSection.classList.add("hidden");
+    }
+  }
 }
 
 // rangeBarHTML vive en common.js (compartido con evm/app.js).
@@ -2507,11 +2525,6 @@ async function init() {
     state.sortBy = e.target.value;
     renderPositions();
   });
-  document.getElementById("hide-closed").addEventListener("change", (e) => {
-    state.hideClosed = !e.target.checked; // check "Mostrar cerradas": marcado = mostrar
-    renderAll();
-    try { window.parent.postMessage({ type: "lp-show-closed-changed", showClosed: e.target.checked }, "*"); } catch (_) {}
-  });
 
   // Pre-carga el cifrado (no crítico aquí; analyze() lo re-asegura). Toleramos
   // fallo para no provocar un unhandled rejection en el init.
@@ -2619,11 +2632,6 @@ document.addEventListener("DOMContentLoaded", init);
       state.selectedProtocols = d.protocols.slice();
       localStorage.setItem("sol:selectedProtocols", JSON.stringify(state.selectedProtocols));
       if (typeof renderProtocolChips === "function") renderProtocolChips();
-    } else if (d.type === "lp-set-show-closed") {
-      // El shell empuja el ajuste "Mostrar cerradas"; re-renderiza sin re-fetch.
-      state.hideClosed = !d.showClosed;
-      const cb = document.getElementById("hide-closed"); if (cb) cb.checked = !!d.showClosed;
-      if ((state.positions || []).length) renderAll();
     } else if (d.type === "lp-portfolio-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
@@ -2665,9 +2673,9 @@ document.addEventListener("DOMContentLoaded", init);
             const dep = Math.max(0, (p.currentValueUSD || 0) - fees);
             timeline.push({ posId: p.mint, label: `${p.token0.symbol}/${p.token1.symbol}`, flat: true, points: [{ ts: nowMs, depositedUSD: dep, withdrawnUSD: 0, feesUSD: fees }] });
           }
-          // Taguear cada serie con `closed` (de la posición) para que el shell
-          // filtre el gráfico según showClosed. (Las cerradas sin histórico real
-          // no generan serie; las que sí — vía fetchSolanaHistory — quedan tagueadas.)
+          // Taguear cada serie con `closed` (de la posición) como metadato. Las
+          // cerradas siempre cuentan en el Histórico; las que tienen histórico real
+          // (vía fetchSolanaHistory) quedan tagueadas, las que no, no generan serie.
           const _posByMint = new Map((state.positions || []).map((p) => [p.mint, p]));
           for (const s of timeline) { const pp = _posByMint.get(s.posId); s.closed = !!(pp && pp.closed); }
           const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
