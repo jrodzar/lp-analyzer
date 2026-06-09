@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "200";</script>
+  <script>window.APP_VERSION = "201";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -350,7 +350,7 @@
               <div id="g-pnl-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
             </div>
             <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-              <div class="text-[11px] uppercase tracking-wide text-slate-400">Posiciones</div>
+              <div class="text-[11px] uppercase tracking-wide text-slate-400">Posiciones <span class="cursor-help text-slate-500" title="Total de posiciones, INCLUIDAS las cerradas (liquidez retirada). Las cerradas se listan aparte en una sección colapsada por dirección, pero sus fees cobradas, PnL e IL siguen sumando en los totales de este resumen. Su valor actual es ~0.">ⓘ</span></div>
               <div class="flex items-baseline gap-3 mt-1">
                 <div id="g-positions" class="text-xl font-bold">—</div>
                 <div class="text-[11px] text-slate-400">en <span id="g-addresses" class="text-slate-200 font-semibold">—</span> <span class="text-slate-400">direcciones</span></div>
@@ -358,6 +358,7 @@
               <div id="g-positions-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
             </div>
           </div>
+          <p id="g-closed-note" class="hidden text-[11px] text-slate-500 mt-2"></p>
         </section>
 
         <!-- Distribución del valor -->
@@ -473,11 +474,12 @@
             <div id="q-pnl-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
           </div>
           <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <div class="text-[11px] uppercase tracking-wide text-slate-400">Posiciones</div>
+            <div class="text-[11px] uppercase tracking-wide text-slate-400">Posiciones <span class="cursor-help text-slate-500" title="Total de posiciones, INCLUIDAS las cerradas (liquidez retirada). Las cerradas se listan aparte en una sección colapsada, pero sus fees cobradas, PnL e IL siguen sumando en los totales de este resumen. Su valor actual es ~0.">ⓘ</span></div>
             <div id="q-positions" class="text-xl font-bold mt-1">—</div>
             <div id="q-positions-sub" class="text-[11px] text-slate-400 mt-0.5"></div>
           </div>
         </div>
+        <p id="q-closed-note" class="hidden text-[11px] text-slate-500 mt-2"></p>
       </section>
       <!-- Tokens "idle" en la wallet del usuario (fuera de LPs). Lo rellena shell.js
            a partir de lp-summary.idleTokens. Bloque colapsable con su propio toggle. -->

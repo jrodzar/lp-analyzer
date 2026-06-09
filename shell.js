@@ -1771,7 +1771,12 @@ function fillSummary(prefix, items, extra = {}) {
   const totalFees = totalCollected + totalPending;
   const lp = items.filter((it) => !it.lending);
   const lending = items.filter((it) => it.lending);
-  const inRange = lp.filter((it) => it.inRange).length;
+  // Las cerradas (liquidez retirada) cuentan en todos los totales de arriba (fees,
+  // PnL, IL, valor); aquí solo se separan para el desglose del conteo.
+  const closed = items.filter((it) => it.closed);
+  const lpOpen = lp.filter((it) => !it.closed);
+  const inRange = lpOpen.filter((it) => it.inRange).length;
+  const outRange = lpOpen.length - inRange;
   // IL solo aplica a LPs (un lending no tiene impermanent loss → ilUSD: null).
   // PnL y rentabilidad SÍ incluyen el lending: la card de Revert Lend tiene
   // gains/apr propios y deben sumar al total agregado del portfolio.
@@ -1812,8 +1817,9 @@ function fillSummary(prefix, items, extra = {}) {
   if ($i("positions")) {
     $i("positions").textContent = items.length;
     if ($i("positions-sub")) $i("positions-sub").textContent =
-      `${inRange} en rango · ${lp.length - inRange} fuera` +
-      (lending.length ? ` · ${lending.length} préstamo${lending.length > 1 ? "s" : ""}` : "");
+      `${inRange} en rango · ${outRange} fuera` +
+      (lending.length ? ` · ${lending.length} préstamo${lending.length > 1 ? "s" : ""}` : "") +
+      (closed.length ? ` · ${closed.length} cerrada${closed.length > 1 ? "s" : ""}` : "");
   }
   // Rentabilidad fees: APR anual ponderado por valor (LPs + lending — ambos tienen
   // apr/valor). Mensual = anual × 30/365. No descuenta IL — el tooltip aclara.
@@ -1840,6 +1846,16 @@ function fillSummary(prefix, items, extra = {}) {
     }
   }
   if ($i("addresses") && typeof extra.addresses === "number") $i("addresses").textContent = extra.addresses;
+  // Nota aclaratoria: las posiciones cerradas siguen contando en los totales.
+  if ($i("closed-note")) {
+    const note = $i("closed-note");
+    if (closed.length) {
+      note.classList.remove("hidden");
+      note.innerHTML = `🗃️ Incluye <span class="text-slate-300 font-semibold">${closed.length}</span> posición${closed.length > 1 ? "es" : ""} cerrada${closed.length > 1 ? "s" : ""} (liquidez retirada): sus <span class="text-slate-300">fees cobradas, PnL e IL</span> siguen contando en estos totales.`;
+    } else {
+      note.classList.add("hidden");
+    }
+  }
 }
 
 // Renderiza un banner de resultado del análisis (verde si OK, rojo si hubo errores).
