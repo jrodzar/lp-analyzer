@@ -2142,8 +2142,23 @@ function idleTokensBlock(tokens, opts = {}) {
     // un enlace externo, así que vale también en [main]. Universal (cualquier
     // token/chain); si no hay dirección, búsqueda por símbolo.
     const dexSlug = { solana: "solana", ethereum: "ethereum", arbitrum: "arbitrum", optimism: "optimism", polygon: "polygon", base: "base", bnb: "bsc", hyperevm: "hyperevm" }[t.chain];
-    const chartHref = t.address
-      ? (dexSlug ? `https://dexscreener.com/${dexSlug}/${t.address}` : `https://dexscreener.com/search?q=${encodeURIComponent(t.address)}`)
+    // Los tokens NATIVOS (ETH/HYPE/POL/BNB/SOL) llegan con address placeholder cero
+    // o vacío → DexScreener no tiene esa dirección. Los mapeamos a su token
+    // ENVUELTO (WETH/WHYPE/WMATIC/WBNB/WSOL), que sí tiene par y gráfico on-chain.
+    const WRAPPED_NATIVE = {
+      solana: "So11111111111111111111111111111111111111112",
+      ethereum: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      arbitrum: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+      optimism: "0x4200000000000000000000000000000000000006",
+      base: "0x4200000000000000000000000000000000000006",
+      polygon: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
+      bnb: "0xbB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
+      hyperevm: "0x5555555555555555555555555555555555555555",
+    };
+    const isNative = !t.address || /^0x0+$/i.test(t.address);
+    const effAddr = isNative ? (WRAPPED_NATIVE[t.chain] || "") : t.address;
+    const chartHref = effAddr
+      ? (dexSlug ? `https://dexscreener.com/${dexSlug}/${effAddr}` : `https://dexscreener.com/search?q=${encodeURIComponent(effAddr)}`)
       : `https://dexscreener.com/search?q=${encodeURIComponent(t.symbol || "")}`;
     const chartIcon = `<a href="${chartHref}" target="_blank" rel="noopener noreferrer" title="Ver gráfico de precio (DexScreener)" aria-label="Gráfico de precio de ${t.symbol || ""}" class="shrink-0 text-slate-500 hover:text-cyan-300 transition"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg></a>`;
     // Dos layouts:
