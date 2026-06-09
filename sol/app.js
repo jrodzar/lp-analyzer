@@ -1768,6 +1768,30 @@ async function fetchEnhancedTxs(owner) {
   return txs;
 }
 
+// Discriminador de decrease_liquidity_v2 (Orca y Raydium, ambos Anchor →
+// sha256("global:decrease_liquidity_v2")[:8], mismo valor para los dos).
+const DECREASE_LIQ_V2_DISC = [58, 127, 188, 62, 79, 82, 196, 96];
+
+// ¿La tx contiene una retirada REAL de liquidez? Busca una instrucción top-level
+// al programa de Orca/Raydium con ese discriminador y liquidity > 0 (en Raydium
+// collect_fees ES decrease con liquidity=0, por eso hay que mirar el campo).
+// Permite que un retiro PEQUEÑO no se confunda con un cobro de fees por la
+// heurística de tamaño (un retiro < 5% del principal parecía una fee).
+function txHasRealWithdraw(tx) {
+  for (const ix of (tx.instructions || [])) {
+    const pid = ix.programId;
+    if (pid !== ORCA_WHIRLPOOL_PROGRAM && pid !== RAYDIUM_CLMM_PROGRAM) continue;
+    let bytes;
+    try { bytes = base58Decode(ix.data || ""); } catch (e) { continue; }
+    if (bytes.length < 24) continue;
+    let discOk = true;
+    for (let i = 0; i < 8; i++) { if (bytes[i] !== DECREASE_LIQ_V2_DISC[i]) { discOk = false; break; } }
+    if (!discOk) continue;
+    for (let i = 8; i < 24; i++) { if (bytes[i] !== 0) return true; } // liquidity (u128 LE) > 0
+  }
+  return false;
+}
+
 // ============================================================================
 // xStocks fallback: para acciones tokenizadas (TSLAx, MSTRx, NVDAx, CRCLx…)
 // que Birdeye no cubre históricamente, usamos el precio del subyacente en
@@ -1966,6 +1990,7 @@ async function enrichSolanaPnL(owner) {
     if (!SRC.has(tx.source)) continue;
     const ts = tx.timestamp || 0;
     const sig = tx.signature || "";
+    const isWd = txHasRealWithdraw(tx); // retiro real → no tratar como fee aunque sea pequeño
     // clave (posId+mint) → { mint, posId, net }; net>0 = depósito, net<0 = retiro
     const perTxMint = new Map();
     // por posición, ¿esta tx tuvo flujos in y/o out?
@@ -1992,7 +2017,7 @@ async function enrichSolanaPnL(owner) {
       const flows = perPosFlows.get(v.posId) || {};
       const mixed = !!(flows.hasIn && flows.hasOut);
       if (!perPos.has(v.posId)) perPos.set(v.posId, []);
-      perPos.get(v.posId).push({ ts, sig, mint: v.mint, amount, dir, mixed });
+      perPos.get(v.posId).push({ ts, sig, mint: v.mint, amount, dir, mixed, isWd });
     }
   }
 
@@ -2033,7 +2058,7 @@ async function enrichSolanaPnL(owner) {
         //                  Reduce coste base; NO es fee ni retiro.
         const isLarge = usd > 0.05 * Math.max(cumDep - cumWd, 1);
         if (e.mixed) {
-          if (isLarge) {
+          if (isLarge || e.isWd) {
             withdrawnUSD += usd; cumWd += usd;
             netAmt.set(e.mint, (netAmt.get(e.mint) || 0) - e.amount);
             cls = "withdraw (mixed)";
@@ -2045,7 +2070,7 @@ async function enrichSolanaPnL(owner) {
             cls = "refund (mixed)";
           }
         } else {
-          if (isLarge) {
+          if (isLarge || e.isWd) {
             withdrawnUSD += usd; cumWd += usd;
             netAmt.set(e.mint, (netAmt.get(e.mint) || 0) - e.amount);
             cls = "withdraw";
@@ -2457,13 +2482,14 @@ async function fetchSolanaHistory(owner) {
   const SRC = new Set(["RAYDIUM", "ORCA", "WHIRLPOOL"]);
   // acumular eventos por posición (o agregado si no hay mapa de vaults)
   const perPos = new Map(); // posId -> { label, events: [{ts, net}] }
-  const pushEvent = (posId, label, ts, net) => {
+  const pushEvent = (posId, label, ts, net, isWd) => {
     if (!perPos.has(posId)) perPos.set(posId, { label, events: [] });
-    perPos.get(posId).events.push({ ts, net });
+    perPos.get(posId).events.push({ ts, net, isWd });
   };
   for (const tx of txs) {
     if (!SRC.has(tx.source)) continue;
     const ts = tx.timestamp || 0;
+    const isWd = txHasRealWithdraw(tx); // retiro real → no tratar como fee aunque sea pequeño
     // agregado por tx para el fallback
     let aggSent = 0, aggRecv = 0;
     for (const t of (tx.tokenTransfers || [])) {
@@ -2477,12 +2503,12 @@ async function fetchSolanaHistory(owner) {
       else continue;
       if (hasVaultMap && counterparty && vaultToPos.has(counterparty)) {
         const pos = vaultToPos.get(counterparty);
-        pushEvent(pos.posId, pos.label, ts, net);
+        pushEvent(pos.posId, pos.label, ts, net, isWd);
       }
     }
     if (!hasVaultMap) {
       const net = aggSent - aggRecv;
-      if (Math.abs(net) >= 1e-9) pushEvent("sol-agg", "Solana (Orca/Raydium)", ts, net);
+      if (Math.abs(net) >= 1e-9) pushEvent("sol-agg", "Solana (Orca/Raydium)", ts, net, isWd);
     }
   }
 
@@ -2497,9 +2523,10 @@ async function fetchSolanaHistory(owner) {
       } else {
         const r = -e.net; // importe recibido del pool
         // heurística: recibir un importe grande vs lo depositado = retiro de principal;
-        // un importe pequeño = cobro de fees (las posiciones abiertas cobran fees sueltas)
-        if (r > 0.05 * Math.max(cumDep - cumWd, 1)) cumWd += r; // retiro de principal
-        else cumFees += r;                                      // fee cobrada
+        // un importe pequeño = cobro de fees. EXCEPCIÓN: si la tx tiene una
+        // instrucción decrease_liquidity real (isWd), es un retiro aunque sea pequeño.
+        if (e.isWd || r > 0.05 * Math.max(cumDep - cumWd, 1)) cumWd += r; // retiro de principal
+        else cumFees += r;                                                // fee cobrada
       }
       const day = Math.floor((e.ts * 1000) / 86400000) * 86400000;
       byDay.set(day, { depositedUSD: Math.max(0, cumDep - cumWd), withdrawnUSD: cumWd, feesUSD: cumFees });
