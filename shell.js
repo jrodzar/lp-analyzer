@@ -2138,6 +2138,14 @@ function idleTokensBlock(tokens, opts = {}) {
     const chip = chainName
       ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap" style="background:${chainHex}22;color:${chainHex};border:1px solid ${chainHex}44">${chainName}</span>`
       : "";
+    // Icono → gráfico de precio (DexScreener, por dirección). Read-only: solo abre
+    // un enlace externo, así que vale también en [main]. Universal (cualquier
+    // token/chain); si no hay dirección, búsqueda por símbolo.
+    const dexSlug = { solana: "solana", ethereum: "ethereum", arbitrum: "arbitrum", optimism: "optimism", polygon: "polygon", base: "base", bnb: "bsc", hyperevm: "hyperevm" }[t.chain];
+    const chartHref = t.address
+      ? (dexSlug ? `https://dexscreener.com/${dexSlug}/${t.address}` : `https://dexscreener.com/search?q=${encodeURIComponent(t.address)}`)
+      : `https://dexscreener.com/search?q=${encodeURIComponent(t.symbol || "")}`;
+    const chartIcon = `<a href="${chartHref}" target="_blank" rel="noopener noreferrer" title="Ver gráfico de precio (DexScreener)" aria-label="Gráfico de precio de ${t.symbol || ""}" class="shrink-0 text-slate-500 hover:text-cyan-300 transition"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg></a>`;
     // Dos layouts:
     //   - Desktop (sm+): una sola fila con 5 columnas alineadas
     //     [SYMBOL w-20] [CHAIN w-24] [NAME flex-1] [BALANCE w-28 derecha] [USD w-20 derecha]
@@ -2153,6 +2161,7 @@ function idleTokensBlock(tokens, opts = {}) {
           <span class="text-slate-500 text-[11px] truncate flex-1">${t.name || ""}</span>
           <span class="font-mono text-[11px] text-slate-400 w-28 shrink-0 text-right">${bal}</span>
           <span class="font-semibold text-slate-100 w-20 shrink-0 text-right">${valStr}</span>
+          ${chartIcon}
         </div>
         <!-- Mobile -->
         <div class="sm:hidden">
@@ -2160,6 +2169,7 @@ function idleTokensBlock(tokens, opts = {}) {
             <span class="font-semibold text-slate-100 truncate min-w-0">${t.symbol || "?"}</span>
             <div class="shrink-0">${chip}</div>
             <span class="ml-auto font-semibold text-slate-100 shrink-0">${valStr}</span>
+            ${chartIcon}
           </div>
           <div class="flex items-center justify-between gap-2 mt-0.5">
             <span class="text-slate-500 text-[10px] truncate min-w-0">${t.name || ""}</span>
