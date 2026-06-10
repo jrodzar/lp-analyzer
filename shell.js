@@ -3132,8 +3132,29 @@ els.feesMinThreshold.addEventListener("input", () => {
 // common.js, solo los iframes. Las cards re-instanciadas viven en el DOM del
 // shell, así que el handler debe estar aquí también. common.js tiene el suyo
 // análogo para Quick mode (cards en el iframe).
+// Switch de denominación del precio del rango (sym0|sym1) en las cards. Sólo
+// show/hide de HTML pre-renderizado (rangeBarHTML pinta ambas orientaciones).
+function toggleRangeQuote(doc, rq) {
+  const uid = rq.dataset.uid, q = rq.dataset.rangeQuote;
+  if (!uid || q == null) return;
+  doc.querySelectorAll(`[data-range-quote][data-uid="${uid}"]`).forEach((b) => {
+    const on = b.dataset.rangeQuote === q;
+    b.classList.toggle("bg-emerald-500", on);
+    b.classList.toggle("text-slate-900", on);
+    b.classList.toggle("text-slate-400", !on);
+    b.classList.toggle("hover:text-slate-200", !on);
+  });
+  doc.querySelectorAll(`[data-range-view][data-uid="${uid}"]`).forEach((v) => {
+    v.classList.toggle("hidden", v.dataset.rangeView !== q);
+  });
+  const unit = doc.querySelector(`[data-range-unit][data-uid="${uid}"]`);
+  if (unit) unit.textContent = q === "0" ? (unit.dataset.s0 || "") : (unit.dataset.s1 || "");
+}
+
 function setupTabDelegation(doc) {
   doc.addEventListener("click", (e) => {
+    const rq = e.target && e.target.closest ? e.target.closest("[data-range-quote]") : null;
+    if (rq) { toggleRangeQuote(doc, rq); return; }
     const btn = e.target && e.target.closest ? e.target.closest("[data-tab-btn]") : null;
     if (!btn) return;
     const uid = btn.dataset.uid;

@@ -162,42 +162,62 @@ function pnlBreakdownHTML(pnlUSD, ilUSD, feesAllUSD) {
 // recupéralo de shell.js (es la copia canónica).
 
 // Barra gráfica de rango: precio min/max + marcador del precio actual.
-// price(tick) = 1.0001^tick * 10^(dec0-dec1)
-function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed) {
+// price(tick) = 1.0001^tick * 10^(dec0-dec1) = token1 por token0.
+// Con sym0/sym1 añade un switch para invertir la denominación del precio entre
+// las dos monedas del pool (útil para leer el rango desde cualquiera de las dos).
+// Renderiza AMBAS orientaciones y el switch sólo conmuta su visibilidad (handler
+// delegado), así sobrevive al round-trip postMessage de las cards en el shell.
+let _rbUid = 0;
+function rangeBarInner(lo, hi, cur, inRange, closed) {
+  const fmtP = (v) => v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 })
+                    : v >= 1 ? v.toFixed(3) : fmtTiny(v, 3);
+  const span = hi - lo;
+  let vMin = lo - span * 0.5, vMax = hi + span * 0.5;
+  if (cur != null) { vMin = Math.min(vMin, cur); vMax = Math.max(vMax, cur); }
+  const W = vMax - vMin || 1;
+  const pct = (v) => Math.max(0, Math.min(100, ((v - vMin) / W) * 100));
+  const left = pct(lo), right = pct(hi);
+  const bandColor = closed ? "rgba(100,116,139,0.35)" : inRange ? "rgba(16,185,129,0.30)" : "rgba(245,158,11,0.28)";
+  const borderC = closed ? "rgba(100,116,139,0.5)" : inRange ? "rgba(16,185,129,0.6)" : "rgba(245,158,11,0.6)";
+  const marker = cur != null
+    ? `<div class="absolute top-0 bottom-0 w-0.5 bg-slate-100" style="left:${pct(cur)}%"></div>
+       <div class="absolute -top-1 w-2 h-2 rounded-full bg-slate-100" style="left:${pct(cur)}%;transform:translateX(-50%)"></div>`
+    : "";
+  return `
+      <div class="relative h-6 rounded-md bg-slate-950/60 border border-slate-800 overflow-hidden">
+        <div class="absolute top-0 bottom-0 rounded-sm" style="left:${left}%;width:${Math.max(1, right - left)}%;background:${bandColor};border-left:2px solid ${borderC};border-right:2px solid ${borderC}"></div>
+        ${marker}
+      </div>
+      <div class="flex justify-between text-[9px] text-slate-500 mt-0.5">
+        <span>${fmtP(lo)}</span>
+        ${cur != null ? `<span class="text-slate-300 font-semibold">${fmtP(cur)}</span>` : ""}
+        <span>${fmtP(hi)}</span>
+      </div>`;
+}
+function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed, sym0, sym1) {
   if (tickLower == null || tickUpper == null || !isFinite(tickLower) || !isFinite(tickUpper)) return "";
   const decAdj = Math.pow(10, (Number(dec0) || 0) - (Number(dec1) || 0));
   const priceAt = (t) => Math.pow(1.0001, Number(t)) * decAdj;
   const pLow = priceAt(tickLower), pHigh = priceAt(tickUpper);
   const pCur = (tickCur != null && isFinite(tickCur)) ? priceAt(tickCur) : null;
   if (!isFinite(pLow) || !isFinite(pHigh) || pHigh <= pLow) return "";
-
-  // Ventana visible: rango ±50%, incluyendo siempre el precio actual.
-  const span = pHigh - pLow;
-  let vMin = pLow - span * 0.5;
-  let vMax = pHigh + span * 0.5;
-  if (pCur != null) { vMin = Math.min(vMin, pCur); vMax = Math.max(vMax, pCur); }
-  const W = vMax - vMin || 1;
-  const pct = (v) => Math.max(0, Math.min(100, ((v - vMin) / W) * 100));
-  const left = pct(pLow), right = pct(pHigh);
-  const bandColor = closed ? "rgba(100,116,139,0.35)" : inRange ? "rgba(16,185,129,0.30)" : "rgba(245,158,11,0.28)";
-  const borderC = closed ? "rgba(100,116,139,0.5)" : inRange ? "rgba(16,185,129,0.6)" : "rgba(245,158,11,0.6)";
-  const fmtP = (v) => v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 })
-                    : v >= 1 ? v.toFixed(3) : fmtTiny(v, 3);
-  const marker = pCur != null
-    ? `<div class="absolute top-0 bottom-0 w-0.5 bg-slate-100" style="left:${pct(pCur)}%"></div>
-       <div class="absolute -top-1 w-2 h-2 rounded-full bg-slate-100" style="left:${pct(pCur)}%;transform:translateX(-50%)"></div>`
-    : "";
+  const view1 = rangeBarInner(pLow, pHigh, pCur, inRange, closed);
+  if (!sym0 || !sym1) return `<div class="pt-0.5">${view1}</div>`;
+  const view0 = rangeBarInner(1 / pHigh, 1 / pLow, pCur != null ? 1 / pCur : null, inRange, closed);
+  const uid = "rb" + (++_rbUid) + Math.random().toString(36).slice(2, 6);
+  const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const s0 = esc(sym0), s1 = esc(sym1);
+  const btn = (q, lbl, on) => `<button type="button" data-range-quote="${q}" data-uid="${uid}" class="px-1.5 py-0.5 ${on ? "bg-emerald-500 text-slate-900" : "text-slate-400 hover:text-slate-200"} font-semibold transition">${lbl}</button>`;
   return `
-    <div class="pt-0.5">
-      <div class="relative h-6 rounded-md bg-slate-950/60 border border-slate-800 overflow-hidden">
-        <div class="absolute top-0 bottom-0 rounded-sm" style="left:${left}%;width:${Math.max(1, right - left)}%;background:${bandColor};border-left:2px solid ${borderC};border-right:2px solid ${borderC}"></div>
-        ${marker}
+    <div class="pt-0.5" data-rangebar>
+      <div class="flex items-center justify-between mb-1 gap-2">
+        <span class="text-[9px] text-slate-500 truncate">precio en <span data-range-unit data-uid="${uid}" data-s0="${s0}" data-s1="${s1}" class="text-slate-300">${s1}</span></span>
+        <div class="inline-flex rounded overflow-hidden border border-slate-700 text-[9px] shrink-0" title="Cambia la moneda en la que se muestran los precios del rango">
+          ${btn("0", s0, false)}${btn("1", s1, true)}
+        </div>
       </div>
-      <div class="flex justify-between text-[9px] text-slate-500 mt-0.5">
-        <span>${fmtP(pLow)}</span>
-        ${pCur != null ? `<span class="text-slate-300 font-semibold">${fmtP(pCur)}</span>` : ""}
-        <span>${fmtP(pHigh)}</span>
-      </div>
+      <div data-range-view="1" data-uid="${uid}">${view1}</div>
+      <div data-range-view="0" data-uid="${uid}" class="hidden">${view0}</div>
     </div>`;
 }
 
@@ -230,6 +250,26 @@ if (typeof document !== "undefined") {
   else document.addEventListener("DOMContentLoaded", () => setupTipTaps(document));
 }
 
+// Conmuta la denominación del precio del rango (switch sym0|sym1): muestra la
+// vista correspondiente, actualiza el botón activo y la etiqueta de unidad. Sólo
+// show/hide de HTML pre-renderizado → sobrevive al round-trip postMessage.
+function toggleRangeQuote(doc, rq) {
+  const uid = rq.dataset.uid, q = rq.dataset.rangeQuote;
+  if (!uid || q == null) return;
+  doc.querySelectorAll(`[data-range-quote][data-uid="${uid}"]`).forEach((b) => {
+    const on = b.dataset.rangeQuote === q;
+    b.classList.toggle("bg-emerald-500", on);
+    b.classList.toggle("text-slate-900", on);
+    b.classList.toggle("text-slate-400", !on);
+    b.classList.toggle("hover:text-slate-200", !on);
+  });
+  doc.querySelectorAll(`[data-range-view][data-uid="${uid}"]`).forEach((v) => {
+    v.classList.toggle("hidden", v.dataset.rangeView !== q);
+  });
+  const unit = doc.querySelector(`[data-range-unit][data-uid="${uid}"]`);
+  if (unit) unit.textContent = q === "0" ? (unit.dataset.s0 || "") : (unit.dataset.s1 || "");
+}
+
 // ============================================================================
 // Event delegation: switching de tabs en los accordions de "logs" de las cards.
 // ============================================================================
@@ -242,6 +282,9 @@ if (typeof document !== "undefined") {
 if (typeof window !== "undefined" && !window.__lpTabDelegationInstalled) {
   window.__lpTabDelegationInstalled = true;
   document.addEventListener("click", function (e) {
+    // Switch de denominación del precio del rango (data-range-quote: "0"|"1").
+    const rq = e.target && e.target.closest ? e.target.closest("[data-range-quote]") : null;
+    if (rq) { toggleRangeQuote(document, rq); return; }
     const btn = e.target && e.target.closest ? e.target.closest("[data-tab-btn]") : null;
     if (!btn) return;
     const uid = btn.dataset.uid;
