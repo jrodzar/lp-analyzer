@@ -570,6 +570,21 @@ function chainDisplayName(chain) {
   if (!chain) return "";
   return CHAIN_DISPLAY[chain.toLowerCase()] || chain;
 }
+// Heurística anti-scam para tokens idle: airdrops basura que FALSIFICAN el nombre
+// (símbolo con espacios tipo "U S D C", o un enlace/dominio metido en el nombre para
+// engañar y vaciarte la wallet). Read-only: solo marca visualmente y no enlaza su
+// gráfico. Conservadora para no marcar tokens legítimos (p. ej. "ether.fi" no se marca:
+// no lleva http/www/ruta). Señales: URL/social/dominio-con-ruta, símbolo con espacios,
+// o cebos de airdrop.
+function isLikelyScamToken(t) {
+  const sym = ((t && t.symbol) || "").trim();
+  const name = ((t && t.name) || "").trim();
+  const hay = `${sym} ${name}`;
+  if (/https?:\/\/|www\.|\bt\.me\b|telegram|discord|[a-z0-9-]{2,}\.[a-z]{2,}\/\S/i.test(hay)) return true; // URL / red social / dominio-con-ruta
+  if (/\S\s+\S/.test(sym)) return true;                          // símbolo con espacios internos (U S D C, U S D T…)
+  if (/\b(airdrop|voucher|giveaway)\b/i.test(hay)) return true;  // cebos típicos de airdrop-scam
+  return false;
+}
 // Formatea ticks de fecha y omite repetidos consecutivos (evita fechas duplicadas en rangos cortos)
 function dateTick(fmtOpts) {
   return function (value, index, ticks) {
@@ -2171,7 +2186,11 @@ function idleTokensBlock(tokens, opts = {}) {
       chartHref = dexSlug ? `https://dexscreener.com/${dexSlug}/${t.address}` : `https://dexscreener.com/search?q=${encodeURIComponent(t.address || t.symbol || "")}`;
       chartLabel = "gráfico (DexScreener)";
     }
-    const chartIcon = `<a href="${chartHref}" target="_blank" rel="noopener noreferrer" title="Ver ${chartLabel}" aria-label="Ver ${chartLabel}" class="shrink-0 text-slate-500 hover:text-cyan-300 transition"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg></a>`;
+    const scam = isLikelyScamToken(t);
+    // Insignia de aviso para tokens-estafa. Para ellos NO mostramos el icono de gráfico
+    // (no enlazar a nada relacionado con un token malicioso).
+    const scamBadge = scam ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/40 whitespace-nowrap mr-1 align-middle" title="Token sospechoso de estafa: el nombre lleva un enlace o el símbolo está falsificado. NO interactúes con él ni visites enlaces que aparezcan en su nombre.">⚠️ posible scam</span>` : "";
+    const chartIcon = scam ? "" : `<a href="${chartHref}" target="_blank" rel="noopener noreferrer" title="Ver ${chartLabel}" aria-label="Ver ${chartLabel}" class="shrink-0 text-slate-500 hover:text-cyan-300 transition"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg></a>`;
     // Dos layouts:
     //   - Desktop (sm+): una sola fila con 5 columnas alineadas
     //     [SYMBOL w-20] [CHAIN w-24] [NAME flex-1] [BALANCE w-28 derecha] [USD w-20 derecha]
@@ -2184,7 +2203,7 @@ function idleTokensBlock(tokens, opts = {}) {
         <div class="hidden sm:flex sm:items-center sm:gap-3">
           <span class="font-semibold text-slate-100 w-20 shrink-0 truncate">${t.symbol || "?"}</span>
           <div class="w-24 shrink-0">${chip}</div>
-          <span class="text-slate-500 text-[11px] truncate flex-1">${t.name || ""}</span>
+          <span class="text-slate-500 text-[11px] truncate flex-1">${scamBadge}${t.name || ""}</span>
           <span class="font-mono text-[11px] text-slate-400 w-28 shrink-0 text-right">${bal}</span>
           <span class="font-semibold text-slate-100 w-20 shrink-0 text-right">${valStr}</span>
           ${chartIcon}
@@ -2198,7 +2217,7 @@ function idleTokensBlock(tokens, opts = {}) {
             ${chartIcon}
           </div>
           <div class="flex items-center justify-between gap-2 mt-0.5">
-            <span class="text-slate-500 text-[10px] truncate min-w-0">${t.name || ""}</span>
+            <span class="text-slate-500 text-[10px] truncate min-w-0">${scamBadge}${t.name || ""}</span>
             <span class="font-mono text-[10px] text-slate-400 shrink-0">${bal}</span>
           </div>
         </div>
