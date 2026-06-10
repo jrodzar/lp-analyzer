@@ -207,12 +207,11 @@ function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed
   const uid = "rb" + (++_rbUid) + Math.random().toString(36).slice(2, 6);
   const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const s0 = esc(sym0), s1 = esc(sym1);
-  const btn = (q, lbl, on) => `<button type="button" data-range-quote="${q}" data-uid="${uid}" class="px-1.5 py-0.5 ${on ? "bg-emerald-500 text-slate-900" : "text-slate-400 hover:text-slate-200"} font-semibold transition">${lbl}</button>`;
+  const btn = (q, lbl, on) => `<button type="button" data-range-quote="${q}" data-uid="${uid}" class="px-2 py-0.5 rounded ${on ? "bg-emerald-500 text-slate-900" : "text-slate-400 hover:text-slate-200"} font-semibold transition">${lbl}</button>`;
   return `
     <div class="pt-0.5" data-rangebar>
-      <div class="flex items-center justify-between mb-1 gap-2">
-        <span class="text-[9px] text-slate-500 truncate">precio en <span data-range-unit data-uid="${uid}" data-s0="${s0}" data-s1="${s1}" class="text-slate-300">${s1}</span></span>
-        <div class="inline-flex rounded overflow-hidden border border-slate-700 text-[9px] shrink-0" title="Cambia la moneda en la que se muestran los precios del rango">
+      <div class="flex justify-end mb-1">
+        <div class="inline-flex items-center gap-0.5 rounded-md bg-slate-800/70 border border-slate-700 p-0.5 text-[10px]" title="Cambia la moneda en la que se ven los precios del rango">
           ${btn("0", s0, false)}${btn("1", s1, true)}
         </div>
       </div>
