@@ -633,17 +633,31 @@ async function fetchIdleTokens(ownerAddr) {
 // Lista NFTs (supply 1) de la wallet vía Helius DAS — compartido entre protocolos.
 async function fetchWalletNftCandidates(ownerAddr) {
   setStatus("Listando NFTs de la wallet vía Helius DAS…", "info");
-  const assets = await rpc("getAssetsByOwner", {
-    ownerAddress: ownerAddr,
-    page: 1,
-    limit: 1000,
-    displayOptions: { showFungible: false, showNativeBalance: false },
-  });
-  const items = assets?.items || [];
-  return items.filter((a) => {
+  // Paginamos TODAS las páginas (antes solo la 1ª de 1000 → wallets con muchos
+  // NFTs/airdrops perdían posiciones que caían fuera de los primeros 1000).
+  // Tope de seguridad 20 páginas (20k NFTs).
+  const LIMIT = 1000;
+  let page = 1, all = [], total = null;
+  while (page <= 20) {
+    const assets = await rpc("getAssetsByOwner", {
+      ownerAddress: ownerAddr,
+      page,
+      limit: LIMIT,
+      displayOptions: { showFungible: false, showNativeBalance: false },
+    });
+    const items = assets?.items || [];
+    all = all.concat(items);
+    if (assets?.total != null) total = assets.total;
+    setStatus(`Listando NFTs de la wallet… ${all.length}${total ? "/" + total : ""}`, "info");
+    if (items.length < LIMIT) break; // última página
+    page++;
+  }
+  const candidates = all.filter((a) => {
     const supply = a.token_info?.supply;
     return supply === 1 || supply === "1";
   });
+  console.log(`[sol-diag] NFTs DAS: ${all.length}${total ? " (total reportado " + total + ")" : ""} en ${page} pág. → candidatos supply=1: ${candidates.length}`);
+  return candidates;
 }
 
 async function findOrcaPositions(candidates) {
@@ -1658,11 +1672,13 @@ async function analyze() {
 
     if (state.selectedProtocols.includes("orca")) {
       const rawOrca = await findOrcaPositions(candidates);
+      console.log(`[sol-diag] Orca Whirlpools: ${rawOrca.length} posiciones detectadas (de ${candidates.length} NFTs)`);
       const enrichedOrca = await enrichOrcaPositions(rawOrca);
       all = all.concat(enrichedOrca);
     }
     if (state.selectedProtocols.includes("raydium")) {
       const rawRay = await findRaydiumPositions(candidates);
+      console.log(`[sol-diag] Raydium CLMM: ${rawRay.length} posiciones detectadas (de ${candidates.length} NFTs). OJO: solo CLMM; los pools "Standard"/CPMM usan LP token fungible y NO se detectan aquí.`);
       const enrichedRay = await enrichRaydiumPositions(rawRay);
       all = all.concat(enrichedRay);
     }
