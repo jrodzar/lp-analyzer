@@ -1534,18 +1534,11 @@ function reconstructedCard(p) {
         <span class="chip bg-violet-500/15 text-violet-300 border border-violet-500/30" title="Posición reconstruida desde el histórico de transacciones on-chain (el NFT se quemó al cerrar). Importes APROXIMADOS: fees vs retiros por heurística y precios históricos por día.">≈ reconstruida</span>
       </div>
     </div>
-    <div class="grid grid-cols-2 gap-2 text-xs">
-      <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees cobradas (aprox.)</div>
-        <div class="font-semibold text-emerald-400">${fmtUSD(p.feesCollectedUSD || 0)}</div>
-      </div>
-      <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">Depositado / Retirado</div>
-        <div class="font-semibold">${fmtUSD(p.depositedUSD || 0)} <span class="text-[10px] font-normal text-slate-400">depo</span></div>
-        <div class="text-[10px] text-slate-400">${fmtUSD(p.withdrawnUSD || 0)} retirado</div>
-      </div>
+    <div class="bg-slate-950/40 rounded-lg p-2 text-xs">
+      <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees cobradas (aprox.)</div>
+      <div class="font-semibold text-emerald-400">${fmtUSD(p.feesCollectedUSD || 0)}</div>
     </div>
-    <div class="text-[10px] text-slate-500">Reconstruida del histórico on-chain (NFT quemado al cerrar). Sin tick/rango exactos; fees aproximadas.</div>
+    <div class="text-[10px] text-slate-500">Reconstruida del histórico de transacciones (NFT quemado al cerrar). Fees estimadas por heurística. No se muestran depósitos/retiros: el histórico previo a las últimas transacciones del wallet puede estar incompleto y no cuadrarían.</div>
   `;
   return el;
 }
