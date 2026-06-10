@@ -1511,8 +1511,48 @@ function solEventLogHTML(p) {
   `;
 }
 
+// Ficha compacta para posiciones CERRADAS reconstruidas desde el histórico (NFT
+// quemado al cerrar). No hay ticks/amounts/liquidez vivos → mostramos par + fees
+// cobradas + depo/retirado, con un chip "≈ reconstruida" (importes aproximados).
+function reconstructedCard(p) {
+  const proto = PROTOCOLS[p.protocol] || { name: "Solana", color: "#a78bfa" };
+  const el = document.createElement("article");
+  el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3";
+  el.style.borderLeft = "3px solid #a78bfa";
+  el.dataset.reconstructed = "1";
+  el.innerHTML = `
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full" style="background:${proto.color}"></span>
+          <span class="text-[11px] uppercase tracking-wide text-slate-400">${proto.name}</span>
+        </div>
+        <div class="font-semibold mt-0.5 truncate">${p.token0.symbol} / ${p.token1.symbol}</div>
+      </div>
+      <div class="flex flex-col items-end gap-1 shrink-0">
+        <span class="chip bg-slate-700 text-slate-300">cerrada</span>
+        <span class="chip bg-violet-500/15 text-violet-300 border border-violet-500/30" title="Posición reconstruida desde el histórico de transacciones on-chain (el NFT se quemó al cerrar). Importes APROXIMADOS: fees vs retiros por heurística y precios históricos por día.">≈ reconstruida</span>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees cobradas (aprox.)</div>
+        <div class="font-semibold text-emerald-400">${fmtUSD(p.feesCollectedUSD || 0)}</div>
+      </div>
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Depositado / Retirado</div>
+        <div class="font-semibold">${fmtUSD(p.depositedUSD || 0)} <span class="text-[10px] font-normal text-slate-400">depo</span></div>
+        <div class="text-[10px] text-slate-400">${fmtUSD(p.withdrawnUSD || 0)} retirado</div>
+      </div>
+    </div>
+    <div class="text-[10px] text-slate-500">Reconstruida del histórico on-chain (NFT quemado al cerrar). Sin tick/rango exactos; fees aproximadas.</div>
+  `;
+  return el;
+}
+
 function positionCard(p) {
   if (p._lending) return lendingCard(p);
+  if (p.reconstructed) return reconstructedCard(p);
   const proto = PROTOCOLS[p.protocol];
   const el = document.createElement("article");
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
@@ -1730,6 +1770,18 @@ async function analyze() {
       }
     }
 
+    // Reconstruir posiciones CERRADAS/QUEMADAS desde el histórico (en Solana cerrar
+    // quema el NFT → no se descubren por holdings). Recupera sus fees cobradas.
+    if (state.heliusKey || PROXY_BASE) {
+      try {
+        const openVaults = new Set();
+        for (const p of state.positions) for (const v of (p.vaults || [])) if (v) openVaults.add(v);
+        setStatus("Reconstruyendo posiciones cerradas del histórico…", "info");
+        const recon = await reconstructClosedSol(addr, openVaults);
+        if (recon.length) { state.positions.push(...recon); console.log(`[sol-diag] reconstruidas ${recon.length} posición(es) cerrada(s)/quemada(s) del histórico`); }
+      } catch (e) { console.warn("[sol-recon]", e); }
+    }
+
     state.analysisStatus = {
       ok: !beError,
       errors: beError ? [{ source: "Birdeye", reason: beError }] : [],
@@ -1782,6 +1834,85 @@ async function fetchEnhancedTxs(owner) {
   }
   state._txCache = { owner, txs, ts: Date.now() };
   return txs;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Reconstrucción de posiciones CERRADAS/QUEMADAS desde el histórico.
+// En Solana, cerrar una posición CLMM QUEMA el NFT → no se puede descubrir por
+// holdings. Recuperamos esas posiciones (sobre todo sus FEES COBRADAS) desde las
+// txs Orca/Raydium del owner: agrupamos los eventos "huérfanos" (vaults que no son
+// de ninguna posición abierta) en pools por co-ocurrencia de vaults en una misma
+// tx, y aplicamos la MISMA heurística depósito/retiro/fee que fetchSolanaHistory.
+// Aproximado (sin tick exacto, precios Birdeye por día) → se marca reconstructed.
+async function reconstructClosedSol(owner, openVaults) {
+  const txs = await fetchEnhancedTxs(owner);
+  if (!txs.length) return [];
+  const priceOf = (mint) => (state.prices[mint] != null ? state.prices[mint] : (SOL_STABLES.has(mint) ? 1 : 0));
+  const SRC = { RAYDIUM: "raydium", ORCA: "orca", WHIRLPOOL: "orca" };
+  const events = [];           // {vault, mint, ts, usd, dir:'dep'|'recv', isWd, proto}
+  const adj = new Map();       // vault -> Set(vaults co-ocurrentes) (grafo de pools)
+  const ensure = (v) => { if (!adj.has(v)) adj.set(v, new Set()); return adj.get(v); };
+  for (const tx of txs) {
+    const proto = SRC[tx.source]; if (!proto) continue;
+    const ts = tx.timestamp || 0;
+    const isWd = txHasRealWithdraw(tx);
+    const txVaults = [];
+    for (const t of (tx.tokenTransfers || [])) {
+      let cp = null, dir = null;
+      if (t.fromUserAccount === owner) { cp = t.toTokenAccount; dir = "dep"; }
+      else if (t.toUserAccount === owner) { cp = t.fromTokenAccount; dir = "recv"; }
+      else continue;
+      if (!cp || openVaults.has(cp)) continue;           // de una posición abierta o sin vault
+      let pr = await birdeyePriceAt(t.mint, ts); if (pr == null) pr = priceOf(t.mint);
+      events.push({ vault: cp, mint: t.mint, ts, usd: (t.tokenAmount || 0) * (pr || 0), dir, isWd, proto });
+      txVaults.push(cp);
+    }
+    for (let i = 0; i < txVaults.length; i++) { ensure(txVaults[i]); for (let j = i + 1; j < txVaults.length; j++) { ensure(txVaults[i]).add(txVaults[j]); ensure(txVaults[j]).add(txVaults[i]); } }
+  }
+  if (!events.length) return [];
+  // Componentes conexas de vaults = pools
+  const comp = new Map(); let cid = 0;
+  for (const v of adj.keys()) {
+    if (comp.has(v)) continue;
+    const stack = [v]; comp.set(v, cid);
+    while (stack.length) { const x = stack.pop(); for (const y of (adj.get(x) || [])) if (!comp.has(y)) { comp.set(y, cid); stack.push(y); } }
+    cid++;
+  }
+  const byComp = new Map();
+  for (const e of events) {
+    const c = comp.has(e.vault) ? comp.get(e.vault) : ("solo-" + e.vault);
+    if (!byComp.has(c)) byComp.set(c, { events: [], mintVol: new Map(), proto: e.proto });
+    const rec = byComp.get(c); rec.events.push(e);
+    rec.mintVol.set(e.mint, (rec.mintVol.get(e.mint) || 0) + Math.abs(e.usd));
+  }
+  const out = [];
+  for (const [c, rec] of byComp) {
+    rec.events.sort((a, b) => a.ts - b.ts);
+    let cumDep = 0, cumWd = 0, cumFees = 0, firstTs = null;
+    for (const e of rec.events) {
+      if (firstTs == null) firstTs = e.ts;
+      if (e.dir === "dep") cumDep += e.usd;
+      else { const r = e.usd; if (e.isWd || r > 0.05 * Math.max(cumDep - cumWd, 1)) cumWd += r; else cumFees += r; }
+    }
+    if (cumFees <= 0.01 && cumDep <= 0.01) continue;     // nada útil que mostrar
+    // par = los 2 mints con más volumen
+    const mints = [...rec.mintVol.entries()].sort((a, b) => b[1] - a[1]).map((x) => x[0]).slice(0, 2);
+    const metas = await Promise.all(mints.map((m) => Promise.resolve(getTokenMeta(m)).catch(() => null)));
+    const mk = (i) => mints[i] ? { mint: mints[i], symbol: (metas[i] && metas[i].symbol) || shortAddr(mints[i]), decimals: (metas[i] && metas[i].decimals) || 0, priceUSD: null } : { mint: "", symbol: "—", decimals: 0, priceUSD: null };
+    out.push({
+      protocol: rec.proto, reconstructed: true, closed: true, inRange: false,
+      id: "recon-" + c, mint: "recon-" + c, whirlpool: "",
+      token0: mk(0), token1: mk(1),
+      amounts: { amount0: 0, amount1: 0 }, liquidity: 0n,
+      tickLower: null, tickUpper: null, tick: null, tickSpacing: null,
+      currentValueUSD: 0, feesPendingUSD: 0,
+      feesCollectedUSD: cumFees, feesUSD: cumFees,
+      depositedUSD: cumDep, withdrawnUSD: cumWd,
+      ageDays: firstTs ? Math.max(0, (Date.now() / 1000 - firstTs) / 86400) : 0,
+      feesA: 0, feesB: 0, pnlBasis: "recon",
+    });
+  }
+  return out;
 }
 
 // Discriminador de decrease_liquidity_v2 (Orca y Raydium, ambos Anchor →
@@ -2625,6 +2756,7 @@ document.addEventListener("DOMContentLoaded", init);
         apr: typeof p.apr === "number" && isFinite(p.apr) ? p.apr : null,
         inRange: !!p.inRange,
         closed: !!p.closed,
+        reconstructed: !!p.reconstructed,
         tickLower: p.tickLower, tickUpper: p.tickUpper, tick: p.tick,
         dec0: p.token0.decimals, dec1: p.token1.decimals,
         id: String(p.mint || ""),
