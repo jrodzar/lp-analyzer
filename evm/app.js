@@ -1414,6 +1414,71 @@ async function reconstructBurnedSubgraph(chainKey, owner, openIds) {
   return out;
 }
 
+// HyperEVM (RPC-only, sin subgraph): best-effort. Los logs Increase/Decrease/Collect
+// NO llevan las direcciones de los tokens → resolvemos el par parseando los Transfer
+// ERC-20 (from=owner) de la 1ª tx de depósito. Si no se resuelve, se omite la posición.
+async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
+  const chain = state.chains[chainKey];
+  if (!chain.blockscoutApi || !chain.nftManagerAddress || !chain.rpcUrl) return [];
+  const nftMgr = chain.nftManagerAddress;
+  const rpc = chain.rpcUrls || chain.rpcUrl;
+  const rpcOne = typeof rpc === "string" ? rpc : (rpc[0] || chain.rpcUrl);
+  let received;
+  try { received = await fetchReceivedTokenIds(chain.blockscoutApi, nftMgr, owner); }
+  catch (e) { console.warn(`[${chainKey}] recon getLogs:`, e.message); return []; }
+  const candidates = [...received].filter((id) => !openIds.has(id)).slice(0, 40); // tope de seguridad
+  if (!candidates.length) return [];
+  const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
+  const out = [];
+  for (const tokenId of candidates) {
+    try {
+      // ¿quemada? ownerOf revierte; si devuelve otra dirección → transferida/vendida → omitir.
+      try {
+        const oh = await rpcEthCall(rpc, nftMgr, "0x6352211e" + BigInt(tokenId).toString(16).padStart(64, "0"));
+        if (!/^0x0+$/.test("0x" + (oh || "").slice(-40))) continue; // alguien la posee → no es burn nuestro
+      } catch (e) { /* revert → quemada */ }
+      // 1ª tx Increase → resolver el par desde sus Transfer ERC-20 (from=owner)
+      const h0 = await fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, 18, 18);
+      const incs = (h0.events || []).filter((e) => e.type === "inc").sort((a, b) => a.ts - b.ts);
+      if (!incs.length || !incs[0].tx) continue;
+      const rcpt = await fetch(rpcOne, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getTransactionReceipt", params: [incs[0].tx] }) }).then((x) => x.json());
+      const toks = [];
+      for (const l of (rcpt?.result?.logs || [])) {
+        const tps = l.topics || [];
+        if (tps.length !== 3 || (tps[0] || "").toLowerCase() !== EV_ERC721_TRANSFER) continue; // ERC-20 Transfer (3 topics)
+        if ((tps[1] || "").toLowerCase() !== ownerTopic) continue;                              // from = owner (depósito)
+        const a = (l.address || "").toLowerCase();
+        if (a && !toks.includes(a)) toks.push(a);
+      }
+      if (toks.length < 2) continue; // par no resuelto → omitir
+      const [a0, a1] = toks[0] < toks[1] ? [toks[0], toks[1]] : [toks[1], toks[0]]; // token0 = dirección menor (orden del pool)
+      const meta = async (a) => { let sym = a.slice(0, 6), dec = 18; try { sym = decABIString(await rpcEthCall(rpc, a, SEL_SYMBOL)) || sym; } catch (e) {} try { dec = Number(decU(await rpcEthCall(rpc, a, SEL_DECIMALS), 0)); } catch (e) {} return { symbol: sym, decimals: dec }; };
+      const t0 = await meta(a0), t1 = await meta(a1);
+      const hist = await fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, t0.decimals, t1.decimals);
+      const prices = await priceTokensViaPool(rpc, chain.factoryAddress, { [a0]: { symbol: t0.symbol, decimals: t0.decimals }, [a1]: { symbol: t1.symbol, decimals: t1.decimals } }).catch(() => ({}));
+      const p0 = prices[a0] || 0, p1 = prices[a1] || 0;
+      const feesUSD = hist.collectedFees0 * p0 + hist.collectedFees1 * p1;
+      const depositedUSD = hist.deposited0 * p0 + hist.deposited1 * p1;
+      const withdrawnUSD = hist.withdrawn0 * p0 + hist.withdrawn1 * p1;
+      out.push({
+        id: String(tokenId), chainKey, nftId: String(tokenId), poolId: "",
+        reconstructed: true, closed: true, inRange: false,
+        token0: { id: a0, symbol: t0.symbol, decimals: t0.decimals, priceUSD: p0 },
+        token1: { id: a1, symbol: t1.symbol, decimals: t1.decimals, priceUSD: p1 },
+        tick: null, tickLower: null, tickUpper: null, feeTier: null,
+        amounts: { amount0: 0, amount1: 0 }, liquidity: "0",
+        currentValueUSD: 0, feesUSD, uncollected: null, uncollectedUSD: null,
+        feesTotalUSD: feesUSD, depositedUSD, withdrawnUSD,
+        hodlUSD: depositedUSD, pnlUSD: null, ilUSD: null, ilPct: null, apr: null,
+        ageDays: hist.mintTs ? Math.max(0, (Date.now() / 1000 - hist.mintTs) / 86400) : 0,
+        openedAt: hist.mintTs || 0, _rpcOnly: true,
+      });
+    } catch (e) { /* best-effort: omitir esta candidata */ }
+  }
+  if (out.length) console.log(`[evm-recon] ${chainKey} (HyperEVM): ${out.length} quemada(s) reconstruida(s)`);
+  return out;
+}
+
 async function fetchAllPositions(address) {
   const tasks = state.selectedChains.map(async (chainKey) => {
     const chain = state.chains[chainKey];
@@ -1421,7 +1486,12 @@ async function fetchAllPositions(address) {
     if (chain.nftManagerAddress) {
       if (!chain.rpcUrl) return { __skipped: true, chainKey, reason: "sin RPC configurado" };
       try {
-        return await fetchPositionsFromRPCDirect(address, chainKey);
+        const open = await fetchPositionsFromRPCDirect(address, chainKey);
+        const arr = Array.isArray(open) ? open : [];
+        // Reconstruir quemadas (best-effort) de esta chain RPC-only → fees cobradas.
+        const openIds = new Set(arr.map((p) => String(p.nftId)));
+        const recon = await reconstructBurnedHyperEVM(chainKey, address, openIds).catch(() => []);
+        return arr.concat(recon);
       } catch (e) {
         console.error(`[${chainKey}]`, e);
         return { __error: e.message, chainKey };
@@ -2220,8 +2290,49 @@ function eventLogHTML(p) {
   `;
 }
 
+// Ficha compacta para posiciones reconstruidas SIN datos de pool/tick (HyperEVM
+// quemadas: el par se resolvió desde la 1ª tx, no hay tick/rango). Las
+// reconstruidas de subgraph SÍ tienen tick → usan la ficha completa.
+function reconstructedCardEvm(p) {
+  const chain = state.chains[p.chainKey] || { name: p.chainKey, color: "#a78bfa" };
+  const el = document.createElement("article");
+  el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3";
+  el.style.borderLeft = "3px solid #a78bfa";
+  el.dataset.reconstructed = "1";
+  el.innerHTML = `
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full" style="background:${chain.color || "#a78bfa"}"></span>
+          <span class="text-[11px] uppercase tracking-wide text-slate-400">${chain.name}</span>
+          ${p.nftId ? `<span class="text-[11px] text-slate-500">· #${p.nftId}</span>` : ""}
+        </div>
+        <div class="font-semibold mt-0.5 truncate">${p.token0.symbol} / ${p.token1.symbol}</div>
+      </div>
+      <div class="flex flex-col items-end gap-1 shrink-0">
+        <span class="chip bg-slate-700 text-slate-300">cerrada</span>
+        <span class="chip bg-violet-500/15 text-violet-300 border border-violet-500/30" title="Posición reconstruida del histórico on-chain (NFT quemado). Par resuelto desde la 1ª tx; fees e importes aproximados.">≈ reconstruida</span>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees cobradas (aprox.)</div>
+        <div class="font-semibold text-emerald-400">${fmtUSD(p.feesUSD || 0)}</div>
+      </div>
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Depositado / Retirado</div>
+        <div class="font-semibold">${fmtUSD(p.depositedUSD || 0)} <span class="text-[10px] font-normal text-slate-400">depo</span></div>
+        <div class="text-[10px] text-slate-400">${fmtUSD(p.withdrawnUSD || 0)} retirado</div>
+      </div>
+    </div>
+    <div class="text-[10px] text-slate-500">Reconstruida del histórico on-chain (NFT quemado). Par resuelto desde la 1ª tx; importes aproximados.</div>
+  `;
+  return el;
+}
+
 function positionCard(p) {
   if (p._lending) return lendingCard(p);
+  if (p.reconstructed && p.tick == null) return reconstructedCardEvm(p);
   const chain = state.chains[p.chainKey];
   const el = document.createElement("article");
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
