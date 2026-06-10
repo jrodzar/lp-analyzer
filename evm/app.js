@@ -215,6 +215,50 @@ function buildPositionsQuery(variant, tickField) {
   `;
 }
 
+// Como buildPositionsQuery pero por LISTA DE IDS (sin filtro de owner): así
+// recuperamos posiciones QUEMADAS (owner=0x0) para reconstruir las cerradas que
+// el usuario tuvo y quemó. Mismos campos que la query por owner.
+function buildPositionsByIdsQuery(variant, tickField) {
+  const derived = variant === "native" ? "derivedETH: derivedNative" : "derivedETH";
+  const ethUsd = variant === "native" ? "ethPriceUSD: nativePriceUSD" : "ethPriceUSD";
+  const tickSel = tickField === "scalar"
+    ? "tickLower tickUpper"
+    : "tickLower { tickIdx feeGrowthOutside0X128 feeGrowthOutside1X128 } tickUpper { tickIdx feeGrowthOutside0X128 feeGrowthOutside1X128 }";
+  return `
+    query PositionsByIds($ids: [String!]!) {
+      positions(where: { id_in: $ids }, first: 1000, orderBy: id) {
+        id
+        owner
+        liquidity
+        depositedToken0
+        depositedToken1
+        withdrawnToken0
+        withdrawnToken1
+        collectedFeesToken0
+        collectedFeesToken1
+        feeGrowthInside0LastX128
+        feeGrowthInside1LastX128
+        ${tickSel}
+        transaction { timestamp }
+        pool {
+          id
+          feeTier
+          tick
+          sqrtPrice
+          token0Price
+          token1Price
+          totalValueLockedUSD
+          feeGrowthGlobal0X128
+          feeGrowthGlobal1X128
+          token0 { id symbol name decimals ${derived} }
+          token1 { id symbol name decimals ${derived} }
+        }
+      }
+      bundles(first: 1) { ${ethUsd} }
+    }
+  `;
+}
+
 const SNAPSHOTS_QUERY = `
   query Snapshots($positionId: String!) {
     positionSnapshots(
@@ -1327,6 +1371,49 @@ function enrichPosition(raw, ethPriceUSD, chainKey) {
 // Fetch orchestration
 // ============================================================================
 
+// ────────────────────────────────────────────────────────────────────────────
+// Reconstrucción de posiciones QUEMADAS (NFT burned) — recupera sus fees cobradas.
+// El descubrimiento normal (positions where owner) no las ve porque al quemar el
+// owner pasa a 0x0. Enumeramos los tokenIds que el owner recibió (logs Transfer
+// del explorer) y consultamos el subgraph por id_in SIN filtro de owner.
+// ERC-721 Transfer(from,to,tokenId): misma firma que ERC-20 pero los 3 indexados → tokenId en topics[3].
+const EV_ERC721_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+async function fetchReceivedTokenIds(apiBase, nftMgr, owner) {
+  const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
+  const url = `${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${nftMgr}&topic0=${EV_ERC721_TRANSFER}&topic2=${ownerTopic}&topic0_2_opr=and`;
+  const r = await fetch(url); const j = await r.json();
+  const ids = new Set();
+  if (Array.isArray(j.result)) for (const l of j.result) { const t3 = (l.topics && l.topics[3]) || ""; if (/^0x[0-9a-fA-F]+$/.test(t3)) { try { ids.add(BigInt(t3).toString()); } catch (e) {} } }
+  return ids;
+}
+
+// Chains con subgraph + explorer (blockscoutApi): Ethereum/Arbitrum/Polygon/Base.
+async function reconstructBurnedSubgraph(chainKey, owner, openIds) {
+  const chain = state.chains[chainKey];
+  if (!chain.blockscoutApi || !chain.uniNftManager || !chain.subgraphId) return [];
+  let received;
+  try { received = await fetchReceivedTokenIds(chain.blockscoutApi, chain.uniNftManager, owner); }
+  catch (e) { console.warn(`[${chainKey}] recon getLogs:`, e.message); return []; }
+  const candidates = [...received].filter((id) => !openIds.has(id));
+  if (!candidates.length) return [];
+  const variant = chain.schemaVariant || "eth";
+  const tickField = chain.tickField || "object";
+  const out = [];
+  for (let i = 0; i < candidates.length; i += 200) {
+    let data;
+    try { data = await gql(chainKey, buildPositionsByIdsQuery(variant, tickField), { ids: candidates.slice(i, i + 200) }); }
+    catch (e) { console.warn(`[${chainKey}] recon gql:`, e.message); continue; }
+    const ethPriceUSD = Number(data.bundles?.[0]?.ethPriceUSD || 0);
+    for (const raw of (data.positions || [])) {
+      if (!/^0x0+$/.test(String(raw.owner || "").toLowerCase())) continue; // SOLO quemadas (owner 0x0); las vendidas/transferidas tienen otro owner
+      try { const p = enrichPosition(raw, ethPriceUSD, chainKey); p.reconstructed = true; p.closed = true; out.push(p); } catch (e) {}
+    }
+  }
+  if (out.length) console.log(`[evm-recon] ${chainKey}: ${out.length} posición(es) quemada(s) reconstruida(s)`);
+  return out;
+}
+
 async function fetchAllPositions(address) {
   const tasks = state.selectedChains.map(async (chainKey) => {
     const chain = state.chains[chainKey];
@@ -1348,7 +1435,11 @@ async function fetchAllPositions(address) {
       const tickField = chain.tickField || "object";
       const data = await gql(chainKey, buildPositionsQuery(variant, tickField), { owner: address.toLowerCase() });
       const ethPriceUSD = Number(data.bundles?.[0]?.ethPriceUSD || 0);
-      return data.positions.map((p) => enrichPosition(p, ethPriceUSD, chainKey));
+      const open = data.positions.map((p) => enrichPosition(p, ethPriceUSD, chainKey));
+      // Reconstruir posiciones quemadas (NFT burned) de esta chain → fees cobradas.
+      const openIds = new Set(open.map((p) => String(p.id)));
+      const recon = await reconstructBurnedSubgraph(chainKey, address, openIds).catch(() => []);
+      return open.concat(recon);
     } catch (e) {
       console.error(`[${chainKey}]`, e);
       return { __error: e.message, chainKey };
@@ -2136,11 +2227,15 @@ function positionCard(p) {
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
   if (p.color) el.style.borderLeft = `3px solid ${p.color.line}`;
 
-  const rangeChip = p.closed
+  const stateChip = p.closed
     ? `<span class="chip bg-slate-700 text-slate-300">cerrada</span>`
     : p.inRange
       ? `<span class="chip bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">en rango</span>`
       : `<span class="chip bg-amber-500/15 text-amber-300 border border-amber-500/30">fuera de rango</span>`;
+  const reconChip = p.reconstructed
+    ? `<span class="chip bg-violet-500/15 text-violet-300 border border-violet-500/30" title="Posición reconstruida del histórico on-chain (el NFT se quemó al cerrar). Fees cobradas e importes desde el subgraph; valor actual = 0.">≈ reconstruida</span>`
+    : "";
+  const rangeChip = reconChip ? `<div class="flex flex-col items-end gap-1 shrink-0">${stateChip}${reconChip}</div>` : stateChip;
 
   const date = new Date(p.openedAt * 1000).toISOString().slice(0, 10);
 
@@ -2592,6 +2687,7 @@ document.addEventListener("DOMContentLoaded", init);
         apr: typeof p.apr === "number" && isFinite(p.apr) ? p.apr : null,
         inRange: !!p.inRange,
         closed: !!p.closed,
+        reconstructed: !!p.reconstructed,
         tickLower: p.tickLower, tickUpper: p.tickUpper, tick: p.tick,
         dec0: p.token0.decimals, dec1: p.token1.decimals,
         id: String(p.nftId || ""),
