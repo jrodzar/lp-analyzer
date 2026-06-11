@@ -1410,7 +1410,7 @@ function lendingCard(p) {
           <span class="text-[11px] uppercase tracking-wide text-slate-400">${protoLabel} · ${p.chainName || "Solana"}</span>
         </div>
         <div class="font-semibold mt-0.5 truncate">${p.asset} (lending)</div>
-        <div class="text-[11px] text-slate-400">${sharesTxt}</div>
+        <div class="text-[11px] text-slate-400">${[sharesTxt, p.openedAt ? `abierta ${new Date(p.openedAt * 1000).toISOString().slice(0, 10)} (${Math.round(p.ageDays || 0)}d)` : ""].filter(Boolean).join(" · ")}</div>
       </div>
       <span class="chip bg-sky-500/15 text-sky-300 border border-sky-500/30">préstamo</span>
     </div>
@@ -1438,7 +1438,6 @@ function lendingCard(p) {
           : p._priceFromTx
             ? `<div class="text-amber-300">Precio share corregido: <span class="font-semibold">${fmtUSD(p.sharePrice)}</span> <span class="text-slate-500">(derivado on-chain de tu última operación; Jupiter daba ${fmtUSD(p._heliusSharePrice)})</span></div>`
             : (p.sharePrice != null ? `<div>Precio share: ${fmtUSD(p.sharePrice)}</div>` : "")}
-        ${p.ageDays ? `<div>Abierto hace ~${Math.round(p.ageDays)}d (primer depósito: ${new Date((p.openedAt || 0) * 1000).toLocaleDateString("es-ES")})</div>` : ""}
         ${p.withdrawnUSD ? `<div>Total retirado: ${fmtUSD(p.withdrawnUSD)}</div>` : ""}
         <div class="text-[10px] text-slate-500 mt-1">${p._priceFromOnchain
           ? "Valor actual leído directamente del vault on-chain de Jupiter Lend (campo token_exchange_price del Lending account). Coste base reconstruido del histórico de transacciones del owner."
