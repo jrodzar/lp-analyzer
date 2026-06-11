@@ -2087,7 +2087,7 @@ function lendingCard(p) {
           <span class="text-[11px] uppercase tracking-wide text-slate-400">Revert Lend · ${p.chainName}</span>
         </div>
         <div class="font-semibold mt-0.5 truncate">${p.asset} (lending)</div>
-        <div class="text-[11px] text-slate-400">${p.ageDays ? "abierto hace " + Math.round(p.ageDays) + "d" : ""}</div>
+        <div class="text-[11px] text-slate-400">${p.ageDays ? `abierta ${new Date(p.openedAt * 1000).toISOString().slice(0, 10)} (${Math.round(p.ageDays)}d)` : ""}</div>
       </div>
       <span class="chip bg-sky-500/15 text-sky-300 border border-sky-500/30">préstamo</span>
     </div>
