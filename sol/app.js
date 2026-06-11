@@ -224,6 +224,7 @@ class BorshReader {
   u8() { const v = this.dv.getUint8(this.pos); this.pos += 1; return v; }
   u16() { const v = this.dv.getUint16(this.pos, true); this.pos += 2; return v; }
   i32() { const v = this.dv.getInt32(this.pos, true); this.pos += 4; return v; }
+  u32() { const v = this.dv.getUint32(this.pos, true); this.pos += 4; return v; }
   u64() { const lo = BigInt(this.dv.getUint32(this.pos, true)); const hi = BigInt(this.dv.getUint32(this.pos + 4, true)); this.pos += 8; return (hi << 32n) | lo; }
   u128() { const a = this.u64(); const b = this.u64(); return (b << 64n) | a; }
   pubkey() { return new Pubkey(this.bytes(32).slice()); }
@@ -765,6 +766,7 @@ async function decodeRaydiumPool(data) {
   if (data.length < 8 || !bytesEqual(data.subarray(0, 8), expectedDisc)) return null;
   const r = new BorshReader(data);
   // offsets exactos del struct PoolState
+  r.pos = 9; const ammConfig = r.pubkey();     // @9 (tras disc8 + bump1) — guarda la fee
   r.pos = 73; const tokenMint0 = r.pubkey();   // @73
   const tokenMint1 = r.pubkey();               // @105
   const tokenVault0 = r.pubkey();              // @137
@@ -779,7 +781,17 @@ async function decodeRaydiumPool(data) {
   r.skip(4);                                   // padding3 + padding4 @273
   const feeGrowthGlobal0 = r.u128();           // @277
   const feeGrowthGlobal1 = r.u128();           // @293
-  return { tokenMint0, tokenMint1, tokenVault0, tokenVault1, mintDecimals0, mintDecimals1, tickSpacing, liquidity, sqrtPriceX64, tickCurrent, feeGrowthGlobal0, feeGrowthGlobal1 };
+  return { ammConfig, tokenMint0, tokenMint1, tokenVault0, tokenVault1, mintDecimals0, mintDecimals1, tickSpacing, liquidity, sqrtPriceX64, tickCurrent, feeGrowthGlobal0, feeGrowthGlobal1 };
+}
+
+// Raydium guarda la fee en una cuenta AmmConfig aparte (el pool solo referencia su
+// pubkey). trade_fee_rate es u32 @47 (tras disc8+bump1+index2+owner32+protocolFeeRate4)
+// en unidades 1e-6 → % = trade_fee_rate / 10000 (igual escala que el feeRate de Orca).
+function decodeRaydiumAmmConfigFee(data) {
+  if (!data || data.length < 51) return null;
+  const r = new BorshReader(data);
+  r.pos = 47; const tradeFeeRate = r.u32();
+  return tradeFeeRate / 10000; // p.ej. 500 → 0.05%
 }
 
 async function findRaydiumPositions(candidates) {
@@ -834,6 +846,30 @@ async function fetchRaydiumPools(positions) {
       if (decoded) map.set(chunk[i], decoded);
     }
   }
+  // Resolver la fee de cada pool leyendo su AmmConfig (1 batch extra). Raydium no
+  // guarda la fee en el pool, por eso antes salía sin "fee X%" (a diferencia de Orca).
+  try {
+    const cfgKeys = [...new Set([...map.values()].map((d) => d.ammConfig?.toBase58()).filter(Boolean))];
+    if (cfgKeys.length) {
+      const cfgFee = new Map();
+      for (let i = 0; i < cfgKeys.length; i += 100) {
+        const chunk = cfgKeys.slice(i, i + 100);
+        const accs = await rpc("getMultipleAccounts", [chunk, { encoding: "base64" }]);
+        const vals = accs?.value || [];
+        for (let j = 0; j < chunk.length; j++) {
+          const v = vals[j];
+          if (!v || !v.data) continue;
+          const raw = Uint8Array.from(atob(v.data[0]), (c) => c.charCodeAt(0));
+          const fee = decodeRaydiumAmmConfigFee(raw);
+          if (fee != null) cfgFee.set(chunk[j], fee);
+        }
+      }
+      for (const d of map.values()) {
+        const k = d.ammConfig?.toBase58();
+        if (k && cfgFee.has(k)) d.feeTier = cfgFee.get(k);
+      }
+    }
+  } catch (e) { console.warn("[sol] no se pudo leer la fee de los AmmConfig de Raydium:", e?.message || e); }
   return map;
 }
 
@@ -948,7 +984,7 @@ async function enrichRaydiumPositions(rawPositions) {
       mint: rp.mint,
       whirlpool: poolAddr,
       vaults: [pool.tokenVault0.toBase58(), pool.tokenVault1.toBase58()],
-      feeTier: null, // Raydium guarda la fee en amm_config; lo omitimos por ahora
+      feeTier: pool.feeTier ?? null, // leída del AmmConfig en fetchRaydiumPools
       tickSpacing: pool.tickSpacing,
       tickLower: p.tickLowerIndex,
       tickUpper: p.tickUpperIndex,
@@ -1565,7 +1601,12 @@ function positionCard(p) {
           <span class="text-[11px] uppercase tracking-wide text-slate-400">${proto.name}</span>
         </div>
         <div class="font-semibold mt-0.5 truncate">${p.token0.symbol} / ${p.token1.symbol}</div>
-        ${p.feeTier != null ? `<div class="text-[11px] text-slate-400">fee ${p.feeTier.toFixed(2)}%</div>` : ""}
+        ${(() => {
+          const parts = [];
+          if (p.feeTier != null) parts.push(`fee ${p.feeTier.toFixed(2)}%`);
+          if (p.openedAt) parts.push(`abierta ${new Date(p.openedAt * 1000).toISOString().slice(0, 10)} (${Math.round(p.ageDays || 0)}d)`);
+          return parts.length ? `<div class="text-[11px] text-slate-400">${parts.join(" · ")}</div>` : "";
+        })()}
       </div>
       ${rangeChip}
     </div>
