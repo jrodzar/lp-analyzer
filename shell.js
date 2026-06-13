@@ -1429,6 +1429,7 @@ async function loadPortfolio(uid) {
       chains: Array.isArray(data.prefs?.chains) ? data.prefs.chains : DEFAULT_PREFS.chains.slice(),
       protocols: Array.isArray(data.prefs?.protocols) ? data.prefs.protocols : DEFAULT_PREFS.protocols.slice(),
       allocator: sanitizeAllocator(data.prefs?.allocator), // repartidor de capital
+      ui: (data.prefs?.ui && typeof data.prefs.ui === "object") ? data.prefs.ui : {}, // groupBy, etc.
     };
     if (Number(data.prefsVersion || 0) < 1) {
       if (!state.prefs.chains.includes("hyperevm")) state.prefs.chains.push("hyperevm");
@@ -1909,82 +1910,80 @@ async function analyzeAll(opts = {}) {
 // Rellena las 5 cards del resumen (Valor, Fees, IL, PnL, Posiciones). Usado por
 // Portfolio (prefix "g") y Quick (prefix "q"). Garantiza que ambos resúmenes
 // muestren exactamente lo mismo a partir del array normalizado de items.
-function fillSummary(prefix, items, extra = {}) {
-  const $i = (id) => document.getElementById(`${prefix}-${id}`);
+// Agregación PURA de un conjunto de items (NO toca el DOM). La usan tanto el
+// resumen global/quick (fillSummary) como el resumen por pilar y las cabeceras
+// de grupo → una sola fórmula, así los totales por pilar siempre cuadran con el
+// global. Las cerradas (liquidez retirada) cuentan en todos los totales; solo se
+// separan en el desglose del conteo. IL solo en LPs; PnL/APR incluyen lending.
+function summarizeItems(items, extra = {}) {
   const totalValue = items.reduce((s, it) => s + (it.valueUSD || 0), 0);
   const totalCollected = items.reduce((s, it) => s + (it.feesUSD || 0), 0);
   const totalPending = items.reduce((s, it) => s + (it.feesPendingUSD || 0), 0);
-  const totalFees = totalCollected + totalPending;
   const lp = items.filter((it) => !it.lending);
   const lending = items.filter((it) => it.lending);
-  // Las cerradas (liquidez retirada) cuentan en todos los totales de arriba (fees,
-  // PnL, IL, valor); aquí solo se separan para el desglose del conteo.
   const closed = items.filter((it) => it.closed);
   const lpOpen = lp.filter((it) => !it.closed);
   const inRange = lpOpen.filter((it) => it.inRange).length;
-  const outRange = lpOpen.length - inRange;
-  // IL solo aplica a LPs (un lending no tiene impermanent loss → ilUSD: null).
-  // PnL y rentabilidad SÍ incluyen el lending: la card de Revert Lend tiene
-  // gains/apr propios y deben sumar al total agregado del portfolio.
   let ilSum = 0, ilN = 0, pnlSum = 0, pnlN = 0;
-  for (const it of lp) {
-    if (it.ilUSD != null && isFinite(it.ilUSD)) { ilSum += it.ilUSD; ilN++; }
+  for (const it of lp) if (it.ilUSD != null && isFinite(it.ilUSD)) { ilSum += it.ilUSD; ilN++; }
+  for (const it of items) if (it.pnlUSD != null && isFinite(it.pnlUSD)) { pnlSum += it.pnlUSD; pnlN++; }
+  let wApr = 0, wTotal = 0, aprN = 0;
+  for (const it of items) {
+    if (typeof it.apr === "number" && isFinite(it.apr) && it.valueUSD > 0) { wApr += it.apr * it.valueUSD; wTotal += it.valueUSD; aprN++; }
   }
-  for (const it of items) { // todos: LPs + lending
-    if (it.pnlUSD != null && isFinite(it.pnlUSD)) { pnlSum += it.pnlUSD; pnlN++; }
-  }
-  const pctOf = (x) => (totalValue > 0 ? ` (${x >= 0 ? "+" : ""}${((x / totalValue) * 100).toFixed(2)}%)` : "");
-
-  // Valor total = DeFi (LPs + lending) + tokens idle de wallet. Subtítulo desglosa.
+  const aprAnual = wTotal > 0 ? wApr / wTotal : null;
   const idleTotalUSD = Number(extra.idleTotalUSD || 0);
-  const totalCombined = totalValue + idleTotalUSD;
+  return {
+    totalValue, totalCollected, totalPending, totalFees: totalCollected + totalPending,
+    idleTotalUSD, totalCombined: totalValue + idleTotalUSD,
+    lpCount: lp.length, lendingCount: lending.length, closedCount: closed.length,
+    inRange, outRange: lpOpen.length - inRange, count: items.length,
+    ilSum, ilN, pnlSum, pnlN,
+    aprAnual, aprMensual: aprAnual != null ? aprAnual * 30 / 365 : null, aprN,
+  };
+}
+
+function fillSummary(prefix, items, extra = {}) {
+  const $i = (id) => document.getElementById(`${prefix}-${id}`);
+  const a = summarizeItems(items, extra);
+  const pctOf = (x) => (a.totalValue > 0 ? ` (${x >= 0 ? "+" : ""}${((x / a.totalValue) * 100).toFixed(2)}%)` : "");
+
   if ($i("value")) {
-    $i("value").textContent = fmtUSD(totalCombined);
+    $i("value").textContent = fmtUSD(a.totalCombined);
     if ($i("value-sub")) {
-      $i("value-sub").innerHTML = idleTotalUSD > 0
-        ? `<span class="text-slate-100 font-semibold">${fmtUSD(totalValue)}</span> DeFi · <span class="text-slate-100 font-semibold">${fmtUSD(idleTotalUSD)}</span> idle`
-        : `<span class="text-slate-500">${fmtUSD(totalValue)} en DeFi</span>`;
+      $i("value-sub").innerHTML = a.idleTotalUSD > 0
+        ? `<span class="text-slate-100 font-semibold">${fmtUSD(a.totalValue)}</span> DeFi · <span class="text-slate-100 font-semibold">${fmtUSD(a.idleTotalUSD)}</span> idle`
+        : `<span class="text-slate-500">${fmtUSD(a.totalValue)} en DeFi</span>`;
     }
   }
   if ($i("fees")) {
-    $i("fees").textContent = fmtUSD(totalFees);
-    if ($i("fees-sub")) $i("fees-sub").innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(totalPending)}</span> pendientes · <span class="text-emerald-400 font-semibold">${fmtUSD(totalCollected)}</span> cobradas`;
+    $i("fees").textContent = fmtUSD(a.totalFees);
+    if ($i("fees-sub")) $i("fees-sub").innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(a.totalPending)}</span> pendientes · <span class="text-emerald-400 font-semibold">${fmtUSD(a.totalCollected)}</span> cobradas`;
   }
   if ($i("il")) {
-    $i("il").textContent = ilN ? fmtUSD(ilSum) + pctOf(ilSum) : "—";
-    $i("il").className = "text-xl font-bold mt-1 " + (ilN ? pnlColor(ilSum) : "");
-    if ($i("il-sub")) $i("il-sub").textContent = ilN ? `${ilN}/${lp.length} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
+    $i("il").textContent = a.ilN ? fmtUSD(a.ilSum) + pctOf(a.ilSum) : "—";
+    $i("il").className = "text-xl font-bold mt-1 " + (a.ilN ? pnlColor(a.ilSum) : "");
+    if ($i("il-sub")) $i("il-sub").textContent = a.ilN ? `${a.ilN}/${a.lpCount} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
   }
   if ($i("pnl")) {
-    $i("pnl").textContent = pnlN ? fmtUSD(pnlSum) + pctOf(pnlSum) : "—";
-    $i("pnl").className = "text-xl font-bold mt-1 " + (pnlN ? pnlColor(pnlSum) : "");
-    if ($i("pnl-sub")) $i("pnl-sub").textContent = pnlN ? `${pnlN}/${items.length} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
+    $i("pnl").textContent = a.pnlN ? fmtUSD(a.pnlSum) + pctOf(a.pnlSum) : "—";
+    $i("pnl").className = "text-xl font-bold mt-1 " + (a.pnlN ? pnlColor(a.pnlSum) : "");
+    if ($i("pnl-sub")) $i("pnl-sub").textContent = a.pnlN ? `${a.pnlN}/${a.count} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
   }
   if ($i("positions")) {
-    $i("positions").textContent = items.length;
+    $i("positions").textContent = a.count;
     if ($i("positions-sub")) $i("positions-sub").textContent =
-      `${inRange} en rango · ${outRange} fuera` +
-      (lending.length ? ` · ${lending.length} préstamo${lending.length > 1 ? "s" : ""}` : "") +
-      (closed.length ? ` · ${closed.length} cerrada${closed.length > 1 ? "s" : ""}` : "");
+      `${a.inRange} en rango · ${a.outRange} fuera` +
+      (a.lendingCount ? ` · ${a.lendingCount} préstamo${a.lendingCount > 1 ? "s" : ""}` : "") +
+      (a.closedCount ? ` · ${a.closedCount} cerrada${a.closedCount > 1 ? "s" : ""}` : "");
   }
-  // Rentabilidad fees: APR anual ponderado por valor (LPs + lending — ambos tienen
-  // apr/valor). Mensual = anual × 30/365. No descuenta IL — el tooltip aclara.
+  // Rentabilidad fees: APR anual ponderado por valor. Mensual = anual × 30/365.
   if ($i("yield")) {
-    let wApr = 0, wTotal = 0, n = 0;
-    for (const it of items) { // todos: LPs + lending
-      if (typeof it.apr === "number" && isFinite(it.apr) && it.valueUSD > 0) {
-        wApr += it.apr * it.valueUSD;
-        wTotal += it.valueUSD;
-        n++;
-      }
-    }
-    if (wTotal > 0) {
-      const aprAnual = wApr / wTotal;
-      const aprMensual = aprAnual * 30 / 365;
-      const color = aprAnual >= 0 ? "text-emerald-400" : "text-rose-400";
+    if (a.aprAnual != null) {
+      const color = a.aprAnual >= 0 ? "text-emerald-400" : "text-rose-400";
       $i("yield").className = "text-xl font-bold mt-1 " + color;
-      $i("yield").innerHTML = `${aprMensual >= 0 ? "+" : ""}${aprMensual.toFixed(2)}% <span class="text-[11px] text-slate-400 font-normal">mensual</span>`;
-      if ($i("yield-sub")) $i("yield-sub").innerHTML = `<span class="${color} font-semibold">${aprAnual >= 0 ? "+" : ""}${aprAnual.toFixed(2)}%</span> anual (APR) · ${n}/${items.length} pos.`;
+      $i("yield").innerHTML = `${a.aprMensual >= 0 ? "+" : ""}${a.aprMensual.toFixed(2)}% <span class="text-[11px] text-slate-400 font-normal">mensual</span>`;
+      if ($i("yield-sub")) $i("yield-sub").innerHTML = `<span class="${color} font-semibold">${a.aprAnual >= 0 ? "+" : ""}${a.aprAnual.toFixed(2)}%</span> anual (APR) · ${a.aprN}/${a.count} pos.`;
     } else {
       $i("yield").className = "text-xl font-bold mt-1";
       $i("yield").textContent = "—";
@@ -1992,12 +1991,11 @@ function fillSummary(prefix, items, extra = {}) {
     }
   }
   if ($i("addresses") && typeof extra.addresses === "number") $i("addresses").textContent = extra.addresses;
-  // Nota aclaratoria: las posiciones cerradas siguen contando en los totales.
   if ($i("closed-note")) {
     const note = $i("closed-note");
-    if (closed.length) {
+    if (a.closedCount) {
       note.classList.remove("hidden");
-      note.innerHTML = `🗃️ Incluye <span class="text-slate-300 font-semibold">${closed.length}</span> posición${closed.length > 1 ? "es" : ""} cerrada${closed.length > 1 ? "s" : ""} (liquidez retirada): sus <span class="text-slate-300">fees cobradas, PnL e IL</span> siguen contando en estos totales.`;
+      note.innerHTML = `🗃️ Incluye <span class="text-slate-300 font-semibold">${a.closedCount}</span> posición${a.closedCount > 1 ? "es" : ""} cerrada${a.closedCount > 1 ? "s" : ""} (liquidez retirada): sus <span class="text-slate-300">fees cobradas, PnL e IL</span> siguen contando en estos totales.`;
     } else {
       note.classList.add("hidden");
     }
@@ -2127,82 +2125,249 @@ function renderPortfolio() {
 
   renderPortfolioCharts();
 
-  // secciones por dirección — cada una es un <details> plegable con MARCO ÚNICO
-  // que engloba cabecera + tokens idle + cards LP. Abierto por defecto.
+  // ── Agrupación por pilar / wallet ──────────────────────────────────────────
+  // El toggle y el resumen por pilar SOLO aparecen si alguna wallet tiene pilar
+  // asignado; si no, se mantiene la vista de siempre (secciones por wallet).
+  const hasAnyPillar = state.results.some((r) => pillarIdOfResult(r) != null);
+  const groupBar = document.getElementById("pf-groupbar");
+  const pillarSummary = document.getElementById("pf-pillar-summary");
+  const groupBy = (state.prefs.ui && state.prefs.ui.groupBy) || "pillar";
+  const byPillar = hasAnyPillar && groupBy !== "wallet";
+  if (groupBar) groupBar.classList.toggle("hidden", !hasAnyPillar);
+  if (hasAnyPillar) updateGroupByToggle(groupBy);
+  if (pillarSummary) {
+    if (byPillar) { pillarSummary.classList.remove("hidden"); renderPillarSummary(colorOf); }
+    else pillarSummary.classList.add("hidden");
+  }
+
   els.pfSections.innerHTML = "";
-  for (const r of state.results) {
-    const items = allItems(r);
-    const openItems = items.filter((it) => !it.closed);
-    const closedItems = items.filter((it) => it.closed);
-    const subVal = items.reduce((s, it) => s + (it.valueUSD || 0), 0);
-    const subFees = items.reduce((s, it) => s + (it.feesPendingUSD || 0) + (it.feesUSD || 0), 0);
-    const subIdle = (r.idleTokens || []).reduce((s, t) => s + (t.valueUSD || 0), 0);
-    const isEvm = r.entry.type === "evm";
-    const borderCls = isEvm ? "border-l-fuchsia-500" : "border-l-purple-500";
-    const bgCls = isEvm ? "bg-fuchsia-500/[0.04]" : "bg-purple-500/[0.04]";
-    const badgeCls = isEvm
-      ? "bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30"
-      : "bg-purple-500/15 text-purple-300 border border-purple-500/30";
-
-    const section = document.createElement("details");
-    section.open = true;
-    section.className = `pf-section rounded-xl border border-slate-800 border-l-4 ${borderCls} ${bgCls} mb-4 overflow-hidden`;
-
-    const head = document.createElement("summary");
-    head.className = "px-4 py-3 cursor-pointer hover:brightness-110 select-none";
-    head.innerHTML = `
-      <div class="flex items-center gap-3 flex-wrap">
-        <span class="pf-chev inline-block text-slate-400 transition-transform">▾</span>
-        <span class="chip ${badgeCls} text-xs font-semibold">${isEvm ? "EVM" : "SOL"}</span>
-        <h3 class="font-bold text-lg text-slate-100">${r.entry.label || shortAddr(r.entry.address)}</h3>
-        <span class="font-mono text-[11px] text-slate-500">${shortAddr(r.entry.address)}</span>
-        <span class="flex-1"></span>
-        <span class="text-sm text-slate-300 flex items-center gap-2 flex-wrap">
-          <span><span class="font-semibold text-slate-100">${openItems.length}</span> pos${closedItems.length ? ` <span class="text-slate-500">· ${closedItems.length} cerr.</span>` : ""}</span>
-          <span class="text-slate-600">·</span>
-          <span class="font-semibold text-slate-100">${fmtUSD(subVal)}</span><span class="text-slate-500 text-[11px] ml-1">DeFi</span>${subIdle > 0 ? ` <span class="text-slate-600">+</span> <span class="font-semibold text-slate-100">${fmtUSD(subIdle)}</span><span class="text-slate-500 text-[11px] ml-1">idle</span>` : ""}
-          <span class="text-slate-600">·</span>
-          <span title="Suma de fees cobradas + fees pendientes de todas las posiciones del wallet">fees totales <span class="font-semibold text-emerald-400">${fmtUSD(subFees)}</span></span>
-        </span>
-      </div>`;
-    section.appendChild(head);
-
-    const body = document.createElement("div");
-    body.className = "px-4 pb-4 pt-1";
-
-    // 1) Tokens "idle" primero (cerrados por defecto — el header del bloque ya
-    //    muestra conteo y total. El usuario despliega solo si quiere el detalle).
-    const idleBlock = idleTokensBlock(r.idleTokens || []);
-    if (idleBlock) body.appendChild(idleBlock);
-
-    // 2) Posiciones LP / lending ABIERTAS de la dirección
-    if (openItems.length) {
-      const grid = document.createElement("div");
-      grid.className = "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3";
-      // Ordenadas por valor actual descendente — primero las posiciones más grandes.
-      const sorted = [...openItems].sort((a, b) => (b.valueUSD || 0) - (a.valueUSD || 0));
-      for (const it of sorted) grid.appendChild(portfolioCard(it, colorOf.get(it)));
-      body.appendChild(grid);
-    } else {
-      const empty = document.createElement("div");
-      if (closedItems.length) {
-        empty.className = "text-xs text-slate-500";
-        empty.textContent = "Sin posiciones abiertas (ver cerradas abajo).";
-      } else {
-        const isErr = r.status && /no se pudo|inicia sesión|no está autoriz|límite|error de red|servicio no disponible|api key/i.test(r.status);
-        empty.className = `text-xs ${isErr ? "text-amber-400" : "text-slate-500"}`;
-        empty.textContent = r.status && r.status.trim() ? r.status : "Sin posiciones abiertas.";
-      }
-      body.appendChild(empty);
+  if (byPillar) {
+    // Grupos en el ORDEN de los pilares de la pestaña Pilares; "Sin pilar" al final.
+    const pillars = (state.prefs.allocator && state.prefs.allocator.pillars) || [];
+    for (const pid of [...pillars.map((p) => p.id), null]) {
+      const group = state.results.filter((r) => pillarIdOfResult(r) === pid);
+      if (group.length) els.pfSections.appendChild(buildPillarGroup(pid, group, colorOf));
     }
+  } else {
+    for (const r of state.results) els.pfSections.appendChild(buildWalletSection(r, colorOf));
+  }
+}
 
-    // 3) Posiciones CERRADAS (liquidez retirada): sección colapsada debajo, pero
-    //    sus fees/estadística ya cuentan en los totales de arriba.
-    const closedBlock = closedPositionsBlock(closedItems, colorOf);
-    if (closedBlock) body.appendChild(closedBlock);
+// Pilar (id) al que pertenece un resultado, según la asignación ACTUAL del
+// portfolio (no un snapshot del análisis: así reagrupar es inmediato al cambiar
+// el pilar de una wallet). Un id obsoleto (pilar borrado) → null = "Sin pilar".
+function pillarIdOfResult(r) {
+  const addr = (r.entry && r.entry.address || "").toLowerCase();
+  const w = state.portfolio.find((p) => (p.address || "").toLowerCase() === addr);
+  const pid = w && w.pillar;
+  return pillarById(pid) ? pid : null;
+}
 
-    section.appendChild(body);
-    els.pfSections.appendChild(section);
+// Construye la sección <details> de UNA wallet (marco único: cabecera + idle +
+// cards abiertas + cerradas). Es la misma .pf-section de siempre → los
+// inyectores de pro (active/*) la siguen encontrando, agrupada o no.
+function buildWalletSection(r, colorOf) {
+  const items = r.items || [];
+  const openItems = items.filter((it) => !it.closed);
+  const closedItems = items.filter((it) => it.closed);
+  const subVal = items.reduce((s, it) => s + (it.valueUSD || 0), 0);
+  const subFees = items.reduce((s, it) => s + (it.feesPendingUSD || 0) + (it.feesUSD || 0), 0);
+  const subIdle = (r.idleTokens || []).reduce((s, t) => s + (t.valueUSD || 0), 0);
+  const isEvm = r.entry.type === "evm";
+  const borderCls = isEvm ? "border-l-fuchsia-500" : "border-l-purple-500";
+  const bgCls = isEvm ? "bg-fuchsia-500/[0.04]" : "bg-purple-500/[0.04]";
+  const badgeCls = isEvm
+    ? "bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30"
+    : "bg-purple-500/15 text-purple-300 border border-purple-500/30";
+
+  const section = document.createElement("details");
+  section.open = true;
+  section.className = `pf-section rounded-xl border border-slate-800 border-l-4 ${borderCls} ${bgCls} mb-4 overflow-hidden`;
+
+  const head = document.createElement("summary");
+  head.className = "px-4 py-3 cursor-pointer hover:brightness-110 select-none";
+  head.innerHTML = `
+    <div class="flex items-center gap-3 flex-wrap">
+      <span class="pf-chev inline-block text-slate-400 transition-transform">▾</span>
+      <span class="chip ${badgeCls} text-xs font-semibold">${isEvm ? "EVM" : "SOL"}</span>
+      <h3 class="font-bold text-lg text-slate-100">${r.entry.label || shortAddr(r.entry.address)}</h3>
+      <span class="font-mono text-[11px] text-slate-500">${shortAddr(r.entry.address)}</span>
+      <span class="flex-1"></span>
+      <span class="text-sm text-slate-300 flex items-center gap-2 flex-wrap">
+        <span><span class="font-semibold text-slate-100">${openItems.length}</span> pos${closedItems.length ? ` <span class="text-slate-500">· ${closedItems.length} cerr.</span>` : ""}</span>
+        <span class="text-slate-600">·</span>
+        <span class="font-semibold text-slate-100">${fmtUSD(subVal)}</span><span class="text-slate-500 text-[11px] ml-1">DeFi</span>${subIdle > 0 ? ` <span class="text-slate-600">+</span> <span class="font-semibold text-slate-100">${fmtUSD(subIdle)}</span><span class="text-slate-500 text-[11px] ml-1">idle</span>` : ""}
+        <span class="text-slate-600">·</span>
+        <span title="Suma de fees cobradas + fees pendientes de todas las posiciones del wallet">fees totales <span class="font-semibold text-emerald-400">${fmtUSD(subFees)}</span></span>
+      </span>
+    </div>`;
+  section.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "px-4 pb-4 pt-1";
+
+  // 1) Tokens "idle" primero (cerrados por defecto).
+  const idleBlock = idleTokensBlock(r.idleTokens || []);
+  if (idleBlock) body.appendChild(idleBlock);
+
+  // 2) Posiciones LP / lending ABIERTAS de la dirección
+  if (openItems.length) {
+    const grid = document.createElement("div");
+    grid.className = "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3";
+    const sorted = [...openItems].sort((a, b) => (b.valueUSD || 0) - (a.valueUSD || 0));
+    for (const it of sorted) grid.appendChild(portfolioCard(it, colorOf.get(it)));
+    body.appendChild(grid);
+  } else {
+    const empty = document.createElement("div");
+    if (closedItems.length) {
+      empty.className = "text-xs text-slate-500";
+      empty.textContent = "Sin posiciones abiertas (ver cerradas abajo).";
+    } else {
+      const isErr = r.status && /no se pudo|inicia sesión|no está autoriz|límite|error de red|servicio no disponible|api key/i.test(r.status);
+      empty.className = `text-xs ${isErr ? "text-amber-400" : "text-slate-500"}`;
+      empty.textContent = r.status && r.status.trim() ? r.status : "Sin posiciones abiertas.";
+    }
+    body.appendChild(empty);
+  }
+
+  // 3) Posiciones CERRADAS (colapsadas; sus fees/estadística ya cuentan arriba).
+  const closedBlock = closedPositionsBlock(closedItems, colorOf);
+  if (closedBlock) body.appendChild(closedBlock);
+
+  section.appendChild(body);
+  return section;
+}
+
+// Grupo de un pilar: cabecera con el AGREGADO del pilar (valor, fees, IL, PnL,
+// nº pos) + las secciones de sus wallets dentro. NO es .pf-section (para no
+// confundir a los inyectores de pro); las wallets de dentro sí lo son.
+function buildPillarGroup(pid, results, colorOf) {
+  const pillar = pillarById(pid);
+  const idx = pid ? (state.prefs.allocator.pillars || []).findIndex((p) => p.id === pid) : -1;
+  const color = idx >= 0 ? pillarColor(idx) : "#64748b";
+  const name = pillar ? pillar.name : "Sin pilar";
+  const items = results.flatMap((r) => r.items || []);
+  const idleUSD = results.flatMap((r) => r.idleTokens || []).reduce((s, t) => s + (t.valueUSD || 0), 0);
+  const a = summarizeItems(items, { idleTotalUSD: idleUSD });
+
+  const wrap = document.createElement("details");
+  wrap.open = true;
+  wrap.className = "pf-pillar-group rounded-xl border border-slate-800 border-l-4 mb-5 overflow-hidden";
+  wrap.style.borderLeftColor = color;
+
+  const head = document.createElement("summary");
+  head.className = "px-4 py-3 cursor-pointer hover:brightness-110 select-none bg-slate-900/60";
+  const ilTxt = a.ilN ? `<span class="${pnlColor(a.ilSum)} font-semibold">${fmtUSD(a.ilSum)}</span>` : `<span class="text-slate-500">—</span>`;
+  const pnlTxt = a.pnlN ? `<span class="${pnlColor(a.pnlSum)} font-semibold">${fmtUSD(a.pnlSum)}</span>` : `<span class="text-slate-500">—</span>`;
+  head.innerHTML = `
+    <div class="flex items-center gap-3 flex-wrap">
+      <span class="pf-chev inline-block text-slate-400 transition-transform">▾</span>
+      <span class="w-3 h-3 rounded-full shrink-0" style="background:${color}"></span>
+      <h3 class="font-bold text-lg text-slate-100">${escapeHtml(name)}</h3>
+      <span class="text-[11px] text-slate-500">${results.length} ${results.length === 1 ? "wallet" : "wallets"} · ${a.count} pos</span>
+      <span class="flex-1"></span>
+      <span class="text-xs text-slate-300 flex items-center gap-3 flex-wrap">
+        <span title="Valor DeFi del pilar${idleUSD > 0 ? " (+ idle)" : ""}"><span class="text-slate-500">valor</span> <span class="font-semibold text-slate-100">${fmtUSD(a.totalValue)}</span></span>
+        <span title="Fees cobradas + pendientes"><span class="text-slate-500">fees</span> <span class="font-semibold text-emerald-400">${fmtUSD(a.totalFees)}</span></span>
+        <span title="Impermanent loss agregado del pilar"><span class="text-slate-500">IL</span> ${ilTxt}</span>
+        <span title="PnL agregado del pilar"><span class="text-slate-500">PnL</span> ${pnlTxt}</span>
+      </span>
+    </div>`;
+  wrap.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "px-3 pb-2 pt-2";
+  // Ordenar wallets del pilar por valor DeFi desc.
+  const sorted = [...results].sort((r1, r2) =>
+    (r2.items || []).reduce((s, it) => s + (it.valueUSD || 0), 0) -
+    (r1.items || []).reduce((s, it) => s + (it.valueUSD || 0), 0));
+  for (const r of sorted) body.appendChild(buildWalletSection(r, colorOf));
+  wrap.appendChild(body);
+  return wrap;
+}
+
+// Tabla-resumen por pilar (valor · fees · IL · PnL · pos · % del total). Una fila
+// por pilar CON wallets + "Sin pilar" si hay + Total. Reutiliza summarizeItems.
+function renderPillarSummary(colorOf) {
+  const box = document.getElementById("pf-pillar-summary");
+  if (!box) return;
+  const pillars = (state.prefs.allocator && state.prefs.allocator.pillars) || [];
+  const rowsData = [];
+  for (let i = 0; i < pillars.length; i++) {
+    const pid = pillars[i].id;
+    const group = state.results.filter((r) => pillarIdOfResult(r) === pid);
+    if (group.length) rowsData.push({ name: pillars[i].name, color: pillarColor(i), group });
+  }
+  const noPillar = state.results.filter((r) => pillarIdOfResult(r) === null);
+  if (noPillar.length) rowsData.push({ name: "Sin pilar", color: "#64748b", group: noPillar });
+
+  const totalValue = state.results.flatMap((r) => r.items || []).reduce((s, it) => s + (it.valueUSD || 0), 0);
+  const cell = (a) => {
+    const il = a.ilN ? `<span class="${pnlColor(a.ilSum)}">${fmtUSD(a.ilSum)}</span>` : `<span class="text-slate-600">—</span>`;
+    const pnl = a.pnlN ? `<span class="${pnlColor(a.pnlSum)}">${fmtUSD(a.pnlSum)}</span>` : `<span class="text-slate-600">—</span>`;
+    const pct = totalValue > 0 ? ((a.totalValue / totalValue) * 100).toFixed(1) + "%" : "—";
+    return { il, pnl, pct };
+  };
+  const rows = rowsData.map((rd) => {
+    const a = summarizeItems(rd.group.flatMap((r) => r.items || []));
+    const c = cell(a);
+    return `<tr class="border-b border-slate-800/50">
+      <td class="px-2 py-1.5"><span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full" style="background:${rd.color}"></span><span class="font-semibold text-slate-200">${escapeHtml(rd.name)}</span></span></td>
+      <td class="px-2 py-1.5 text-right font-mono text-slate-100">${fmtUSD(a.totalValue)}</td>
+      <td class="px-2 py-1.5 text-right font-mono text-emerald-400">${fmtUSD(a.totalFees)}</td>
+      <td class="px-2 py-1.5 text-right font-mono">${c.il}</td>
+      <td class="px-2 py-1.5 text-right font-mono">${c.pnl}</td>
+      <td class="px-2 py-1.5 text-right text-slate-300">${a.count}</td>
+      <td class="px-2 py-1.5 text-right font-mono text-slate-400">${c.pct}</td>
+    </tr>`;
+  }).join("");
+  const tot = summarizeItems(state.results.flatMap((r) => r.items || []));
+  const tc = cell(tot);
+
+  box.innerHTML = `
+    <div class="rounded-xl border border-slate-800 bg-slate-900 overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-[10px] uppercase tracking-wide text-slate-400 border-b border-slate-800">
+            <th class="text-left px-2 py-2">Pilar</th>
+            <th class="text-right px-2 py-2">Valor</th>
+            <th class="text-right px-2 py-2">Fees</th>
+            <th class="text-right px-2 py-2">IL</th>
+            <th class="text-right px-2 py-2">PnL</th>
+            <th class="text-right px-2 py-2">Pos</th>
+            <th class="text-right px-2 py-2">% valor</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr class="border-t border-slate-700 font-semibold">
+            <td class="px-2 py-2">Total</td>
+            <td class="px-2 py-2 text-right font-mono text-slate-100">${fmtUSD(tot.totalValue)}</td>
+            <td class="px-2 py-2 text-right font-mono text-emerald-400">${fmtUSD(tot.totalFees)}</td>
+            <td class="px-2 py-2 text-right font-mono">${tc.il}</td>
+            <td class="px-2 py-2 text-right font-mono">${tc.pnl}</td>
+            <td class="px-2 py-2 text-right text-slate-300">${tot.count}</td>
+            <td class="px-2 py-2 text-right font-mono text-slate-400">100%</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>`;
+}
+
+// Estado visual del toggle "Agrupar por" + cableado (una vez).
+function updateGroupByToggle(mode) {
+  const bP = document.getElementById("pf-groupby-pillar");
+  const bW = document.getElementById("pf-groupby-wallet");
+  if (!bP || !bW) return;
+  const on = "px-3 py-1 rounded-md font-semibold bg-[#ECE600] text-slate-900";
+  const off = "px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-slate-200";
+  bP.className = mode !== "wallet" ? on : off;
+  bW.className = mode === "wallet" ? on : off;
+  if (!bP.dataset.wired) {
+    bP.dataset.wired = bW.dataset.wired = "1";
+    const set = (m) => { if (!state.prefs.ui) state.prefs.ui = {}; state.prefs.ui.groupBy = m; savePrefs(); renderPortfolio(); };
+    bP.onclick = () => set("pillar");
+    bW.onclick = () => set("wallet");
   }
 }
 

@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "222";</script>
+  <script>window.APP_VERSION = "223";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -404,6 +404,17 @@
           <h3 class="text-sm font-semibold mb-3">Fees cobradas acumuladas totales</h3>
           <div class="relative h-64"><canvas id="chart-fees-timeline-total"></canvas></div>
         </section>
+
+        <!-- Agrupación por pilar / wallet (solo si hay pilares asignados) -->
+        <div id="pf-groupbar" class="hidden flex items-center gap-2 flex-wrap mb-3">
+          <span class="text-[11px] uppercase tracking-wide text-slate-400">Agrupar por</span>
+          <div class="inline-flex items-center gap-0.5 rounded-lg bg-slate-800/70 border border-slate-700 p-0.5 text-xs">
+            <button id="pf-groupby-pillar" type="button" class="px-3 py-1 rounded-md font-semibold">Pilar</button>
+            <button id="pf-groupby-wallet" type="button" class="px-3 py-1 rounded-md font-semibold">Wallet</button>
+          </div>
+        </div>
+        <!-- Resumen por pilar (tabla, solo en modo Pilar) -->
+        <div id="pf-pillar-summary" class="hidden mb-4"></div>
 
         <!-- Secciones por dirección -->
         <div id="pf-sections" class="space-y-6"></div>
