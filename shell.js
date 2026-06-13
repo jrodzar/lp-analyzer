@@ -1561,17 +1561,22 @@ function setPfManageOpen(open) {
   els.pfManageBody.classList.toggle("hidden", !open);
   els.pfManageChev.textContent = open ? "▾" : "▸";
 }
+// El usuario abrió/cerró el panel a mano en esta sesión → a partir de ahí
+// respetamos su elección (no se persiste: se resetea al recargar, así no se
+// queda "atascado" como pasaba con localStorage).
+let _pfManageUserToggled = false;
 function togglePfManage() {
   const open = els.pfManageBody.classList.contains("hidden"); // si estaba oculto, lo abrimos
+  _pfManageUserToggled = true;
   setPfManageOpen(open);
 }
-// Aplica el estado por defecto: abierto solo cuando el portfolio está vacío
-// (para que el usuario añada direcciones cómodamente). Cuando ya hay
-// direcciones, el panel se pliega para no ocupar espacio — el usuario lo
-// abre manualmente con el chevron ▸ cuando quiere gestionar direcciones.
-// (Antes guardábamos la preferencia en localStorage pero acababa "atascada"
-// en abierto si el usuario lo había abierto alguna vez. Mejor regla simple.)
+// Estado por defecto: abierto solo cuando el portfolio está vacío (para añadir
+// direcciones cómodamente); con direcciones se pliega para no ocupar espacio.
+// PERO una vez que el usuario lo ha abierto/cerrado a mano, respetamos su
+// elección y NO la pisamos en cada re-render (antes editar un pilar / renombrar
+// volvía a plegar el panel, que es incómodo).
 function applyPfManagePref() {
+  if (_pfManageUserToggled) return;
   setPfManageOpen(state.portfolio.length === 0);
 }
 
