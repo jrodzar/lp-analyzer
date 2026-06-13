@@ -2952,9 +2952,15 @@ function portfolioCard(it, color) {
       : it.inRange
         ? `<span class="chip bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">en rango</span>`
         : `<span class="chip bg-amber-500/15 text-amber-300 border border-amber-500/30">fuera</span>`;
+  // APR de fees (anual, %): NO es un importe → se muestra también en incógnito.
+  // Va DENTRO de la columna "Fees" (bajo cobradas/pendientes), como en la ficha
+  // completa del motor.
+  const aprLine = (typeof it.apr === "number" && isFinite(it.apr))
+    ? `<div class="text-[10px] text-slate-400 pt-0.5">APR ~ <span class="text-slate-200 font-semibold">${it.apr.toFixed(1)}%</span></div>`
+    : "";
   let feesLine;
   if (it.lending) {
-    feesLine = `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesUSD)} <span class="text-[10px] font-normal text-slate-400">ganado</span></div>`;
+    feesLine = `<div class="text-emerald-400 font-semibold">${fmtUSD(it.feesUSD)} <span class="text-[10px] font-normal text-slate-400">ganado</span></div>` + aprLine;
   } else {
     const hasCollected = (it.kind === "evm" || (it.kind === "sol" && it.pnlUSD != null));
     const pendStr = it.feesPendingUSD == null ? "n/d" : fmtUSD(it.feesPendingUSD);
@@ -2962,12 +2968,8 @@ function portfolioCard(it, color) {
       ? `<div class="text-emerald-400 font-semibold leading-tight">${fmtUSD(it.feesUSD || 0)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>`
       : "";
     const pendingLine = `<div class="text-amber-300 font-semibold leading-tight">${pendStr} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>`;
-    feesLine = collectedLine + pendingLine;
+    feesLine = collectedLine + pendingLine + aprLine;
   }
-  // APR de fees (anual, %): NO es un importe → se muestra también en incógnito.
-  const aprLine = (typeof it.apr === "number" && isFinite(it.apr))
-    ? `<div class="text-[10px] text-slate-400 pt-0.5">APR fees ~ <span class="text-slate-200 font-semibold">${it.apr.toFixed(1)}%</span> anual</div>`
-    : "";
   const showPnl = !it.lending && (it.kind === "evm" || (it.kind === "sol" && it.pnlUSD != null));
   const evmExtra = showPnl
     ? `<div class="grid grid-cols-2 gap-2 text-xs pt-1">
@@ -2991,7 +2993,6 @@ function portfolioCard(it, color) {
       <div><div class="text-[10px] uppercase text-slate-500">Valor</div><div class="font-semibold">${fmtUSD(it.valueUSD)}</div></div>
       <div><div class="text-[10px] uppercase text-slate-500">Fees</div>${feesLine}</div>
     </div>
-    ${aprLine}
     ${evmExtra}`;
   return el;
 }
