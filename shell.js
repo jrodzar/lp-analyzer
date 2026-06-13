@@ -146,17 +146,16 @@ function detectType(addr) {
   return null;
 }
 // ── Modo incógnito ─────────────────────────────────────────────────────────
-// Oculta importes (USD), cantidades de token y direcciones para compartir
-// pantalla / capturas sin revelar el patrimonio. Persiste POR DISPOSITIVO en
-// localStorage (no se sincroniza). Los %/APR/IL% se mantienen visibles (son
-// relativos, no revelan cantidades). Se enmascara en los formateadores → cubre
-// toda la app de golpe (resúmenes, cabeceras, pilares, idle, ejes/tooltips de
-// gráficos). El CSV usa valores crudos (no estos formateadores) → no se afecta.
+// Oculta IMPORTES (USD) y CANTIDADES de token para compartir pantalla/capturas
+// sin revelar el patrimonio. Persiste POR DISPOSITIVO en localStorage (no se
+// sincroniza). Se MANTIENEN visibles: %/APR/IL%, nombres de pilar, par de pools
+// y las DIRECCIONES/ETIQUETAS (las direcciones ya salen truncadas → no revelan
+// nada). Se enmascara en los formateadores de USD → cubre toda la app de golpe
+// (resúmenes, cabeceras, pilares, idle, ejes/tooltips de gráficos). El CSV usa
+// valores crudos (no estos formateadores) → no se afecta.
 const PRIV_MASK = "•••";
 function lpPriv() { try { return localStorage.getItem("lp-private") === "1"; } catch (e) { return false; } }
-// Nombre de wallet para las vistas de RESULTADOS (enmascara también la etiqueta).
-// La lista de gestión del portfolio NO usa esto (allí necesitas ver las wallets).
-function walletDisp(entry) { return lpPriv() ? PRIV_MASK : (entry.label || shortAddr(entry.address)); }
+function walletDisp(entry) { return entry.label || shortAddr(entry.address); }
 
 // Botón "ojo" del header: alterna incógnito y repinta TODO lo visible (los
 // formateadores ya devuelven máscara). Las fichas de posición se regeneran por
@@ -183,7 +182,6 @@ function updatePrivacyBtn() {
 
 function shortAddr(a) {
   if (!a) return "";
-  if (lpPriv()) return a.startsWith("0x") ? "0x" + PRIV_MASK : PRIV_MASK;
   return a.startsWith("0x") ? `${a.slice(0, 6)}…${a.slice(-4)}` : `${a.slice(0, 4)}…${a.slice(-4)}`;
 }
 // Divisa de visualización: siempre USD.
@@ -2966,6 +2964,10 @@ function portfolioCard(it, color) {
     const pendingLine = `<div class="text-amber-300 font-semibold leading-tight">${pendStr} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>`;
     feesLine = collectedLine + pendingLine;
   }
+  // APR de fees (anual, %): NO es un importe → se muestra también en incógnito.
+  const aprLine = (typeof it.apr === "number" && isFinite(it.apr))
+    ? `<div class="text-[10px] text-slate-400 pt-0.5">APR fees ~ <span class="text-slate-200 font-semibold">${it.apr.toFixed(1)}%</span> anual</div>`
+    : "";
   const showPnl = !it.lending && (it.kind === "evm" || (it.kind === "sol" && it.pnlUSD != null));
   const evmExtra = showPnl
     ? `<div class="grid grid-cols-2 gap-2 text-xs pt-1">
@@ -2989,6 +2991,7 @@ function portfolioCard(it, color) {
       <div><div class="text-[10px] uppercase text-slate-500">Valor</div><div class="font-semibold">${fmtUSD(it.valueUSD)}</div></div>
       <div><div class="text-[10px] uppercase text-slate-500">Fees</div>${feesLine}</div>
     </div>
+    ${aprLine}
     ${evmExtra}`;
   return el;
 }
