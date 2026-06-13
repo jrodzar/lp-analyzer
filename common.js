@@ -225,7 +225,10 @@ function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed
 // resto) porque token0/token1 vienen ordenados por dirección, no por relevancia.
 // Devuelve null si algún símbolo no es resoluble (dirección abreviada con "…").
 const _PAIR_STABLE_RX = /^(USDC|USDT|DAI|USD|USDE|USDS|FDUSD|PYUSD|TUSD|FRAX|GHO|LUSD|SUSD|USDD|USDBC|USR|DOLA|CRVUSD|GUSD)$/;
-const _PAIR_UNWRAP = { WETH: "ETH", WBTC: "BTC", WSOL: "SOL", WBNB: "BNB", WMATIC: "MATIC", WPOL: "POL", WHYPE: "HYPE", WAVAX: "AVAX", CBBTC: "BTC", TBTC: "BTC" };
+// Lista cerrada de envueltos/bridged → activo subyacente. Incluye los "Unit" de
+// HyperEVM (UBTC/UETH/USOL). NO desenvolvemos por prefijo genérico para no romper
+// tokens como WIF/WEN/UNI.
+const _PAIR_UNWRAP = { WETH: "ETH", WBTC: "BTC", WSOL: "SOL", WBNB: "BNB", WMATIC: "MATIC", WPOL: "POL", WHYPE: "HYPE", WAVAX: "AVAX", CBBTC: "BTC", TBTC: "BTC", UBTC: "BTC", UETH: "ETH", USOL: "SOL" };
 function poolPairTvSymbol(sym0, sym1) {
   // xStock en el par → graficar la acción subyacente directamente (TSLAx → TSLA),
   // que es lo que TradingView resuelve (NASDAQ:TSLA) en vez de un par inexistente.
@@ -236,9 +239,11 @@ function poolPairTvSymbol(sym0, sym1) {
   const norm = (s) => {
     let u = String(s || "").toUpperCase().trim();
     if (!u || u.includes("…") || u.includes("...")) return null; // dirección abreviada → no resoluble
+    u = u.replace(/[₮]/g, "T");                                   // ₮ (U+20AE, símbolo de Tether) → T: "USD₮0"→"USDT0"
     u = u.replace(/\.E$/, "");                                    // USDC.E → USDC
     if (/^USD[TC]0$/.test(u)) u = u.slice(0, 4);                  // USDT0/USDC0 (HyperEVM) → USDT/USDC
-    u = _PAIR_UNWRAP[u] || u;                                     // WETH→ETH, WBTC→BTC, … (lista cerrada: WIF/WEN no se tocan)
+    u = _PAIR_UNWRAP[u] || u;                                     // WETH→ETH, UBTC→BTC, … (lista cerrada: WIF/WEN no se tocan)
+    if (!/^[A-Z0-9]{1,12}$/.test(u)) return null;                // queda algún carácter no resoluble (otro Unicode) → sin icono
     return u;
   };
   const a = norm(sym0), b = norm(sym1);
