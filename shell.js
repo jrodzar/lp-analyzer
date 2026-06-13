@@ -14,7 +14,7 @@ const els = {
   // tabs
   tabBtnPortfolio: $("tab-btn-portfolio"), tabBtnQuick: $("tab-btn-quick"), tabBtnProjection: $("tab-btn-projection"), tabBtnAllocator: $("tab-btn-allocator"),
   tabPortfolio: $("tab-portfolio"), tabQuick: $("tab-quick"), tabProjection: $("tab-projection"), tabAllocator: $("tab-allocator"),
-  autoRefresh: $("auto-refresh"), refreshNow: $("refresh-now"), lastUpdated: $("last-updated"),
+  autoRefresh: $("auto-refresh"), refreshNow: $("refresh-now"), lastUpdated: $("last-updated"), privacyToggle: $("privacy-toggle"),
   authArea: $("auth-area"),
   // firebase setup
   fbSetup: $("fb-setup"), fbInput: $("fb-config-input"), fbErr: $("fb-config-err"), fbSave: $("fb-config-save"),
@@ -145,8 +145,45 @@ function detectType(addr) {
   if (RE_SOL.test(addr)) return "sol";
   return null;
 }
+// ── Modo incógnito ─────────────────────────────────────────────────────────
+// Oculta importes (USD), cantidades de token y direcciones para compartir
+// pantalla / capturas sin revelar el patrimonio. Persiste POR DISPOSITIVO en
+// localStorage (no se sincroniza). Los %/APR/IL% se mantienen visibles (son
+// relativos, no revelan cantidades). Se enmascara en los formateadores → cubre
+// toda la app de golpe (resúmenes, cabeceras, pilares, idle, ejes/tooltips de
+// gráficos). El CSV usa valores crudos (no estos formateadores) → no se afecta.
+const PRIV_MASK = "•••";
+function lpPriv() { try { return localStorage.getItem("lp-private") === "1"; } catch (e) { return false; } }
+// Nombre de wallet para las vistas de RESULTADOS (enmascara también la etiqueta).
+// La lista de gestión del portfolio NO usa esto (allí necesitas ver las wallets).
+function walletDisp(entry) { return lpPriv() ? PRIV_MASK : (entry.label || shortAddr(entry.address)); }
+
+// Botón "ojo" del header: alterna incógnito y repinta TODO lo visible (los
+// formateadores ya devuelven máscara). Las fichas de posición se regeneran por
+// la rama de respaldo (ver portfolioCard). El estado vive en localStorage.
+function togglePrivacy() {
+  const on = !lpPriv();
+  try { localStorage.setItem("lp-private", on ? "1" : "0"); } catch (e) {}
+  updatePrivacyBtn();
+  if (state.results && state.results.length) renderPortfolio();
+  if (state.user) renderAllocator();
+  try { if (state.results && state.results.length) renderHistorico(); } catch (e) {}
+  renderPortfolioList();
+}
+function updatePrivacyBtn() {
+  const b = els.privacyToggle; if (!b) return;
+  const on = lpPriv();
+  const eye = `<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
+  const eyeOff = `<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+  b.innerHTML = on ? eyeOff : eye;
+  b.title = on ? "Modo incógnito ACTIVO — importes ocultos (clic para mostrar)" : "Modo incógnito: ocultar importes para compartir pantalla";
+  b.classList.toggle("bg-slate-900/15", on);
+  b.classList.toggle("rounded-md", on);
+}
+
 function shortAddr(a) {
   if (!a) return "";
+  if (lpPriv()) return a.startsWith("0x") ? "0x" + PRIV_MASK : PRIV_MASK;
   return a.startsWith("0x") ? `${a.slice(0, 6)}…${a.slice(-4)}` : `${a.slice(0, 4)}…${a.slice(-4)}`;
 }
 // Divisa de visualización: siempre USD.
@@ -166,6 +203,7 @@ function fmtTiny(n, sig = 3) {
 // Formato normal con separador de miles: $8,300.00 (para tarjetas, resúmenes, etc.)
 function fmtUSD(n) {
   if (n == null || !isFinite(n)) return "—";
+  if (lpPriv()) return _fx.sym + PRIV_MASK;
   n = n * _fx.rate; const S = _fx.sym;
   const abs = Math.abs(n), s = n < 0 ? "-" : "";
   if (abs === 0) return S + "0";
@@ -176,6 +214,7 @@ function fmtUSD(n) {
 // Formato compacto: $8.30k / $1.20M (solo para ejes y etiquetas de gráficos)
 function fmtUSDc(n) {
   if (n == null || !isFinite(n)) return "—";
+  if (lpPriv()) return _fx.sym + PRIV_MASK;
   n = n * _fx.rate; const S = _fx.sym;
   const abs = Math.abs(n), s = n < 0 ? "-" : "";
   if (abs >= 1e9) return `${s}${S}${(abs / 1e9).toFixed(2)}B`;
@@ -218,6 +257,7 @@ function genPillarId() {
 // del usuario, así que NO multiplicamos por _fx.rate (eso lo hace fmtUSD).
 function fmtAlloc(n) {
   if (n == null || !isFinite(n)) return "—";
+  if (lpPriv()) return (_fx ? _fx.sym : "$") + PRIV_MASK;
   return (_fx ? _fx.sym : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
@@ -2260,7 +2300,7 @@ function buildWalletSection(r, colorOf, grouped) {
     <div class="flex items-center gap-3 flex-wrap">
       <span class="pf-chev inline-block text-slate-400 transition-transform">▾</span>
       <span class="chip ${badgeCls} text-xs font-semibold">${isEvm ? "EVM" : "SOL"}</span>
-      <h3 class="font-bold text-lg text-slate-100">${r.entry.label || shortAddr(r.entry.address)}</h3>
+      <h3 class="font-bold text-lg text-slate-100">${walletDisp(r.entry)}</h3>
       <span class="font-mono text-[11px] text-slate-500">${shortAddr(r.entry.address)}</span>
       <span class="flex-1"></span>
       <span class="text-sm text-slate-300 flex items-center gap-2 flex-wrap">
@@ -2533,7 +2573,7 @@ function idleTokensBlock(tokens, opts = {}) {
   body.className = "mt-2 space-y-1 text-xs";
   const rowFor = (t) => {
     const valStr = t.valueUSD != null ? fmtUSD(t.valueUSD) : `<span class="text-slate-600">sin precio</span>`;
-    const bal = t.balance >= 1 ? t.balance.toFixed(4) : fmtTiny(t.balance, 4);
+    const bal = lpPriv() ? PRIV_MASK : (t.balance >= 1 ? t.balance.toFixed(4) : fmtTiny(t.balance, 4));
     const chainName = chainDisplayName(t.chain);
     const chainHex = venueColor(chainName) || "#94a3b8";
     const chip = chainName
@@ -2636,7 +2676,7 @@ function renderPortfolioCharts() {
   const open = (r) => (r.items || []); // las cerradas también cuentan en los gráficos
   // valor por dirección
   const byAddr = state.results
-    .map((r) => ({ label: r.entry.label || shortAddr(r.entry.address), value: open(r).reduce((s, it) => s + (it.valueUSD || 0), 0) }))
+    .map((r) => ({ label: walletDisp(r.entry), value: open(r).reduce((s, it) => s + (it.valueUSD || 0), 0) }))
     .filter((x) => x.value > 0);
   // valor por red/protocolo
   const venueMap = new Map();
@@ -2644,7 +2684,7 @@ function renderPortfolioCharts() {
   const byVenue = [...venueMap.entries()].map(([label, value]) => ({ label, value })).filter((x) => x.value > 0);
   // fees (cobradas + pendientes) por dirección
   const byFees = state.results
-    .map((r) => ({ label: r.entry.label || shortAddr(r.entry.address), value: open(r).reduce((s, it) => s + (it.feesUSD || 0) + (it.feesPendingUSD || 0), 0) }))
+    .map((r) => ({ label: walletDisp(r.entry), value: open(r).reduce((s, it) => s + (it.feesUSD || 0) + (it.feesPendingUSD || 0), 0) }))
     .filter((x) => x.value > 0);
 
   // valor por PILAR (solo si hay asignaciones; usa los colores de cada pilar)
@@ -2893,8 +2933,11 @@ function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed
 function portfolioCard(it, color) {
   // Si el motor envió la ficha completa (misma que en Quick), úsala tal cual
   // para que Portfolio y Quick sean idénticas. Solo sobrescribimos el borde con
-  // el color global distintivo.
-  if (it.cardHTML) {
+  // el color global distintivo. EXCEPTO en modo incógnito: el cardHTML viene
+  // pre-renderizado por el motor con importes reales (no se puede enmascarar a
+  // posteriori), así que usamos la ficha de respaldo del shell, que pasa por
+  // fmtUSD enmascarable (muestra par, rango y valores ocultos).
+  if (it.cardHTML && !lpPriv()) {
     const tpl = document.createElement("template");
     tpl.innerHTML = it.cardHTML.trim();
     const node = tpl.content.firstElementChild;
@@ -3503,6 +3546,8 @@ els.pfCsv.onclick = exportPortfolioCSV;
 els.autoRefresh.onchange = applyAutoRefresh;
 els.refreshNow.onclick = refreshActiveTab;
 els.pfManageToggle.onclick = togglePfManage;
+if (els.privacyToggle) els.privacyToggle.onclick = togglePrivacy;
+updatePrivacyBtn();
 if (els.addrViewToggle) els.addrViewToggle.onclick = () => {
   localStorage.setItem("lp:addrView", localStorage.getItem("lp:addrView") === "table" ? "chart" : "table");
   applyAddrView();

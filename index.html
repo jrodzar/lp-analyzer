@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "226";</script>
+  <script>window.APP_VERSION = "227";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -89,6 +89,9 @@
 
       <!-- Última actualización -->
       <span id="last-updated" class="shrink-0 text-[11px] text-slate-900/70 hidden sm:inline" title="Hora de la última actualización"></span>
+
+      <!-- Modo incógnito: ocultar importes (lo rellena updatePrivacyBtn) -->
+      <button id="privacy-toggle" title="Modo incógnito: ocultar importes para compartir pantalla" aria-label="Modo incógnito" class="shrink-0 text-slate-900 flex items-center p-1 hover:opacity-60 active:scale-95 transition"></button>
 
       <!-- Auto-actualizar la pestaña activa -->
       <button id="refresh-now" title="Actualizar ahora (en segundo plano)" aria-label="Actualizar ahora" class="shrink-0 text-slate-900 flex items-center hover:opacity-60 active:scale-95 transition">
