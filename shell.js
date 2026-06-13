@@ -708,6 +708,9 @@ function setTab(tab) {
   if (els.tabAllocator) els.tabAllocator.classList.toggle("hidden", tab !== "allocator");
   if (tab === "projection") renderHistorico();
   if (tab === "allocator") renderAllocator();
+  // Al volver al Portfolio, repinta la lista para reflejar pilares creados/
+  // renombrados/eliminados en la pestaña Pilares (los selectores se reconstruyen).
+  if (tab === "portfolio" && state.user) renderPortfolioList();
   // El iframe de Quick se comparte con "Analizar todo" (headless). Si al entrar a Quick
   // el iframe activo lo había pintado el Portfolio, hay que limpiar para no enseñar
   // datos no analizados desde la pestaña Quick.
@@ -1497,7 +1500,7 @@ function addPortfolioEntry() {
   if (state.portfolio.some((p) => p.address.toLowerCase() === address.toLowerCase())) {
     els.pfAddErr.textContent = "Esa dirección ya está en el portfolio."; els.pfAddErr.classList.remove("hidden"); return;
   }
-  state.portfolio.push({ address, type, label });
+  state.portfolio.push({ address, type, label, pillar: null });
   els.pfAddress.value = ""; els.pfLabel.value = "";
   renderPortfolioList();
   savePortfolio();
@@ -1595,6 +1598,21 @@ function renderPortfolioList() {
     const badge = p.type === "evm"
       ? `<span class="chip bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30">EVM</span>`
       : `<span class="chip bg-purple-500/15 text-purple-300 border border-purple-500/30">SOL</span>`;
+    // Selector de pilar de la billetera. Las opciones salen de los pilares
+    // definidos en la pestaña Pilares; un id que ya no exista (pilar borrado) se
+    // trata como "Sin pilar". El dot refleja el color del pilar asignado.
+    const pillars = (state.prefs.allocator && state.prefs.allocator.pillars) || [];
+    const assignedIdx = p.pillar ? pillars.findIndex((pp) => pp.id === p.pillar) : -1;
+    const assignedId = assignedIdx >= 0 ? p.pillar : "";
+    const dotColor = assignedIdx >= 0 ? pillarColor(assignedIdx) : "#475569";
+    const pillarSelect = `
+      <span class="inline-flex items-center gap-1 flex-shrink-0">
+        <span class="w-2 h-2 rounded-full" style="background:${dotColor}" title="Pilar"></span>
+        <select data-pillar-idx="${idx}" title="Pilar de esta billetera" class="bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-[#ECE600] max-w-[8rem]">
+          <option value=""${assignedId === "" ? " selected" : ""}>Sin pilar</option>
+          ${pillars.map((pp) => `<option value="${escapeHtml(pp.id)}"${assignedId === pp.id ? " selected" : ""}>${escapeHtml(pp.name)}</option>`).join("")}
+        </select>
+      </span>`;
     row.innerHTML = `
       <span class="drag-handle cursor-move text-slate-600 hover:text-slate-300 select-none flex-shrink-0" title="Arrastra para reordenar">⠿</span>
       ${badge}
@@ -1604,10 +1622,23 @@ function renderPortfolioList() {
         <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       </button>
       <span class="flex-1"></span>
+      ${pillarSelect}
       <button class="move-up text-xs leading-none ${idx === 0 ? "text-slate-700 cursor-default" : "text-slate-500 hover:text-slate-200"}" title="Subir" ${idx === 0 ? "disabled" : ""}>▲</button>
       <button class="move-down text-xs leading-none ${idx === state.portfolio.length - 1 ? "text-slate-700 cursor-default" : "text-slate-500 hover:text-slate-200"}" title="Bajar" ${idx === state.portfolio.length - 1 ? "disabled" : ""}>▼</button>
       <button data-rename="${p.address}" title="Renombrar" class="text-xs text-slate-500 hover:text-sky-400">✎</button>
       <button data-rm="${p.address}" class="text-xs text-slate-500 hover:text-rose-400">✕</button>`;
+    // El <select> dentro de una fila draggable: desactivar el drag mientras se
+    // interactúa con él para que el desplegable abra (si no, el navegador puede
+    // iniciar arrastre al pulsar+mover sobre el select).
+    const sel = row.querySelector("select[data-pillar-idx]");
+    sel.addEventListener("mousedown", () => { row.draggable = false; });
+    sel.addEventListener("blur", () => { row.draggable = true; });
+    sel.onchange = () => {
+      state.portfolio[idx].pillar = sel.value || null;
+      row.draggable = true;
+      savePortfolio();
+      renderPortfolioList(); // refresca el dot de color del pilar
+    };
     row.querySelector(".move-up").onclick = () => reorderPortfolio(idx, idx - 1);
     row.querySelector(".move-down").onclick = () => reorderPortfolio(idx, idx + 1);
     row.addEventListener("dragstart", (e) => { _dragIdx = idx; e.dataTransfer.effectAllowed = "move"; row.classList.add("opacity-40"); });
