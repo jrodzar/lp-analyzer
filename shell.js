@@ -196,12 +196,16 @@ function pnlColor(n) { if (!isFinite(n)) return "text-slate-400"; return n > 0 ?
 // (Firestore). Calculadora proporcional autocontenida: trabaja en la divisa que
 // escriba el usuario (sin re-convertir por FX).
 const DEFAULT_ALLOCATOR = { capital: 0, pillars: [
-  { id: "P1",  name: "P1",  pct: 70,  pools: 0 },
-  { id: "P2",  name: "P2",  pct: 10,  pools: 0 },
-  { id: "P3",  name: "P3",  pct: 7.5, pools: 0 },
-  { id: "P4",  name: "P4",  pct: 7.5, pools: 0 },
-  { id: "RWA", name: "RWA", pct: 5,   pools: 0 },
+  { id: "P1",  name: "Pilar 1", pct: 70,  pools: 0 },
+  { id: "P2",  name: "Pilar 2", pct: 10,  pools: 0 },
+  { id: "P3",  name: "Pilar 3", pct: 7.5, pools: 0 },
+  { id: "P4",  name: "Pilar 4", pct: 7.5, pools: 0 },
+  { id: "RWA", name: "RWAs",    pct: 5,   pools: 0 },
 ] };
+// Renombrado de los nombres por defecto (id estable). Migración única: a los
+// pilares por defecto SIN tocar por el usuario (name === su id antiguo) se les
+// pone el nombre nuevo, sin perder %/pools ni las asignaciones de wallets.
+const DEFAULT_PILLAR_NAMES = { P1: "Pilar 1", P2: "Pilar 2", P3: "Pilar 3", P4: "Pilar 4", RWA: "RWAs" };
 const MAX_PILLARS = 12;
 let _pillarIdSeq = 0;
 // id de pilar único y estable (no se usa el nombre como id: renombrar lo rompería).
@@ -1431,9 +1435,15 @@ async function loadPortfolio(uid) {
       allocator: sanitizeAllocator(data.prefs?.allocator), // repartidor de capital
       ui: (data.prefs?.ui && typeof data.prefs.ui === "object") ? data.prefs.ui : {}, // groupBy, etc.
     };
-    if (Number(data.prefsVersion || 0) < 1) {
-      if (!state.prefs.chains.includes("hyperevm")) state.prefs.chains.push("hyperevm");
-      await fb.fsMod.setDoc(ref, { prefs: state.prefs, prefsVersion: 1 }, { merge: true }).catch(() => {});
+    const prefsVer = Number(data.prefsVersion || 0);
+    if (prefsVer < 2) {
+      if (prefsVer < 1 && !state.prefs.chains.includes("hyperevm")) state.prefs.chains.push("hyperevm");
+      // v2: renombrar los pilares por defecto no tocados (name === su id antiguo)
+      // a los nombres nuevos ("P1"→"Pilar 1"…). No pisa los renombrados a mano.
+      for (const p of state.prefs.allocator.pillars) {
+        if (DEFAULT_PILLAR_NAMES[p.id] && p.name === p.id) p.name = DEFAULT_PILLAR_NAMES[p.id];
+      }
+      await fb.fsMod.setDoc(ref, { prefs: state.prefs, prefsVersion: 2 }, { merge: true }).catch(() => {});
     }
     // salt del usuario (no es secreto) y datos cifrados / legados
     crypto_.salt = data.encSalt ? unb64(data.encSalt) : crypto.getRandomValues(new Uint8Array(16));
