@@ -826,6 +826,15 @@ function setTab(tab) {
   els.tabBtnProjection.className = tab === "projection" ? active : idle;
   if (els.tabBtnAllocator) els.tabBtnAllocator.className = tab === "allocator" ? active : idle;
   if (els.tabBtnGraficos) els.tabBtnGraficos.className = tab === "graficos" ? active : idle;
+  // En móvil las pestañas son solo-icono (texto en <span class="hidden sm:inline">),
+  // PERO la pestaña ACTIVA muestra su texto también en móvil (quitándole `hidden`)
+  // para saber siempre en qué sección estás.
+  const _tabTxt = (btn, on) => { const sp = btn && btn.querySelector("span"); if (sp) sp.classList.toggle("hidden", !on); };
+  _tabTxt(els.tabBtnQuick, tab === "quick");
+  _tabTxt(els.tabBtnPortfolio, tab === "portfolio");
+  _tabTxt(els.tabBtnGraficos, tab === "graficos");
+  _tabTxt(els.tabBtnProjection, tab === "projection");
+  _tabTxt(els.tabBtnAllocator, tab === "allocator");
   els.tabPortfolio.classList.toggle("hidden", tab !== "portfolio");
   els.tabQuick.classList.toggle("hidden", tab !== "quick");
   els.tabProjection.classList.toggle("hidden", tab !== "projection");
