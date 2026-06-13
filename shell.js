@@ -2231,7 +2231,10 @@ function pillarValueById() {
 // Construye la sección <details> de UNA wallet (marco único: cabecera + idle +
 // cards abiertas + cerradas). Es la misma .pf-section de siempre → los
 // inyectores de pro (active/*) la siguen encontrando, agrupada o no.
-function buildWalletSection(r, colorOf) {
+// grouped=true (dentro de un pilar): borde NEUTRO y sin margen propio — el color
+// y la jerarquía los aporta el grupo (banner + raíl); el chip EVM/SOL mantiene la
+// identidad del ecosistema.
+function buildWalletSection(r, colorOf, grouped) {
   const items = r.items || [];
   const openItems = items.filter((it) => !it.closed);
   const closedItems = items.filter((it) => it.closed);
@@ -2247,7 +2250,9 @@ function buildWalletSection(r, colorOf) {
 
   const section = document.createElement("details");
   section.open = true;
-  section.className = `pf-section rounded-xl border border-slate-800 border-l-4 ${borderCls} ${bgCls} mb-4 overflow-hidden`;
+  section.className = grouped
+    ? "pf-section rounded-lg border border-slate-800 bg-slate-950/30 overflow-hidden"
+    : `pf-section rounded-xl border border-slate-800 border-l-4 ${borderCls} ${bgCls} mb-4 overflow-hidden`;
 
   const head = document.createElement("summary");
   head.className = "px-4 py-3 cursor-pointer hover:brightness-110 select-none";
@@ -2317,36 +2322,47 @@ function buildPillarGroup(pid, results, colorOf) {
 
   const wrap = document.createElement("details");
   wrap.open = true;
-  wrap.className = "pf-pillar-group rounded-xl border border-slate-800 border-l-4 mb-5 overflow-hidden";
-  wrap.style.borderLeftColor = color;
+  wrap.className = "pf-pillar-group rounded-xl border border-slate-800 mb-6 overflow-hidden";
 
+  // Banner del pilar: fondo TEÑIDO con su color + borde izquierdo grueso + nombre
+  // grande. color-mix funciona con hex o hsl (degrada a transparente si no hay
+  // soporte). Da identidad fuerte al grupo, distinta de las wallets de dentro.
   const head = document.createElement("summary");
-  head.className = "px-4 py-3 cursor-pointer hover:brightness-110 select-none bg-slate-900/60";
+  head.className = "px-4 py-3 cursor-pointer hover:brightness-110 select-none";
+  head.style.background = `color-mix(in srgb, ${color} 15%, transparent)`;
+  head.style.borderLeft = `6px solid ${color}`;
   const ilTxt = a.ilN ? `<span class="${pnlColor(a.ilSum)} font-semibold">${fmtUSD(a.ilSum)}</span>` : `<span class="text-slate-500">—</span>`;
   const pnlTxt = a.pnlN ? `<span class="${pnlColor(a.pnlSum)} font-semibold">${fmtUSD(a.pnlSum)}</span>` : `<span class="text-slate-500">—</span>`;
   head.innerHTML = `
     <div class="flex items-center gap-3 flex-wrap">
-      <span class="pf-chev inline-block text-slate-400 transition-transform">▾</span>
-      <span class="w-3 h-3 rounded-full shrink-0" style="background:${color}"></span>
-      <h3 class="font-bold text-lg text-slate-100">${escapeHtml(name)}</h3>
-      <span class="text-[11px] text-slate-500">${results.length} ${results.length === 1 ? "wallet" : "wallets"} · ${a.count} pos</span>
+      <span class="pf-chev inline-block text-slate-300 transition-transform">▾</span>
+      <span class="w-3.5 h-3.5 rounded-full shrink-0" style="background:${color}"></span>
+      <h3 class="font-bold text-xl text-slate-50">${escapeHtml(name)}</h3>
+      <span class="text-[11px] text-slate-400">${results.length} ${results.length === 1 ? "wallet" : "wallets"} · ${a.count} pos</span>
       <span class="flex-1"></span>
       <span class="text-xs text-slate-300 flex items-center gap-3 flex-wrap">
-        <span title="Valor DeFi del pilar${idleUSD > 0 ? " (+ idle)" : ""}"><span class="text-slate-500">valor</span> <span class="font-semibold text-slate-100">${fmtUSD(a.totalValue)}</span></span>
-        <span title="Fees cobradas + pendientes"><span class="text-slate-500">fees</span> <span class="font-semibold text-emerald-400">${fmtUSD(a.totalFees)}</span></span>
-        <span title="Impermanent loss agregado del pilar"><span class="text-slate-500">IL</span> ${ilTxt}</span>
-        <span title="PnL agregado del pilar"><span class="text-slate-500">PnL</span> ${pnlTxt}</span>
+        <span title="Valor DeFi del pilar${idleUSD > 0 ? " (+ idle)" : ""}"><span class="text-slate-400">valor</span> <span class="font-semibold text-slate-50">${fmtUSD(a.totalValue)}</span></span>
+        <span title="Fees cobradas + pendientes"><span class="text-slate-400">fees</span> <span class="font-semibold text-emerald-400">${fmtUSD(a.totalFees)}</span></span>
+        <span title="Impermanent loss agregado del pilar"><span class="text-slate-400">IL</span> ${ilTxt}</span>
+        <span title="PnL agregado del pilar"><span class="text-slate-400">PnL</span> ${pnlTxt}</span>
       </span>
     </div>`;
   wrap.appendChild(head);
 
   const body = document.createElement("div");
-  body.className = "px-3 pb-2 pt-2";
+  body.className = "px-3 pb-3 pt-3 bg-slate-950/20";
+  // Raíl: las wallets cuelgan de una línea vertical del color del pilar (sangría)
+  // → se lee claramente qué wallets/pools están dentro de cada pilar.
+  const rail = document.createElement("div");
+  rail.className = "space-y-3 ml-1";
+  rail.style.borderLeft = `3px solid ${color}`;
+  rail.style.paddingLeft = "14px";
   // Ordenar wallets del pilar por valor DeFi desc.
   const sorted = [...results].sort((r1, r2) =>
     (r2.items || []).reduce((s, it) => s + (it.valueUSD || 0), 0) -
     (r1.items || []).reduce((s, it) => s + (it.valueUSD || 0), 0));
-  for (const r of sorted) body.appendChild(buildWalletSection(r, colorOf));
+  for (const r of sorted) rail.appendChild(buildWalletSection(r, colorOf, true));
+  body.appendChild(rail);
   wrap.appendChild(body);
   return wrap;
 }
