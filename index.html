@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "233";</script>
+  <script>window.APP_VERSION = "234";</script>
   <!-- Modo incógnito: difumina SOLO los importes (.lp-blur) cuando el body tiene
        .lp-private. user-select:none evita copiar el valor real. Los gráficos NO
        se difuminan (sus etiquetas $ se enmascaran como texto "$•••"). -->
@@ -87,6 +87,7 @@
       <div class="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-900 shrink-0">
         <button id="tab-btn-quick" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">⚡ Quick</button>
         <button id="tab-btn-portfolio" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📁 Portfolio</button>
+        <button id="tab-btn-graficos" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📊 Gráficos</button>
         <button id="tab-btn-projection" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📈 Histórico</button>
         <button id="tab-btn-allocator" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">🧮 Pilares</button>
       </div>
@@ -370,53 +371,7 @@
           <p id="g-closed-note" class="hidden text-[11px] text-slate-500 mt-2"></p>
         </section>
 
-        <!-- Distribución del valor -->
-        <section id="pf-charts" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <div class="flex items-center justify-between mb-3">
-              <h3 class="text-sm font-semibold">Valor por dirección</h3>
-              <button id="addr-view-toggle" class="text-[11px] px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300" title="Alternar entre gráfico y tabla">Tabla</button>
-            </div>
-            <div id="addr-chart-wrap" class="relative h-64"><canvas id="chart-by-address"></canvas></div>
-            <div id="addr-table-wrap" class="hidden overflow-x-auto"></div>
-          </div>
-          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <h3 class="text-sm font-semibold mb-3">Valor por red / protocolo</h3>
-            <div class="relative h-64"><canvas id="chart-by-venue"></canvas></div>
-          </div>
-          <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <h3 class="text-sm font-semibold mb-3">Fees por dirección</h3>
-            <div class="relative h-64"><canvas id="chart-by-fees"></canvas></div>
-          </div>
-          <div id="pf-chart-pillar-card" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <h3 class="text-sm font-semibold mb-3">Valor por pilar</h3>
-            <div class="relative h-64"><canvas id="chart-by-pillar"></canvas></div>
-          </div>
-        </section>
-
-        <!-- Línea temporal de fees por pool -->
-        <section id="pf-fees-timeline" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
-          <div class="flex items-start justify-between gap-2 flex-wrap mb-3">
-            <div class="flex items-center gap-1.5">
-              <h3 class="text-sm font-semibold">Fees cobradas acumuladas por pool</h3>
-              <span class="cursor-help text-slate-400 hover:text-slate-200 text-xs" title="Cada línea es una posición. El eje Y es el total de fees YA RECLAMADAS (no incluye pendientes). Las subidas son eventos de Collect; los tramos planos significan que no reclamaste en ese intervalo. Pendiente constante = pool que produce parejo. Una línea muy por encima del resto = esa pool concentra casi todo tu yield. Haz clic en la leyenda para aislar/ocultar una pool.">ⓘ</span>
-            </div>
-            <label class="flex items-center gap-1.5 text-[11px] text-slate-400">
-              <span>Ocultar pools con &lt;</span>
-              <span class="text-slate-300">$</span>
-              <input id="fees-min-threshold" type="number" min="0" step="1" value="1" class="w-16 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-200 text-[11px]" />
-              <span>cobrados</span>
-            </label>
-          </div>
-          <div id="pf-fees-summary" class="text-[11px] text-slate-400 mb-2 hidden"></div>
-          <div class="relative h-64"><canvas id="chart-fees-timeline"></canvas></div>
-        </section>
-
-        <!-- Línea temporal de fees totales -->
-        <section id="pf-fees-timeline-total" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
-          <h3 class="text-sm font-semibold mb-3">Fees cobradas acumuladas totales</h3>
-          <div class="relative h-64"><canvas id="chart-fees-timeline-total"></canvas></div>
-        </section>
+        <!-- (Los gráficos se movieron a la pestaña "Gráficos") -->
 
         <!-- Agrupación por pilar / wallet (solo si hay pilares asignados) -->
         <div id="pf-groupbar" class="hidden flex items-center gap-2 flex-wrap mb-3">
@@ -432,6 +387,58 @@
         <!-- Secciones por dirección -->
         <div id="pf-sections" class="space-y-6"></div>
       </div>
+    </section>
+
+    <!-- ===== TAB GRÁFICOS ===== -->
+    <section id="tab-graficos" class="hidden space-y-4">
+      <div id="graficos-empty" class="hidden text-center py-16 text-slate-400">
+        <div class="text-4xl mb-3">📊</div>
+        <p class="text-sm">Analiza tu portfolio en la pestaña <b>Portfolio</b> para ver aquí los gráficos.</p>
+      </div>
+
+      <!-- Distribución del valor -->
+      <section id="pf-charts" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold">Valor por dirección</h3>
+            <button id="addr-view-toggle" class="text-[11px] px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300" title="Alternar entre gráfico y tabla">Tabla</button>
+          </div>
+          <div id="addr-chart-wrap" class="relative h-64"><canvas id="chart-by-address"></canvas></div>
+          <div id="addr-table-wrap" class="hidden overflow-x-auto"></div>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <h3 class="text-sm font-semibold mb-3">Fees por dirección</h3>
+          <div class="relative h-64"><canvas id="chart-by-fees"></canvas></div>
+        </div>
+        <div id="pf-chart-pillar-card" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <h3 class="text-sm font-semibold mb-3">Valor por pilar</h3>
+          <div class="relative h-64"><canvas id="chart-by-pillar"></canvas></div>
+        </div>
+      </section>
+
+      <!-- Línea temporal de fees por pool -->
+      <section id="pf-fees-timeline" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <div class="flex items-start justify-between gap-2 flex-wrap mb-3">
+          <div class="flex items-center gap-1.5">
+            <h3 class="text-sm font-semibold">Fees cobradas acumuladas por pool</h3>
+            <span class="cursor-help text-slate-400 hover:text-slate-200 text-xs" title="Cada línea es una posición. El eje Y es el total de fees YA RECLAMADAS (no incluye pendientes). Las subidas son eventos de Collect; los tramos planos significan que no reclamaste en ese intervalo. Pendiente constante = pool que produce parejo. Una línea muy por encima del resto = esa pool concentra casi todo tu yield. Haz clic en la leyenda para aislar/ocultar una pool.">ⓘ</span>
+          </div>
+          <label class="flex items-center gap-1.5 text-[11px] text-slate-400">
+            <span>Ocultar pools con &lt;</span>
+            <span class="text-slate-300">$</span>
+            <input id="fees-min-threshold" type="number" min="0" step="1" value="1" class="w-16 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-200 text-[11px]" />
+            <span>cobrados</span>
+          </label>
+        </div>
+        <div id="pf-fees-summary" class="text-[11px] text-slate-400 mb-2 hidden"></div>
+        <div class="relative h-64"><canvas id="chart-fees-timeline"></canvas></div>
+      </section>
+
+      <!-- Línea temporal de fees totales -->
+      <section id="pf-fees-timeline-total" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <h3 class="text-sm font-semibold mb-3">Fees cobradas acumuladas totales</h3>
+        <div class="relative h-64"><canvas id="chart-fees-timeline-total"></canvas></div>
+      </section>
     </section>
 
     <!-- ===== TAB QUICK ===== -->

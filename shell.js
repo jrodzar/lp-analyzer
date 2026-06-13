@@ -12,8 +12,8 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
   // tabs
-  tabBtnPortfolio: $("tab-btn-portfolio"), tabBtnQuick: $("tab-btn-quick"), tabBtnProjection: $("tab-btn-projection"), tabBtnAllocator: $("tab-btn-allocator"),
-  tabPortfolio: $("tab-portfolio"), tabQuick: $("tab-quick"), tabProjection: $("tab-projection"), tabAllocator: $("tab-allocator"),
+  tabBtnPortfolio: $("tab-btn-portfolio"), tabBtnQuick: $("tab-btn-quick"), tabBtnProjection: $("tab-btn-projection"), tabBtnAllocator: $("tab-btn-allocator"), tabBtnGraficos: $("tab-btn-graficos"),
+  tabPortfolio: $("tab-portfolio"), tabQuick: $("tab-quick"), tabProjection: $("tab-projection"), tabAllocator: $("tab-allocator"), tabGraficos: $("tab-graficos"),
   autoRefresh: $("auto-refresh"), refreshNow: $("refresh-now"), lastUpdated: $("last-updated"), privacyToggle: $("privacy-toggle"),
   authArea: $("auth-area"),
   // firebase setup
@@ -43,7 +43,7 @@ const els = {
   gIl: $("g-il"), gIlSub: $("g-il-sub"), gPnl: $("g-pnl"), gPnlSub: $("g-pnl-sub"),
   gPositions: $("g-positions"), gPositionsSub: $("g-positions-sub"), gAddresses: $("g-addresses"),
   pfSections: $("pf-sections"),
-  pfCharts: $("pf-charts"), chartByAddress: $("chart-by-address"), chartByVenue: $("chart-by-venue"), chartByFees: $("chart-by-fees"), chartByPillar: $("chart-by-pillar"),
+  pfCharts: $("pf-charts"), chartByAddress: $("chart-by-address"), chartByFees: $("chart-by-fees"), chartByPillar: $("chart-by-pillar"),
   addrViewToggle: $("addr-view-toggle"), addrChartWrap: $("addr-chart-wrap"), addrTableWrap: $("addr-table-wrap"),
   quickBanner: $("quick-banner"), pfBanner: $("pf-banner"),
   pfFeesTimeline: $("pf-fees-timeline"), chartFeesTimeline: $("chart-fees-timeline"),
@@ -825,12 +825,23 @@ function setTab(tab) {
   els.tabBtnQuick.className = tab === "quick" ? active : idle;
   els.tabBtnProjection.className = tab === "projection" ? active : idle;
   if (els.tabBtnAllocator) els.tabBtnAllocator.className = tab === "allocator" ? active : idle;
+  if (els.tabBtnGraficos) els.tabBtnGraficos.className = tab === "graficos" ? active : idle;
   els.tabPortfolio.classList.toggle("hidden", tab !== "portfolio");
   els.tabQuick.classList.toggle("hidden", tab !== "quick");
   els.tabProjection.classList.toggle("hidden", tab !== "projection");
   if (els.tabAllocator) els.tabAllocator.classList.toggle("hidden", tab !== "allocator");
+  if (els.tabGraficos) els.tabGraficos.classList.toggle("hidden", tab !== "graficos");
   if (tab === "projection") renderHistorico();
   if (tab === "allocator") renderAllocator();
+  // Los gráficos viven en su propia pestaña. Chart.js no dibuja bien en un
+  // contenedor oculto (0×0), así que (re)dibujamos al entrar. Si no hay análisis,
+  // mostramos una pista.
+  if (tab === "graficos") {
+    const has = state.results && state.results.length > 0;
+    const empty = document.getElementById("graficos-empty");
+    if (empty) empty.classList.toggle("hidden", has);
+    if (has) renderPortfolioCharts();
+  }
   // Al volver al Portfolio, repinta la lista para reflejar pilares creados/
   // renombrados/eliminados en la pestaña Pilares (los selectores se reconstruyen).
   if (tab === "portfolio" && state.user) renderPortfolioList();
@@ -2252,7 +2263,9 @@ function renderPortfolio() {
     renderAnalysisBanner(els.pfBanner, { errors: allErrors, summary });
   }
 
-  renderPortfolioCharts();
+  // Los gráficos están en su propia pestaña "Gráficos". Solo (re)dibujar si está
+  // activa (Chart.js no dibuja en contenedor oculto); si no, se pintan al entrar.
+  if (state.tab === "graficos") renderPortfolioCharts();
 
   // ── Agrupación por pilar / wallet ──────────────────────────────────────────
   // El toggle y el resumen por pilar SOLO aparecen si alguna wallet tiene pilar
@@ -2716,10 +2729,6 @@ function renderPortfolioCharts() {
   const byAddr = state.results
     .map((r) => ({ label: walletDisp(r.entry), value: open(r).reduce((s, it) => s + (it.valueUSD || 0), 0) }))
     .filter((x) => x.value > 0);
-  // valor por red/protocolo
-  const venueMap = new Map();
-  for (const r of state.results) for (const it of open(r)) venueMap.set(it.venue, (venueMap.get(it.venue) || 0) + (it.valueUSD || 0));
-  const byVenue = [...venueMap.entries()].map(([label, value]) => ({ label, value })).filter((x) => x.value > 0);
   // fees (cobradas + pendientes) por dirección
   const byFees = state.results
     .map((r) => ({ label: walletDisp(r.entry), value: open(r).reduce((s, it) => s + (it.feesUSD || 0) + (it.feesPendingUSD || 0), 0) }))
@@ -2738,7 +2747,6 @@ function renderPortfolioCharts() {
   els.pfCharts.classList.toggle("hidden", byAddr.length === 0);
   state._lastByAddr = byAddr;       // cache para alternar gráfico/tabla sin re-analizar
   applyAddrView();                  // pinta doughnut o tabla según preferencia
-  drawDoughnut("venue", els.chartByVenue, byVenue);
   drawDoughnut("fees", els.chartByFees, byFees);
   drawDoughnut("pillar", els.chartByPillar, byPillar, byPillar.map((d) => d.color));
   renderFeesTimelineChart();
@@ -3383,6 +3391,7 @@ els.tabBtnPortfolio.onclick = () => setTab("portfolio");
 els.tabBtnQuick.onclick = () => setTab("quick");
 els.tabBtnProjection.onclick = () => setTab("projection");
 if (els.tabBtnAllocator) els.tabBtnAllocator.onclick = () => setTab("allocator");
+if (els.tabBtnGraficos) els.tabBtnGraficos.onclick = () => setTab("graficos");
 
 els.go.onclick = quickAnalyze;
 els.addr.addEventListener("keydown", (e) => { if (e.key === "Enter") quickAnalyze(); });
