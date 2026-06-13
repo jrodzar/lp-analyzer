@@ -146,20 +146,28 @@ function detectType(addr) {
   return null;
 }
 // ── Modo incógnito ─────────────────────────────────────────────────────────
-// Oculta IMPORTES (USD) y CANTIDADES de token para compartir pantalla/capturas
-// sin revelar el patrimonio. Persiste POR DISPOSITIVO en localStorage (no se
-// sincroniza). Se MANTIENEN visibles: %/APR/IL%, nombres de pilar, par de pools
-// y las DIRECCIONES/ETIQUETAS (las direcciones ya salen truncadas → no revelan
-// nada). Se enmascara en los formateadores de USD → cubre toda la app de golpe
-// (resúmenes, cabeceras, pilares, idle, ejes/tooltips de gráficos). El CSV usa
-// valores crudos (no estos formateadores) → no se afecta.
+// Oculta SOLO los IMPORTES en $ (valores monetarios) para compartir pantalla/
+// capturas sin revelar el patrimonio. La DISPOSICIÓN es idéntica al modo normal;
+// se mantienen visibles cantidades de token, %/APR/IL%, nombres de pilar, par de
+// pools, rangos y direcciones/etiquetas. Persiste POR DISPOSITIVO en localStorage
+// (no se sincroniza). Mecánica: los $ se enmascaran en los formateadores USD
+// (fmtUSD/fmtUSDc/fmtAlloc → resúmenes, cabeceras, pilares, idle, ejes/tooltips)
+// y, en las fichas ya generadas por el motor (cardHTML), vía maskMoneyHTML. El
+// CSV usa valores crudos (no estos formateadores) → no se afecta.
 const PRIV_MASK = "•••";
 function lpPriv() { try { return localStorage.getItem("lp-private") === "1"; } catch (e) { return false; } }
 function walletDisp(entry) { return entry.label || shortAddr(entry.address); }
+// Enmascara SOLO los importes en $ de un fragmento HTML (cardHTML del motor),
+// manteniendo la disposición EXACTA. Seguro: en la app el "$" solo lo produce
+// fmtUSD (no aparece en SVG, clases ni atributos), así que el regex no corrompe
+// nada. Las cantidades de token, %, APR, rangos y direcciones se conservan.
+function maskMoneyHTML(html) {
+  return lpPriv() ? String(html).replace(/-?\$\s?\d[\d.,]*\s?[kMB]?/g, () => "$" + PRIV_MASK) : html;
+}
 
-// Botón "ojo" del header: alterna incógnito y repinta TODO lo visible (los
-// formateadores ya devuelven máscara). Las fichas de posición se regeneran por
-// la rama de respaldo (ver portfolioCard). El estado vive en localStorage.
+// Botón "ojo" del header: alterna incógnito y repinta TODO lo visible. Los
+// importes se enmascaran en los formateadores (fmtUSD…) y, en las fichas del
+// motor (cardHTML ya generado), vía maskMoneyHTML. El estado vive en localStorage.
 function togglePrivacy() {
   const on = !lpPriv();
   try { localStorage.setItem("lp-private", on ? "1" : "0"); } catch (e) {}
@@ -2571,7 +2579,7 @@ function idleTokensBlock(tokens, opts = {}) {
   body.className = "mt-2 space-y-1 text-xs";
   const rowFor = (t) => {
     const valStr = t.valueUSD != null ? fmtUSD(t.valueUSD) : `<span class="text-slate-600">sin precio</span>`;
-    const bal = lpPriv() ? PRIV_MASK : (t.balance >= 1 ? t.balance.toFixed(4) : fmtTiny(t.balance, 4));
+    const bal = t.balance >= 1 ? t.balance.toFixed(4) : fmtTiny(t.balance, 4);
     const chainName = chainDisplayName(t.chain);
     const chainHex = venueColor(chainName) || "#94a3b8";
     const chip = chainName
@@ -2931,13 +2939,11 @@ function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed
 function portfolioCard(it, color) {
   // Si el motor envió la ficha completa (misma que en Quick), úsala tal cual
   // para que Portfolio y Quick sean idénticas. Solo sobrescribimos el borde con
-  // el color global distintivo. EXCEPTO en modo incógnito: el cardHTML viene
-  // pre-renderizado por el motor con importes reales (no se puede enmascarar a
-  // posteriori), así que usamos la ficha de respaldo del shell, que pasa por
-  // fmtUSD enmascarable (muestra par, rango y valores ocultos).
-  if (it.cardHTML && !lpPriv()) {
+  // el color global distintivo. En modo incógnito, la disposición es IDÉNTICA:
+  // solo se enmascaran los importes en $ del HTML (maskMoneyHTML).
+  if (it.cardHTML) {
     const tpl = document.createElement("template");
-    tpl.innerHTML = it.cardHTML.trim();
+    tpl.innerHTML = maskMoneyHTML(it.cardHTML).trim();
     const node = tpl.content.firstElementChild;
     if (node) { if (color) node.style.borderLeft = `3px solid ${color}`; return node; }
   }
