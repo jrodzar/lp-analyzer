@@ -188,18 +188,27 @@ function fmtUSDc(n) {
 }
 function pnlColor(n) { if (!isFinite(n)) return "text-slate-400"; return n > 0 ? "text-emerald-400" : n < 0 ? "text-rose-400" : "text-slate-300"; }
 
-// ── Repartidor de capital (pestaña 🧮 Aporte) ──────────────────────────────
-// Reparte una aportación entre 5 pilares (cada uno con su % y nº de pools);
-// cada pool del mismo pilar recibe lo mismo. % y nº de pools se guardan en
-// state.prefs.allocator (Firestore). Calculadora proporcional autocontenida:
-// trabaja en la divisa que escriba el usuario (sin re-convertir por FX).
+// ── Pilares (pestaña 🧮 Pilares) ───────────────────────────────────────────
+// El usuario define sus PILARES (cuadrantes del curso): crear / renombrar /
+// eliminar. Cada pilar tiene un `id` ESTABLE (para que renombrar no rompa el
+// vínculo wallet→pilar de las fases siguientes) y un `name` editable, más su %
+// y nº de pools del repartidor de capital. Se guardan en state.prefs.allocator
+// (Firestore). Calculadora proporcional autocontenida: trabaja en la divisa que
+// escriba el usuario (sin re-convertir por FX).
 const DEFAULT_ALLOCATOR = { capital: 0, pillars: [
-  { key: "P1",  pct: 70,  pools: 0 },
-  { key: "P2",  pct: 10,  pools: 0 },
-  { key: "P3",  pct: 7.5, pools: 0 },
-  { key: "P4",  pct: 7.5, pools: 0 },
-  { key: "RWA", pct: 5,   pools: 0 },
+  { id: "P1",  name: "P1",  pct: 70,  pools: 0 },
+  { id: "P2",  name: "P2",  pct: 10,  pools: 0 },
+  { id: "P3",  name: "P3",  pct: 7.5, pools: 0 },
+  { id: "P4",  name: "P4",  pct: 7.5, pools: 0 },
+  { id: "RWA", name: "RWA", pct: 5,   pools: 0 },
 ] };
+const MAX_PILLARS = 12;
+let _pillarIdSeq = 0;
+// id de pilar único y estable (no se usa el nombre como id: renombrar lo rompería).
+function genPillarId() {
+  _pillarIdSeq++;
+  return "pil_" + Math.random().toString(36).slice(2, 8) + _pillarIdSeq.toString(36);
+}
 
 // Formato sin conversión FX (solo símbolo): el capital ya está en la divisa
 // del usuario, así que NO multiplicamos por _fx.rate (eso lo hace fmtUSD).
@@ -208,21 +217,43 @@ function fmtAlloc(n) {
   return (_fx ? _fx.sym : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-// Normaliza el allocator guardado (estructura/longitud fijas, clamps).
+// Normaliza el allocator guardado. Soporta N pilares dinámicos (no fuerza los 5
+// por defecto) y MIGRA el formato antiguo `{key,pct,pools}` → `{id,name,pct,pools}`
+// (id = key viejo, name = key viejo). Preserva el orden, deduplica ids y aplica
+// clamps. Idempotente. Si no hay pilares válidos → los 5 por defecto.
 function sanitizeAllocator(raw) {
-  if (!raw || !Array.isArray(raw.pillars)) return structuredClone(DEFAULT_ALLOCATOR);
-  const pillars = DEFAULT_ALLOCATOR.pillars.map((d) => {
-    const r = raw.pillars.find((x) => x && x.key === d.key) || {};
+  if (!raw || !Array.isArray(raw.pillars) || raw.pillars.length === 0) return structuredClone(DEFAULT_ALLOCATOR);
+  const seen = new Set();
+  const pillars = [];
+  for (const r of raw.pillars) {
+    if (!r || typeof r !== "object") continue;
+    // id estable: el guardado, o migrado desde la `key` antigua, o generado.
+    let id = (typeof r.id === "string" && r.id) ? r.id
+      : (typeof r.key === "string" && r.key) ? r.key
+      : genPillarId();
+    if (seen.has(id)) id = genPillarId(); // dedupe
+    seen.add(id);
+    const rawName = (typeof r.name === "string" && r.name.trim()) ? r.name.trim()
+      : (typeof r.key === "string" && r.key) ? r.key : id;
     const pct = Number(r.pct);
     const pools = Number(r.pools);
-    return {
-      key: d.key,
-      pct: isFinite(pct) && pct >= 0 ? pct : d.pct,
+    pillars.push({
+      id,
+      name: rawName.slice(0, 24),
+      pct: isFinite(pct) && pct >= 0 ? pct : 0,
       pools: isFinite(pools) && pools >= 0 ? Math.floor(pools) : 0,
-    };
-  });
+    });
+    if (pillars.length >= MAX_PILLARS) break;
+  }
+  if (!pillars.length) return structuredClone(DEFAULT_ALLOCATOR);
   const capital = Number(raw.capital);
   return { pillars, capital: isFinite(capital) && capital >= 0 ? capital : 0 };
+}
+// Resuelve un id de pilar a su objeto (o null si ya no existe).
+function pillarById(id) {
+  const a = state.prefs && state.prefs.allocator;
+  if (!a || !id) return null;
+  return a.pillars.find((p) => p.id === id) || null;
 }
 
 let _allocSaveTimer = null;
@@ -251,15 +282,37 @@ function renderAllocator() {
   const cl = $("alloc-cur"); if (cl) cl.textContent = cur;
 
   const tbody = $("alloc-rows");
+  const onlyOne = alloc.pillars.length <= 1;
   tbody.innerHTML = alloc.pillars.map((p, i) => `
     <tr class="border-b border-slate-800/50">
-      <td class="px-2 py-2 font-semibold">${p.key}</td>
+      <td class="px-2 py-1.5">
+        <div class="flex items-center gap-1">
+          <span class="w-2 h-2 rounded-full shrink-0" style="background:${pillarColor(i)}"></span>
+          <input data-alloc-i="${i}" data-alloc-name type="text" maxlength="24" value="${escapeHtml(p.name)}" placeholder="Pilar" class="w-24 bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-sm font-semibold focus:outline-none focus:border-[#ECE600]">
+          <button data-alloc-del="${i}" title="Eliminar pilar" class="text-slate-600 hover:text-rose-400 text-xs leading-none px-0.5 ${onlyOne ? "invisible" : ""}">✕</button>
+        </div>
+      </td>
       <td class="px-1 py-1.5 text-center"><input data-alloc-i="${i}" data-alloc-pct type="number" min="0" step="any" inputmode="decimal" value="${p.pct}" class="w-14 bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-center text-sm focus:outline-none focus:border-[#ECE600]"></td>
       <td class="px-1 py-1.5 text-center"><input data-alloc-i="${i}" data-alloc-pools type="number" min="0" step="1" inputmode="numeric" value="${p.pools}" class="w-14 bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-center text-sm focus:outline-none focus:border-[#ECE600]"></td>
       <td class="px-2 py-2 text-right font-mono" data-alloc-money="${i}">—</td>
       <td class="px-2 py-2 text-right font-mono text-slate-300" data-alloc-perpool="${i}">—</td>
     </tr>`).join("");
 
+  // Renombrar: en vivo, sin rebuild (no perder el foco). Vacío → placeholder, pero
+  // guardamos un nombre no vacío al perder el foco (un pilar sin nombre confunde).
+  tbody.querySelectorAll("input[data-alloc-name]").forEach((inp) => {
+    inp.oninput = () => {
+      alloc.pillars[+inp.dataset.allocI].name = inp.value.slice(0, 24);
+      scheduleAllocSave();
+    };
+    inp.onblur = () => {
+      const p = alloc.pillars[+inp.dataset.allocI];
+      if (!p.name.trim()) { p.name = "Pilar " + (+inp.dataset.allocI + 1); inp.value = p.name; scheduleAllocSave(); }
+    };
+  });
+  tbody.querySelectorAll("button[data-alloc-del]").forEach((btn) => {
+    btn.onclick = () => removePillar(+btn.dataset.allocDel);
+  });
   tbody.querySelectorAll("input[data-alloc-pct]").forEach((inp) => {
     inp.oninput = () => {
       alloc.pillars[+inp.dataset.allocI].pct = Math.max(0, parseFloat(inp.value) || 0);
@@ -272,6 +325,20 @@ function renderAllocator() {
     alloc.pillars[+inp.dataset.allocI].pools = Math.max(0, Math.floor(parseFloat(inp.value) || 0));
     recalcAllocator(); scheduleAllocSave();
   });
+  // "+ Añadir pilar"
+  const add = $("alloc-add");
+  if (add) {
+    const full = alloc.pillars.length >= MAX_PILLARS;
+    add.disabled = full;
+    add.classList.toggle("opacity-40", full);
+    add.classList.toggle("cursor-not-allowed", full);
+    add.title = full ? `Máximo ${MAX_PILLARS} pilares` : "Añadir un pilar nuevo";
+    add.onclick = () => {
+      if (alloc.pillars.length >= MAX_PILLARS) return;
+      alloc.pillars.push({ id: genPillarId(), name: "Pilar " + (alloc.pillars.length + 1), pct: 0, pools: 0 });
+      renderAllocator(); scheduleAllocSave();
+    };
+  }
   const cap = $("alloc-capital");
   if (cap) {
     cap.value = alloc.capital > 0 ? String(alloc.capital) : "";
@@ -325,6 +392,34 @@ function recalcAllocator() {
   if (warn && !ok) warn.textContent = `⚠️ Los porcentajes suman ${round2(sumPct)}% (deben sumar 100%). Selecciona un pilar y pulsa "Ajustar a 100%", o edítalos.`;
 }
 function distinctColor(i) { const h = Math.round((i * 137.508) % 360); return `hsl(${h} 70% 60%)`; }
+// Color ESTABLE por pilar (por índice). Paleta fija para los primeros (legible y
+// consistente entre la tabla de Pilares, el selector del portfolio y los grupos
+// de resultados); fallback rotativo para pilares extra.
+const _PILLAR_PALETTE = ["#ECE600", "#38bdf8", "#a78bfa", "#34d399", "#fb923c", "#f472b6", "#22d3ee", "#facc15"];
+function pillarColor(i) { return _PILLAR_PALETTE[i] || distinctColor(i + 11); }
+
+// Elimina un pilar por índice. Las wallets asignadas a ese pilar pasan a "Sin
+// pilar" (forward-compat con la asignación de la Fase 2; hoy aún no hay ninguna).
+// No permite borrar el último. Persiste prefs (y portfolio si reasignó wallets).
+async function removePillar(i) {
+  const a = state.prefs.allocator; if (!a || a.pillars.length <= 1) return;
+  const p = a.pillars[i]; if (!p) return;
+  const affected = (state.portfolio || []).filter((w) => w.pillar === p.id);
+  if (affected.length) {
+    const ok = await uiConfirm(
+      `El pilar "${escapeHtml(p.name)}" tiene ${affected.length} ${affected.length === 1 ? "billetera asignada" : "billeteras asignadas"}. Al eliminarlo pasarán a "Sin pilar".`,
+      { title: "Eliminar pilar", okLabel: "Eliminar", okStyle: "danger" });
+    if (!ok) return;
+  }
+  a.pillars.splice(i, 1);
+  let portfolioChanged = false;
+  for (const w of (state.portfolio || [])) {
+    if (w.pillar === p.id) { w.pillar = null; portfolioChanged = true; }
+  }
+  renderAllocator();
+  scheduleAllocSave();
+  if (portfolioChanged) { try { await savePortfolio(); } catch (e) {} renderPortfolioList(); }
+}
 
 // ─── APR por mes natural ───────────────────────────────────────────────────
 // DUPLICADO de common.js: el shell NO carga common.js (solo los iframes), pero
