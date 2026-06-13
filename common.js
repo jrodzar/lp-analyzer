@@ -220,6 +220,44 @@ function rangeBarHTML(tickLower, tickUpper, tickCur, dec0, dec1, inRange, closed
     </div>`;
 }
 
+// Símbolo del PAR de un pool para TradingView (SOL/USDC → SOLUSDC, UNI/WETH →
+// UNIETH). Ordena base/quote por "rango de quote" (stable > BTC > ETH > L1 >
+// resto) porque token0/token1 vienen ordenados por dirección, no por relevancia.
+// Devuelve null si algún símbolo no es resoluble (dirección abreviada con "…").
+const _PAIR_STABLE_RX = /^(USDC|USDT|DAI|USD|USDE|USDS|FDUSD|PYUSD|TUSD|FRAX|GHO|LUSD|SUSD|USDD|USDBC|USR|DOLA|CRVUSD|GUSD)$/;
+const _PAIR_UNWRAP = { WETH: "ETH", WBTC: "BTC", WSOL: "SOL", WBNB: "BNB", WMATIC: "MATIC", WPOL: "POL", WHYPE: "HYPE", WAVAX: "AVAX", CBBTC: "BTC", TBTC: "BTC" };
+function poolPairTvSymbol(sym0, sym1) {
+  // xStock en el par → graficar la acción subyacente directamente (TSLAx → TSLA),
+  // que es lo que TradingView resuelve (NASDAQ:TSLA) en vez de un par inexistente.
+  const isX = (s) => { const m = String(s || "").match(/^([A-Za-z0-9]{1,8})x$/); return m && /^[A-Z]/.test(m[1]) ? m[1].toUpperCase() : null; };
+  const x0 = isX(sym0), x1 = isX(sym1);
+  if (x0) return x0;
+  if (x1) return x1;
+  const norm = (s) => {
+    let u = String(s || "").toUpperCase().trim();
+    if (!u || u.includes("…") || u.includes("...")) return null; // dirección abreviada → no resoluble
+    u = u.replace(/\.E$/, "");                                    // USDC.E → USDC
+    if (/^USD[TC]0$/.test(u)) u = u.slice(0, 4);                  // USDT0/USDC0 (HyperEVM) → USDT/USDC
+    u = _PAIR_UNWRAP[u] || u;                                     // WETH→ETH, WBTC→BTC, … (lista cerrada: WIF/WEN no se tocan)
+    return u;
+  };
+  const a = norm(sym0), b = norm(sym1);
+  if (!a || !b) return null;
+  const rank = (s) => _PAIR_STABLE_RX.test(s) ? 4 : s === "BTC" ? 3 : s === "ETH" ? 2 : (s === "SOL" || s === "BNB") ? 1 : 0;
+  const [base, quote] = rank(a) <= rank(b) ? [a, b] : [b, a];
+  return base + quote;
+}
+// Icono → gráfico del par en TradingView (mismo icono que los tokens idle del
+// portfolio). Read-only (solo abre un enlace externo) → vive en [main].
+function poolPairChartHTML(p) {
+  if (!p || !p.token0 || !p.token1) return "";
+  const sym = poolPairTvSymbol(p.token0.symbol, p.token1.symbol);
+  if (!sym) return "";
+  const href = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(sym)}`;
+  const label = `${sym} en TradingView`;
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer" title="Ver ${label}" aria-label="Ver ${label}" class="shrink-0 text-slate-500 hover:text-cyan-300 transition"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg></a>`;
+}
+
 // Tooltips por toque: en móvil no hay hover, así que al pulsar un elemento con
 // clase "cursor-help" y atributo title se muestra el texto en un pequeño popover.
 // (En escritorio se mantiene el hover nativo del title.)

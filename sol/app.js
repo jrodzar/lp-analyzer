@@ -1562,7 +1562,7 @@ function reconstructedCard(p) {
           <span class="w-2 h-2 rounded-full" style="background:${proto.color}"></span>
           <span class="text-[11px] uppercase tracking-wide text-slate-400">${proto.name}</span>
         </div>
-        <div class="font-semibold mt-0.5 truncate">${p.token0.symbol} / ${p.token1.symbol}</div>
+        <div class="font-semibold mt-0.5 flex items-center gap-1.5 min-w-0"><span class="truncate">${p.token0.symbol} / ${p.token1.symbol}</span>${poolPairChartHTML(p)}</div>
       </div>
       <div class="flex flex-col items-end gap-1 shrink-0">
         <span class="chip bg-slate-700 text-slate-300">cerrada</span>
@@ -1599,7 +1599,7 @@ function positionCard(p) {
           <span class="w-2 h-2 rounded-full" style="background:${p.color ? p.color.line : proto.color}"></span>
           <span class="text-[11px] uppercase tracking-wide text-slate-400">${proto.name}</span>
         </div>
-        <div class="font-semibold mt-0.5 truncate">${p.token0.symbol} / ${p.token1.symbol}</div>
+        <div class="font-semibold mt-0.5 flex items-center gap-1.5 min-w-0"><span class="truncate">${p.token0.symbol} / ${p.token1.symbol}</span>${poolPairChartHTML(p)}</div>
         ${(() => {
           const parts = [];
           if (p.feeTier != null) parts.push(`fee ${p.feeTier.toFixed(2)}%`);

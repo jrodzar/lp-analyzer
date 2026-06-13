@@ -2307,7 +2307,7 @@ function reconstructedCardEvm(p) {
           <span class="text-[11px] uppercase tracking-wide text-slate-400">${chain.name}</span>
           ${p.nftId ? `<span class="text-[11px] text-slate-500">· #${p.nftId}</span>` : ""}
         </div>
-        <div class="font-semibold mt-0.5 truncate">${p.token0.symbol} / ${p.token1.symbol}</div>
+        <div class="font-semibold mt-0.5 flex items-center gap-1.5 min-w-0"><span class="truncate">${p.token0.symbol} / ${p.token1.symbol}</span>${poolPairChartHTML(p)}</div>
       </div>
       <div class="flex flex-col items-end gap-1 shrink-0">
         <span class="chip bg-slate-700 text-slate-300">cerrada</span>
@@ -2358,7 +2358,7 @@ function positionCard(p) {
           <span class="text-[11px] uppercase tracking-wide text-slate-400">${chain.name}</span>
           <span class="text-[11px] text-slate-500">· #${p.nftId}</span>
         </div>
-        <div class="font-semibold mt-0.5 truncate">${p.token0.symbol} / ${p.token1.symbol}</div>
+        <div class="font-semibold mt-0.5 flex items-center gap-1.5 min-w-0"><span class="truncate">${p.token0.symbol} / ${p.token1.symbol}</span>${poolPairChartHTML(p)}</div>
         <div class="text-[11px] text-slate-400">fee ${feeTierLabel(p.feeTier)} · abierta ${date} (${Math.round(p.ageDays)}d)</div>
       </div>
       ${rangeChip}
