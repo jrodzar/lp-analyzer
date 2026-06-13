@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "234";</script>
+  <script>window.APP_VERSION = "235";</script>
   <!-- Modo incógnito: difumina SOLO los importes (.lp-blur) cuando el body tiene
        .lp-private. user-select:none evita copiar el valor real. Los gráficos NO
        se difuminan (sus etiquetas $ se enmascaran como texto "$•••"). -->
@@ -85,11 +85,11 @@
 
       <!-- Tabs -->
       <div class="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-900 shrink-0">
-        <button id="tab-btn-quick" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">⚡ Quick</button>
-        <button id="tab-btn-portfolio" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📁 Portfolio</button>
-        <button id="tab-btn-graficos" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📊 Gráficos</button>
-        <button id="tab-btn-projection" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">📈 Histórico</button>
-        <button id="tab-btn-allocator" class="seg px-3 py-1.5 text-xs rounded-md font-semibold">🧮 Pilares</button>
+        <button id="tab-btn-quick" title="Quick" class="seg px-2.5 sm:px-3 py-1.5 text-xs rounded-md font-semibold">⚡<span class="hidden sm:inline"> Quick</span></button>
+        <button id="tab-btn-portfolio" title="Portfolio" class="seg px-2.5 sm:px-3 py-1.5 text-xs rounded-md font-semibold">📁<span class="hidden sm:inline"> Portfolio</span></button>
+        <button id="tab-btn-graficos" title="Gráficos" class="seg px-2.5 sm:px-3 py-1.5 text-xs rounded-md font-semibold">📊<span class="hidden sm:inline"> Gráficos</span></button>
+        <button id="tab-btn-projection" title="Histórico" class="seg px-2.5 sm:px-3 py-1.5 text-xs rounded-md font-semibold">📈<span class="hidden sm:inline"> Histórico</span></button>
+        <button id="tab-btn-allocator" title="Pilares" class="seg px-2.5 sm:px-3 py-1.5 text-xs rounded-md font-semibold">🧮<span class="hidden sm:inline"> Pilares</span></button>
       </div>
 
       <div class="flex-1"></div>

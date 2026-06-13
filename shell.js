@@ -819,8 +819,8 @@ function dateTick(fmtOpts) {
 
 function setTab(tab) {
   state.tab = tab;
-  const active = "seg px-3 py-1.5 text-xs rounded-md font-semibold bg-[#ECE600] text-slate-900 shadow";
-  const idle = "seg px-3 py-1.5 text-xs rounded-md font-semibold text-slate-400 hover:text-slate-200";
+  const active = "seg px-2.5 sm:px-3 py-1.5 text-xs rounded-md font-semibold bg-[#ECE600] text-slate-900 shadow";
+  const idle = "seg px-2.5 sm:px-3 py-1.5 text-xs rounded-md font-semibold text-slate-400 hover:text-slate-200";
   els.tabBtnPortfolio.className = tab === "portfolio" ? active : idle;
   els.tabBtnQuick.className = tab === "quick" ? active : idle;
   els.tabBtnProjection.className = tab === "projection" ? active : idle;
