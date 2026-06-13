@@ -151,10 +151,11 @@ function detectType(addr) {
 // idéntica al modo normal; se mantienen visibles %/APR/IL%, símbolos, nombres de
 // pilar, par de pools, rangos, fechas y direcciones/etiquetas. Persiste POR
 // DISPOSITIVO en localStorage (no se sincroniza). Mecánica: `body.lp-private` +
-// CSS difumina (a) los valores envueltos en `.lp-blur` por fmtUSD/fmtAlloc y
-// maskMoneyHTML (cardHTML del motor), y (b) los gráficos (canvas). Los gráficos
-// usan fmtUSD0/fmtUSDc CRUDOS (el canvas no admite HTML; se difumina entero). El
-// CSV usa valores crudos (no estos formateadores) → no se afecta.
+// CSS difumina los valores envueltos en `.lp-blur` (por fmtUSD/fmtAlloc y por
+// maskMoneyHTML sobre el cardHTML del motor). Los GRÁFICOS NO se difuminan (el
+// blur del canvas los hacía ilegibles): sus etiquetas $ se enmascaran como texto
+// "$•••" vía fmtUSD0/fmtUSDc y los datalabels se ocultan. El CSV usa valores
+// crudos (no estos formateadores) → no se afecta.
 function lpPriv() { try { return localStorage.getItem("lp-private") === "1"; } catch (e) { return false; } }
 function walletDisp(entry) { return entry.label || shortAddr(entry.address); }
 // Envuelve un valor en un span que se DIFUMINA por CSS (.lp-private .lp-blur).
@@ -220,10 +221,9 @@ function fmtTiny(n, sig = 3) {
   if (s.includes(".")) s = s.replace(/0+$/, "").replace(/\.$/, "");
   return s;
 }
-// Formato normal con separador de miles: $8,300.00 (CRUDO, sin máscara — para
-// gráficos/canvas y como base de fmtUSD).
-function fmtUSD0(n) {
-  if (n == null || !isFinite(n)) return "—";
+const PRIV_MASK = "•••";
+// Cálculo crudo del importe (interno). $8,300.00 con separador de miles.
+function _usdRaw(n) {
   n = n * _fx.rate; const S = _fx.sym;
   const abs = Math.abs(n), s = n < 0 ? "-" : "";
   if (abs === 0) return S + "0";
@@ -231,17 +231,24 @@ function fmtUSD0(n) {
   if (abs >= 0.01) return `${s}${S}${abs.toFixed(4)}`;
   return `${s}${S}${fmtTiny(abs, 3)}`;
 }
-// Para HTML: en incógnito devuelve el importe DIFUMINADO (span .lp-blur). Los
-// gráficos NO usan esta (usan fmtUSD0/fmtUSDc) porque el canvas no admite HTML.
+// HTML: en incógnito devuelve el importe DIFUMINADO (span .lp-blur) con el valor
+// real detrás. Para tarjetas, resúmenes, cabeceras, pilares, idle…
 function fmtUSD(n) {
   if (n == null || !isFinite(n)) return "—";
-  const out = fmtUSD0(n);
+  const out = _usdRaw(n);
   return lpPriv() ? blurSpan(out) : out;
 }
-// Formato compacto: $8.30k / $1.20M (CRUDO — solo ejes/etiquetas de gráficos, que
-// se difuminan vía canvas en incógnito).
+// Para GRÁFICOS (canvas, NO se difuminan): en incógnito devuelve "$•••" como
+// texto (el canvas no admite HTML/blur), manteniendo el gráfico nítido.
+function fmtUSD0(n) {
+  if (n == null || !isFinite(n)) return "—";
+  return lpPriv() ? _fx.sym + PRIV_MASK : _usdRaw(n);
+}
+// Formato compacto: $8.30k / $1.20M (ejes/etiquetas de gráficos). En incógnito
+// "$•••" como texto.
 function fmtUSDc(n) {
   if (n == null || !isFinite(n)) return "—";
+  if (lpPriv()) return _fx.sym + PRIV_MASK;
   n = n * _fx.rate; const S = _fx.sym;
   const abs = Math.abs(n), s = n < 0 ? "-" : "";
   if (abs >= 1e9) return `${s}${S}${(abs / 1e9).toFixed(2)}B`;
@@ -2911,6 +2918,7 @@ function drawDoughnut(key, canvas, data, colorList) {
           color: "#fff",
           font: { size: 10, weight: "bold" },
           formatter: (value) => {
+            if (lpPriv()) return "";                 // incógnito: sin etiquetas $ en el donut (la forma/proporción ya se ve)
             const pct = total > 0 ? (value / total * 100) : 0;
             return pct < 4 ? "" : fmtUSDc(value);   // ocultar etiqueta si el segmento es muy pequeño
           },
