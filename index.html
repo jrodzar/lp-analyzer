@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "224";</script>
+  <script>window.APP_VERSION = "225";</script>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB
@@ -379,6 +379,10 @@
             <h3 class="text-sm font-semibold mb-3">Fees por dirección</h3>
             <div class="relative h-64"><canvas id="chart-by-fees"></canvas></div>
           </div>
+          <div id="pf-chart-pillar-card" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h3 class="text-sm font-semibold mb-3">Valor por pilar</h3>
+            <div class="relative h-64"><canvas id="chart-by-pillar"></canvas></div>
+          </div>
         </section>
 
         <!-- Línea temporal de fees por pool -->
@@ -617,6 +621,9 @@
           <button id="alloc-reset" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700">Restablecer por defecto</button>
           <span id="alloc-saved" class="text-[11px] text-slate-500"></span>
         </div>
+
+        <!-- Real vs objetivo (lo rellena renderPillarTargets con la distribución real) -->
+        <div id="alloc-targets" class="hidden"></div>
       </div>
     </section>
 

@@ -43,7 +43,7 @@ const els = {
   gIl: $("g-il"), gIlSub: $("g-il-sub"), gPnl: $("g-pnl"), gPnlSub: $("g-pnl-sub"),
   gPositions: $("g-positions"), gPositionsSub: $("g-positions-sub"), gAddresses: $("g-addresses"),
   pfSections: $("pf-sections"),
-  pfCharts: $("pf-charts"), chartByAddress: $("chart-by-address"), chartByVenue: $("chart-by-venue"), chartByFees: $("chart-by-fees"),
+  pfCharts: $("pf-charts"), chartByAddress: $("chart-by-address"), chartByVenue: $("chart-by-venue"), chartByFees: $("chart-by-fees"), chartByPillar: $("chart-by-pillar"),
   addrViewToggle: $("addr-view-toggle"), addrChartWrap: $("addr-chart-wrap"), addrTableWrap: $("addr-table-wrap"),
   quickBanner: $("quick-banner"), pfBanner: $("pf-banner"),
   pfFeesTimeline: $("pf-fees-timeline"), chartFeesTimeline: $("chart-fees-timeline"),
@@ -117,7 +117,7 @@ const state = {
 const fb = { app: null, auth: null, db: null, authMod: null, fsMod: null };
 const crypto_ = { key: null, salt: null }; // clave AES-GCM de sesión + salt del usuario
 const pendingReqs = new Map(); // reqId -> resolve
-let pfCharts = { addr: null, venue: null, fees: null, timeline: null, timelineTotal: null, projection: null };
+let pfCharts = { addr: null, venue: null, fees: null, pillar: null, timeline: null, timelineTotal: null, projection: null };
 
 // ─── Extension hooks ──────────────────────────────────────────────────────
 // Módulos opcionales en `active/` (solo cargados en [pro]) pueden registrar
@@ -394,6 +394,48 @@ function recalcAllocator() {
   const warnbox = $("alloc-warnbox"), warn = $("alloc-warn");
   if (warnbox) warnbox.classList.toggle("hidden", ok);
   if (warn && !ok) warn.textContent = `⚠️ Los porcentajes suman ${round2(sumPct)}% (deben sumar 100%). Selecciona un pilar y pulsa "Ajustar a 100%", o edítalos.`;
+  renderPillarTargets(); // refresca "real vs objetivo" al cambiar los %
+}
+
+// Panel "Real vs objetivo" de la pestaña Pilares: por cada pilar una barra con el
+// % REAL (relleno) y una marca en el % OBJETIVO + la desviación. Requiere haber
+// analizado el portfolio y tener wallets asignadas; si no, muestra una pista.
+function renderPillarTargets() {
+  const box = document.getElementById("alloc-targets");
+  if (!box) return;
+  const alloc = state.prefs.allocator;
+  if (!alloc) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  const { byId, total } = pillarValueById();
+  if (!state.results.length || total <= 0) {
+    box.innerHTML = `<div class="rounded-xl border border-slate-800 bg-slate-900 p-4 text-xs text-slate-400">📊 <b class="text-slate-200">Real vs objetivo.</b> Asigna tus billeteras a pilares (pestaña <b>Portfolio</b>) y pulsa <b>Analizar todo</b> para ver aquí tu distribución real frente a estos objetivos.</div>`;
+    return;
+  }
+  const bar = (name, color, realPct, target) => {
+    const dev = target != null ? realPct - target : null;
+    const devTxt = dev == null ? `<span class="text-slate-500">sin objetivo</span>`
+      : `<span class="${Math.abs(dev) < 2 ? "text-emerald-400" : Math.abs(dev) < 5 ? "text-amber-400" : "text-rose-400"}">${dev >= 0 ? "+" : ""}${dev.toFixed(1)}pp</span>`;
+    const tgtTxt = target == null ? "" : `<span class="text-slate-400">${target % 1 ? target.toFixed(1) : target.toFixed(0)}% obj</span> · `;
+    const marker = target == null ? "" : `<div class="absolute inset-y-0 w-0.5 bg-slate-100" style="left:${Math.min(100, target)}%" title="objetivo ${target}%"></div>`;
+    return `<div>
+      <div class="flex items-center justify-between text-xs mb-1">
+        <span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full" style="background:${color}"></span><span class="font-semibold text-slate-200">${escapeHtml(name)}</span></span>
+        <span><span class="font-semibold text-slate-100">${realPct.toFixed(1)}% real</span> · ${tgtTxt}${devTxt}</span>
+      </div>
+      <div class="relative h-2.5 rounded bg-slate-800 overflow-hidden">
+        <div class="absolute inset-y-0 left-0 rounded" style="width:${Math.min(100, realPct)}%;background:${color}"></div>
+        ${marker}
+      </div>
+    </div>`;
+  };
+  const rows = alloc.pillars.map((p, i) => bar(p.name, pillarColor(i), (byId.get(p.id) || 0) / total * 100, p.pct));
+  const sinV = byId.get(null) || 0;
+  if (sinV > 0) rows.push(bar("Sin pilar", "#64748b", sinV / total * 100, null));
+  box.innerHTML = `<div class="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3">
+    <div class="flex items-center justify-between"><h3 class="text-sm font-semibold">📊 Real vs objetivo</h3><span class="text-[11px] text-slate-500">valor DeFi · ${fmtUSD(total)}</span></div>
+    <div class="space-y-2.5">${rows.join("")}</div>
+    <p class="text-[10px] text-slate-500">La barra es tu <b>% real</b> (valor DeFi del pilar sobre el total); la marca clara es tu <b>objetivo</b>. Desviación en puntos porcentuales.</p>
+  </div>`;
 }
 function distinctColor(i) { const h = Math.round((i * 137.508) % 360); return `hsl(${h} 70% 60%)`; }
 // Color ESTABLE por pilar (por índice). Paleta fija para los primeros (legible y
@@ -2173,6 +2215,19 @@ function pillarIdOfResult(r) {
   return pillarById(pid) ? pid : null;
 }
 
+// Distribución REAL de valor DeFi por pilar (Map<id|null, USD>) + total, según la
+// asignación actual. Base de "real vs objetivo" (% real = valor pilar / total).
+function pillarValueById() {
+  const byId = new Map();
+  for (const r of state.results) {
+    const pid = pillarIdOfResult(r);
+    const v = (r.items || []).reduce((s, it) => s + (it.valueUSD || 0), 0);
+    byId.set(pid, (byId.get(pid) || 0) + v);
+  }
+  let total = 0; for (const v of byId.values()) total += v;
+  return { byId, total };
+}
+
 // Construye la sección <details> de UNA wallet (marco único: cabecera + idle +
 // cards abiertas + cerradas). Es la misma .pf-section de siempre → los
 // inyectores de pro (active/*) la siguen encontrando, agrupada o no.
@@ -2306,33 +2361,38 @@ function renderPillarSummary(colorOf) {
   for (let i = 0; i < pillars.length; i++) {
     const pid = pillars[i].id;
     const group = state.results.filter((r) => pillarIdOfResult(r) === pid);
-    if (group.length) rowsData.push({ name: pillars[i].name, color: pillarColor(i), group });
+    if (group.length) rowsData.push({ name: pillars[i].name, color: pillarColor(i), group, target: pillars[i].pct });
   }
   const noPillar = state.results.filter((r) => pillarIdOfResult(r) === null);
-  if (noPillar.length) rowsData.push({ name: "Sin pilar", color: "#64748b", group: noPillar });
+  if (noPillar.length) rowsData.push({ name: "Sin pilar", color: "#64748b", group: noPillar, target: null });
 
   const totalValue = state.results.flatMap((r) => r.items || []).reduce((s, it) => s + (it.valueUSD || 0), 0);
-  const cell = (a) => {
-    const il = a.ilN ? `<span class="${pnlColor(a.ilSum)}">${fmtUSD(a.ilSum)}</span>` : `<span class="text-slate-600">—</span>`;
-    const pnl = a.pnlN ? `<span class="${pnlColor(a.pnlSum)}">${fmtUSD(a.pnlSum)}</span>` : `<span class="text-slate-600">—</span>`;
-    const pct = totalValue > 0 ? ((a.totalValue / totalValue) * 100).toFixed(1) + "%" : "—";
-    return { il, pnl, pct };
-  };
+  const ilCell = (a) => a.ilN ? `<span class="${pnlColor(a.ilSum)}">${fmtUSD(a.ilSum)}</span>` : `<span class="text-slate-600">—</span>`;
+  const pnlCell = (a) => a.pnlN ? `<span class="${pnlColor(a.pnlSum)}">${fmtUSD(a.pnlSum)}</span>` : `<span class="text-slate-600">—</span>`;
+  const fmtPct = (t) => (t % 1 ? t.toFixed(1) : t.toFixed(0));
+  // Desviación real−objetivo en puntos porcentuales (verde si ≈ on-target, ámbar
+  // si se aleja, rojo si mucho). Sin objetivo ("Sin pilar") → —.
+  const devCell = (dev) => dev == null ? `<span class="text-slate-600">—</span>`
+    : `<span class="${Math.abs(dev) < 2 ? "text-emerald-400" : Math.abs(dev) < 5 ? "text-amber-400" : "text-rose-400"}">${dev >= 0 ? "+" : ""}${dev.toFixed(1)}pp</span>`;
+  const objCell = (t) => t == null ? `<span class="text-slate-600">—</span>` : `<span class="text-slate-400">${fmtPct(t)}%</span>`;
+
   const rows = rowsData.map((rd) => {
     const a = summarizeItems(rd.group.flatMap((r) => r.items || []));
-    const c = cell(a);
+    const realPct = totalValue > 0 ? (a.totalValue / totalValue) * 100 : 0;
+    const dev = rd.target != null ? realPct - rd.target : null;
     return `<tr class="border-b border-slate-800/50">
       <td class="px-2 py-1.5"><span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full" style="background:${rd.color}"></span><span class="font-semibold text-slate-200">${escapeHtml(rd.name)}</span></span></td>
       <td class="px-2 py-1.5 text-right font-mono text-slate-100">${fmtUSD(a.totalValue)}</td>
       <td class="px-2 py-1.5 text-right font-mono text-emerald-400">${fmtUSD(a.totalFees)}</td>
-      <td class="px-2 py-1.5 text-right font-mono">${c.il}</td>
-      <td class="px-2 py-1.5 text-right font-mono">${c.pnl}</td>
+      <td class="px-2 py-1.5 text-right font-mono">${ilCell(a)}</td>
+      <td class="px-2 py-1.5 text-right font-mono">${pnlCell(a)}</td>
       <td class="px-2 py-1.5 text-right text-slate-300">${a.count}</td>
-      <td class="px-2 py-1.5 text-right font-mono text-slate-400">${c.pct}</td>
+      <td class="px-2 py-1.5 text-right font-mono text-slate-100">${totalValue > 0 ? realPct.toFixed(1) + "%" : "—"}</td>
+      <td class="px-2 py-1.5 text-right font-mono">${objCell(rd.target)}</td>
+      <td class="px-2 py-1.5 text-right font-mono">${devCell(dev)}</td>
     </tr>`;
   }).join("");
   const tot = summarizeItems(state.results.flatMap((r) => r.items || []));
-  const tc = cell(tot);
 
   box.innerHTML = `
     <div class="rounded-xl border border-slate-800 bg-slate-900 overflow-x-auto">
@@ -2345,7 +2405,9 @@ function renderPillarSummary(colorOf) {
             <th class="text-right px-2 py-2">IL</th>
             <th class="text-right px-2 py-2">PnL</th>
             <th class="text-right px-2 py-2">Pos</th>
-            <th class="text-right px-2 py-2">% valor</th>
+            <th class="text-right px-2 py-2" title="% del valor DeFi total del portfolio">% real</th>
+            <th class="text-right px-2 py-2" title="Objetivo definido en el repartidor">Obj</th>
+            <th class="text-right px-2 py-2" title="Desviación real − objetivo, en puntos porcentuales">Desv</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -2354,10 +2416,12 @@ function renderPillarSummary(colorOf) {
             <td class="px-2 py-2">Total</td>
             <td class="px-2 py-2 text-right font-mono text-slate-100">${fmtUSD(tot.totalValue)}</td>
             <td class="px-2 py-2 text-right font-mono text-emerald-400">${fmtUSD(tot.totalFees)}</td>
-            <td class="px-2 py-2 text-right font-mono">${tc.il}</td>
-            <td class="px-2 py-2 text-right font-mono">${tc.pnl}</td>
+            <td class="px-2 py-2 text-right font-mono">${ilCell(tot)}</td>
+            <td class="px-2 py-2 text-right font-mono">${pnlCell(tot)}</td>
             <td class="px-2 py-2 text-right text-slate-300">${tot.count}</td>
             <td class="px-2 py-2 text-right font-mono text-slate-400">100%</td>
+            <td class="px-2 py-2 text-right font-mono text-slate-600">—</td>
+            <td class="px-2 py-2 text-right font-mono text-slate-600">—</td>
           </tr>
         </tfoot>
       </table>
@@ -2567,11 +2631,22 @@ function renderPortfolioCharts() {
     .map((r) => ({ label: r.entry.label || shortAddr(r.entry.address), value: open(r).reduce((s, it) => s + (it.feesUSD || 0) + (it.feesPendingUSD || 0), 0) }))
     .filter((x) => x.value > 0);
 
+  // valor por PILAR (solo si hay asignaciones; usa los colores de cada pilar)
+  const pillars = (state.prefs.allocator && state.prefs.allocator.pillars) || [];
+  const pvm = pillarValueById();
+  const byPillar = [];
+  pillars.forEach((p, i) => { const v = pvm.byId.get(p.id) || 0; if (v > 0) byPillar.push({ label: p.name, value: v, color: pillarColor(i) }); });
+  const sinV = pvm.byId.get(null) || 0;
+  if (sinV > 0) byPillar.push({ label: "Sin pilar", value: sinV, color: "#64748b" });
+  const pillarCard = document.getElementById("pf-chart-pillar-card");
+  if (pillarCard) pillarCard.classList.toggle("hidden", byPillar.length === 0);
+
   els.pfCharts.classList.toggle("hidden", byAddr.length === 0);
   state._lastByAddr = byAddr;       // cache para alternar gráfico/tabla sin re-analizar
   applyAddrView();                  // pinta doughnut o tabla según preferencia
   drawDoughnut("venue", els.chartByVenue, byVenue);
   drawDoughnut("fees", els.chartByFees, byFees);
+  drawDoughnut("pillar", els.chartByPillar, byPillar, byPillar.map((d) => d.color));
   renderFeesTimelineChart();
   renderFeesTimelineTotalChart();
 }
@@ -2731,12 +2806,12 @@ function applyAddrView() {
   else drawDoughnut("addr", els.chartByAddress, data); // redibuja al volver a gráfico
 }
 
-function drawDoughnut(key, canvas, data) {
+function drawDoughnut(key, canvas, data, colorList) {
   if (!canvas || typeof Chart === "undefined") return;
   if (pfCharts[key]) { pfCharts[key].destroy(); pfCharts[key] = null; }
   if (!data.length) return;
   const total = data.reduce((s, d) => s + d.value, 0);
-  const colors = data.map((_, i) => distinctColor(i));
+  const colors = colorList || data.map((_, i) => distinctColor(i));
   const extraPlugins = typeof ChartDataLabels !== "undefined" ? [ChartDataLabels] : [];
   pfCharts[key] = new Chart(canvas, {
     type: "doughnut",
