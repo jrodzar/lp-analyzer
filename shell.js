@@ -151,8 +151,9 @@ function detectType(addr) {
 // idéntica al modo normal; se mantienen visibles %/APR/IL%, símbolos, nombres de
 // pilar, par de pools, rangos, fechas y direcciones/etiquetas. Persiste POR
 // DISPOSITIVO en localStorage (no se sincroniza). Mecánica: `body.lp-private` +
-// CSS difumina los valores envueltos en `.lp-blur` (por fmtUSD/fmtAlloc y por
-// maskMoneyHTML sobre el cardHTML del motor). Los GRÁFICOS NO se difuminan (el
+// CSS difumina los valores envueltos en `.lp-blur` (por fmtUSD y por
+// maskMoneyHTML sobre el cardHTML del motor). NO se difumina la calculadora del
+// repartidor (fmtAlloc — no son holdings reales). Los GRÁFICOS NO se difuminan (el
 // blur del canvas los hacía ilegibles): sus etiquetas $ se enmascaran como texto
 // "$•••" vía fmtUSD0/fmtUSDc y los datalabels se ocultan. El CSV usa valores
 // crudos (no estos formateadores) → no se afecta.
@@ -289,10 +290,12 @@ function genPillarId() {
 
 // Formato sin conversión FX (solo símbolo): el capital ya está en la divisa
 // del usuario, así que NO multiplicamos por _fx.rate (eso lo hace fmtUSD).
+// Calculadora del repartidor (pestaña Pilares): DINERO PILAR / POR POOL / Total
+// se derivan del CAPITAL que teclea el usuario — NO son holdings reales, así que
+// NUNCA se difuminan en incógnito.
 function fmtAlloc(n) {
   if (n == null || !isFinite(n)) return "—";
-  const out = (_fx ? _fx.sym : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return lpPriv() ? blurSpan(out) : out;
+  return (_fx ? _fx.sym : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // Normaliza el allocator guardado. Soporta N pilares dinámicos (no fuerza los 5
