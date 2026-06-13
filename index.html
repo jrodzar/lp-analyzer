@@ -24,7 +24,13 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "230";</script>
+  <script>window.APP_VERSION = "231";</script>
+  <!-- Modo incógnito: difumina importes (.lp-blur) y gráficos (canvas) cuando el
+       body tiene .lp-private. user-select:none evita copiar el valor real. -->
+  <style>
+    .lp-private .lp-blur{filter:blur(0.4em);-webkit-filter:blur(0.4em);user-select:none;-webkit-user-select:none}
+    .lp-private canvas{filter:blur(8px);-webkit-filter:blur(8px)}
+  </style>
   <!-- Tailwind: CDN en dev (localhost / file://) para JIT al editar clases.
        En prod cargamos el CSS pre-compilado por CI (build-tailwind.yml en main,
        npm run build:css en CF Workers Builds en pro). Reduce ~285 KB → ~25 KB

@@ -146,23 +146,35 @@ function detectType(addr) {
   return null;
 }
 // ── Modo incógnito ─────────────────────────────────────────────────────────
-// Oculta SOLO los IMPORTES en $ (valores monetarios) para compartir pantalla/
-// capturas sin revelar el patrimonio. La DISPOSICIÓN es idéntica al modo normal;
-// se mantienen visibles cantidades de token, %/APR/IL%, nombres de pilar, par de
-// pools, rangos y direcciones/etiquetas. Persiste POR DISPOSITIVO en localStorage
-// (no se sincroniza). Mecánica: los $ se enmascaran en los formateadores USD
-// (fmtUSD/fmtUSDc/fmtAlloc → resúmenes, cabeceras, pilares, idle, ejes/tooltips)
-// y, en las fichas ya generadas por el motor (cardHTML), vía maskMoneyHTML. El
+// DIFUMINA los IMPORTES en $ y las CANTIDADES de token (manteniendo símbolos)
+// para compartir pantalla/capturas sin revelar el patrimonio. DISPOSICIÓN
+// idéntica al modo normal; se mantienen visibles %/APR/IL%, símbolos, nombres de
+// pilar, par de pools, rangos, fechas y direcciones/etiquetas. Persiste POR
+// DISPOSITIVO en localStorage (no se sincroniza). Mecánica: `body.lp-private` +
+// CSS difumina (a) los valores envueltos en `.lp-blur` por fmtUSD/fmtAlloc y
+// maskMoneyHTML (cardHTML del motor), y (b) los gráficos (canvas). Los gráficos
+// usan fmtUSD0/fmtUSDc CRUDOS (el canvas no admite HTML; se difumina entero). El
 // CSV usa valores crudos (no estos formateadores) → no se afecta.
-const PRIV_MASK = "•••";
 function lpPriv() { try { return localStorage.getItem("lp-private") === "1"; } catch (e) { return false; } }
 function walletDisp(entry) { return entry.label || shortAddr(entry.address); }
-// Enmascara SOLO los importes en $ de un fragmento HTML (cardHTML del motor),
-// manteniendo la disposición EXACTA. Seguro: en la app el "$" solo lo produce
-// fmtUSD (no aparece en SVG, clases ni atributos), así que el regex no corrompe
-// nada. Las cantidades de token, %, APR, rangos y direcciones se conservan.
+// Envuelve un valor en un span que se DIFUMINA por CSS (.lp-private .lp-blur).
+function blurSpan(s) { return `<span class="lp-blur">${s}</span>`; }
+
+// Enmascara los IMPORTES en $ y las CANTIDADES de token de un fragmento HTML
+// (cardHTML del motor), difuminándolos y manteniendo la disposición EXACTA y los
+// símbolos. SEGURO: se procesa SOLO el texto entre `>` y `<` (nunca atributos ni
+// rutas SVG), así que no corrompe nada. % / APR / rangos / fechas / direcciones
+// se conservan.
+function maskAmountsText(text) {
+  // importes en $ (todo el "$1,821.13")
+  text = text.replace(/-?\$\s?\d[\d.,]*\s?[kMB]?/g, (m) => blurSpan(m));
+  // cantidades de token: número seguido de su símbolo → difumina solo el número.
+  text = text.replace(/(-?\d[\d.,]*)(\s+[A-Za-z][A-Za-z0-9.]{0,9})\b/g, (m, num, sym) => blurSpan(num) + sym);
+  return text;
+}
 function maskMoneyHTML(html) {
-  return lpPriv() ? String(html).replace(/-?\$\s?\d[\d.,]*\s?[kMB]?/g, () => "$" + PRIV_MASK) : html;
+  if (!lpPriv()) return html;
+  return String(html).replace(/>([^<]+)</g, (m, text) => ">" + maskAmountsText(text) + "<");
 }
 
 // Botón "ojo" del header: alterna incógnito y repinta TODO lo visible. Los
@@ -183,9 +195,11 @@ function updatePrivacyBtn() {
   const eye = `<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
   const eyeOff = `<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
   b.innerHTML = on ? eyeOff : eye;
-  b.title = on ? "Modo incógnito ACTIVO — importes ocultos (clic para mostrar)" : "Modo incógnito: ocultar importes para compartir pantalla";
+  b.title = on ? "Modo incógnito ACTIVO — importes difuminados (clic para mostrar)" : "Modo incógnito: difuminar importes para compartir pantalla";
   b.classList.toggle("bg-slate-900/15", on);
   b.classList.toggle("rounded-md", on);
+  // Clase global → difumina los importes (.lp-blur) y los gráficos (canvas) vía CSS.
+  document.body.classList.toggle("lp-private", on);
 }
 
 function shortAddr(a) {
@@ -206,10 +220,10 @@ function fmtTiny(n, sig = 3) {
   if (s.includes(".")) s = s.replace(/0+$/, "").replace(/\.$/, "");
   return s;
 }
-// Formato normal con separador de miles: $8,300.00 (para tarjetas, resúmenes, etc.)
-function fmtUSD(n) {
+// Formato normal con separador de miles: $8,300.00 (CRUDO, sin máscara — para
+// gráficos/canvas y como base de fmtUSD).
+function fmtUSD0(n) {
   if (n == null || !isFinite(n)) return "—";
-  if (lpPriv()) return _fx.sym + PRIV_MASK;
   n = n * _fx.rate; const S = _fx.sym;
   const abs = Math.abs(n), s = n < 0 ? "-" : "";
   if (abs === 0) return S + "0";
@@ -217,10 +231,17 @@ function fmtUSD(n) {
   if (abs >= 0.01) return `${s}${S}${abs.toFixed(4)}`;
   return `${s}${S}${fmtTiny(abs, 3)}`;
 }
-// Formato compacto: $8.30k / $1.20M (solo para ejes y etiquetas de gráficos)
+// Para HTML: en incógnito devuelve el importe DIFUMINADO (span .lp-blur). Los
+// gráficos NO usan esta (usan fmtUSD0/fmtUSDc) porque el canvas no admite HTML.
+function fmtUSD(n) {
+  if (n == null || !isFinite(n)) return "—";
+  const out = fmtUSD0(n);
+  return lpPriv() ? blurSpan(out) : out;
+}
+// Formato compacto: $8.30k / $1.20M (CRUDO — solo ejes/etiquetas de gráficos, que
+// se difuminan vía canvas en incógnito).
 function fmtUSDc(n) {
   if (n == null || !isFinite(n)) return "—";
-  if (lpPriv()) return _fx.sym + PRIV_MASK;
   n = n * _fx.rate; const S = _fx.sym;
   const abs = Math.abs(n), s = n < 0 ? "-" : "";
   if (abs >= 1e9) return `${s}${S}${(abs / 1e9).toFixed(2)}B`;
@@ -263,8 +284,8 @@ function genPillarId() {
 // del usuario, así que NO multiplicamos por _fx.rate (eso lo hace fmtUSD).
 function fmtAlloc(n) {
   if (n == null || !isFinite(n)) return "—";
-  if (lpPriv()) return (_fx ? _fx.sym : "$") + PRIV_MASK;
-  return (_fx ? _fx.sym : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const out = (_fx ? _fx.sym : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return lpPriv() ? blurSpan(out) : out;
 }
 
 // Normaliza el allocator guardado. Soporta N pilares dinámicos (no fuerza los 5
@@ -425,7 +446,7 @@ function recalcAllocator() {
     const perPool = p.pools > 0 ? money / p.pools : null;
     const m = document.querySelector(`[data-alloc-money="${i}"]`);
     const pp = document.querySelector(`[data-alloc-perpool="${i}"]`);
-    if (m) m.textContent = fmtAlloc(money);
+    if (m) m.innerHTML = fmtAlloc(money);
     if (pp) {
       if (perPool == null) pp.textContent = "—";
       else pp.innerHTML = fmtAlloc(perPool) + (p.pools > 1 ? ` <span class="text-slate-500 text-[11px]">×${p.pools}</span>` : "");
@@ -435,7 +456,7 @@ function recalcAllocator() {
   const round2 = (x) => Math.round(x * 100) / 100;
   const sp = $("alloc-sumpct"); if (sp) { sp.textContent = round2(sumPct) + "%"; sp.className = "font-bold " + (ok ? "text-emerald-400" : "text-rose-400"); }
   const spo = $("alloc-sumpools"); if (spo) spo.textContent = String(sumPools);
-  const st = $("alloc-sumtotal"); if (st) st.textContent = fmtAlloc(sumMoney);
+  const st = $("alloc-sumtotal"); if (st) st.innerHTML = fmtAlloc(sumMoney);
   // Bloque de aviso (con el botón "Ajustar a 100%" dentro): solo si los % ≠ 100.
   const warnbox = $("alloc-warnbox"), warn = $("alloc-warn");
   if (warnbox) warnbox.classList.toggle("hidden", ok);
@@ -2047,7 +2068,7 @@ function fillSummary(prefix, items, extra = {}) {
   const pctOf = (x) => (a.totalValue > 0 ? ` (${x >= 0 ? "+" : ""}${((x / a.totalValue) * 100).toFixed(2)}%)` : "");
 
   if ($i("value")) {
-    $i("value").textContent = fmtUSD(a.totalCombined);
+    $i("value").innerHTML = fmtUSD(a.totalCombined);
     if ($i("value-sub")) {
       $i("value-sub").innerHTML = a.idleTotalUSD > 0
         ? `<span class="text-slate-100 font-semibold">${fmtUSD(a.totalValue)}</span> DeFi · <span class="text-slate-100 font-semibold">${fmtUSD(a.idleTotalUSD)}</span> idle`
@@ -2055,16 +2076,16 @@ function fillSummary(prefix, items, extra = {}) {
     }
   }
   if ($i("fees")) {
-    $i("fees").textContent = fmtUSD(a.totalFees);
+    $i("fees").innerHTML = fmtUSD(a.totalFees);
     if ($i("fees-sub")) $i("fees-sub").innerHTML = `<span class="text-amber-300 font-semibold">${fmtUSD(a.totalPending)}</span> pendientes · <span class="text-emerald-400 font-semibold">${fmtUSD(a.totalCollected)}</span> cobradas`;
   }
   if ($i("il")) {
-    $i("il").textContent = a.ilN ? fmtUSD(a.ilSum) + pctOf(a.ilSum) : "—";
+    $i("il").innerHTML = a.ilN ? fmtUSD(a.ilSum) + pctOf(a.ilSum) : "—";
     $i("il").className = "text-xl font-bold mt-1 " + (a.ilN ? pnlColor(a.ilSum) : "");
     if ($i("il-sub")) $i("il-sub").textContent = a.ilN ? `${a.ilN}/${a.lpCount} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
   }
   if ($i("pnl")) {
-    $i("pnl").textContent = a.pnlN ? fmtUSD(a.pnlSum) + pctOf(a.pnlSum) : "—";
+    $i("pnl").innerHTML = a.pnlN ? fmtUSD(a.pnlSum) + pctOf(a.pnlSum) : "—";
     $i("pnl").className = "text-xl font-bold mt-1 " + (a.pnlN ? pnlColor(a.pnlSum) : "");
     if ($i("pnl-sub")) $i("pnl-sub").textContent = a.pnlN ? `${a.pnlN}/${a.count} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
   }
@@ -2579,7 +2600,8 @@ function idleTokensBlock(tokens, opts = {}) {
   body.className = "mt-2 space-y-1 text-xs";
   const rowFor = (t) => {
     const valStr = t.valueUSD != null ? fmtUSD(t.valueUSD) : `<span class="text-slate-600">sin precio</span>`;
-    const bal = t.balance >= 1 ? t.balance.toFixed(4) : fmtTiny(t.balance, 4);
+    const bal0 = t.balance >= 1 ? t.balance.toFixed(4) : fmtTiny(t.balance, 4);
+    const bal = lpPriv() ? blurSpan(bal0) : bal0;
     const chainName = chainDisplayName(t.chain);
     const chainHex = venueColor(chainName) || "#94a3b8";
     const chip = chainName
@@ -2768,7 +2790,7 @@ function renderFeesTimelineChart() {
           mode: "index", intersect: false,
           callbacks: {
             title: (items) => items.length ? new Date(items[0].parsed.x).toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" }) : "",
-            label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}`,
+            label: (c) => `${c.dataset.label}: ${fmtUSD0(c.parsed.y)}`,
           },
         },
       },
@@ -2814,13 +2836,13 @@ function renderFeesTimelineTotalChart() {
       tooltip: {
         callbacks: {
           title: (items) => items.length ? new Date(items[0].parsed.x).toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" }) : "",
-          label: (c) => `Total: ${fmtUSD(c.parsed.y)}`,
+          label: (c) => `Total: ${fmtUSD0(c.parsed.y)}`,
         },
       },
     },
     scales: {
       x: { type: "linear", ticks: { color: "#94a3b8", maxTicksLimit: 8, callback: dateTick({ day: "numeric", month: "short" }) }, grid: { color: "#1e293b" } },
-      y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSD(v) }, grid: { color: "#1e293b" } },
+      y: { ticks: { color: "#94a3b8", callback: (v) => fmtUSD0(v) }, grid: { color: "#1e293b" } },
     },
   };
   pfCharts.timelineTotal = new Chart(els.chartFeesTimelineTotal, {
@@ -2884,7 +2906,7 @@ function drawDoughnut(key, canvas, data, colorList) {
       maintainAspectRatio: false,
       plugins: {
         legend: { position: "bottom", labels: { color: "#cbd5e1", font: { size: 10 }, boxWidth: 12 } },
-        tooltip: { callbacks: { label: (c) => `${c.label}: ${fmtUSD(c.parsed)}` } },
+        tooltip: { callbacks: { label: (c) => `${c.label}: ${fmtUSD0(c.parsed)}` } },
         datalabels: {
           color: "#fff",
           font: { size: 10, weight: "bold" },
@@ -3205,9 +3227,9 @@ function renderHistorico() {
   }
   els.histEmpty.classList.add("hidden");
   els.histContent.classList.remove("hidden");
-  els.histAportado.textContent = fmtUSD(curves.lastAportado);
-  els.histValor.textContent = fmtUSD(curves.lastValor);
-  els.histGanado.textContent = fmtUSD(curves.ganado);
+  els.histAportado.innerHTML = fmtUSD(curves.lastAportado);
+  els.histValor.innerHTML = fmtUSD(curves.lastValor);
+  els.histGanado.innerHTML = fmtUSD(curves.ganado);
   // Sub de "Ganado (fees)": solo fees pendientes (las cobradas ya están en el
   // valor principal — mostrarlas sería redundante). Pendientes = fees aún
   // on-chain no reclamadas, mismo cómputo que el resumen global de Portfolio.
@@ -3287,7 +3309,7 @@ function renderHistorico() {
         tooltip: {
           callbacks: {
             title: (items) => items.length ? new Date(items[0].parsed.x).toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" }) : "",
-            label: (c) => `${c.dataset.label}: ${fmtUSD(c.parsed.y)}`,
+            label: (c) => `${c.dataset.label}: ${fmtUSD0(c.parsed.y)}`,
           },
         },
       },
