@@ -1630,7 +1630,7 @@ function positionCard(p) {
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees</div>
-        ${p.pnlBasis === "birdeye" ? `<div class="font-semibold text-emerald-400 leading-tight">${fmtUSD(p.feesCollectedUSD || 0)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>` : ""}
+        ${p.pnlBasis === "birdeye" ? `<div class="font-semibold text-emerald-400 leading-tight" title="Valor ACTUAL de las fees cobradas (retenidas a precio de hoy + vendidas a USDC al precio del swap)${p._feesAtCollectUSD != null ? ` · al cobrar: ${fmtUSD(p._feesAtCollectUSD)}` : ""}">${fmtUSD(p.feesCollectedUSD || 0)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>` : ""}
         <div class="font-semibold text-amber-300 leading-tight">${fmtUSD(p.feesPendingUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>
         <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${(p.apr != null && isFinite(p.apr)) ? p.apr.toFixed(1) + "%" : "—"}</div>
         <div class="text-[10px] text-slate-400">${fmtToken(p.feesA, p.token0.symbol)}</div>
@@ -2383,6 +2383,7 @@ async function enrichSolanaPnL(owner) {
     evs.sort((a, b) => a.ts - b.ts);
     let costBasisUSD = 0, withdrawnUSD = 0, feesCollectedUSD = 0;
     let cumDep = 0, cumWd = 0, incomplete = false;
+    const feeAmtByMint = {}; // cantidades de fee de ESTA posición (para reparto realizable, parte B)
     const netAmt = new Map(); // mint -> cantidad neta de principal (depósito - retiro)
     const debugLog = []; // diagnóstico: cada evento con su clasificación
     for (const e of evs) {
@@ -2435,6 +2436,7 @@ async function enrichSolanaPnL(owner) {
           } else {
             feesCollectedUSD += usd;
             (feeCollectsByMint[e.mint] = feeCollectsByMint[e.mint] || []).push({ amount: e.amount, ts: e.ts });
+            feeAmtByMint[e.mint] = (feeAmtByMint[e.mint] || 0) + e.amount;
             cls = "fee";
           }
         }
@@ -2461,6 +2463,8 @@ async function enrichSolanaPnL(owner) {
     p.depositedUSD = costBasisUSD;
     p.withdrawnUSD = withdrawnUSD;
     p.feesCollectedUSD = feesCollectedUSD;
+    p._feesAtCollectUSD = feesCollectedUSD; // valor "al cobrar" (referencia; la parte B sobreescribe feesCollectedUSD con el realizable)
+    p._feeAmtByMint = feeAmtByMint;          // cantidades de fee por token de esta posición (reparto realizable)
     p.hodlUSD = hodlUSD;
     p.ilUSD = (p.currentValueUSD || 0) - hodlUSD;
     p.ilPct = hodlUSD > 0 ? (p.ilUSD / hodlUSD) * 100 : null;
@@ -2554,15 +2558,37 @@ async function enrichSolanaPnL(owner) {
       }
       if (bestMint) (swapsByMint[bestMint] = swapsByMint[bestMint] || []).push({ amountIn: bestOut, usdcOut: stableIn, ts });
     }
+    const realizableByMint = {}, collectedTotalByMint = {};
     let realizable = 0;
     for (const mint in feeCollectsByMint) {
-      if (SOL_STABLES.has(mint)) { realizable += feeCollectsByMint[mint].reduce((s, c) => s + c.amount, 0); continue; }
-      const events = [];
-      for (const c of feeCollectsByMint[mint]) events.push({ type: "collect", amount: c.amount, ts: c.ts });
-      for (const sw of (swapsByMint[mint] || [])) events.push({ type: "swap", amount: sw.amountIn, usdcOut: sw.usdcOut, ts: sw.ts });
-      realizable += valueRealizableFeesForMint(events, curPrice(mint));
+      collectedTotalByMint[mint] = feeCollectsByMint[mint].reduce((s, c) => s + c.amount, 0);
+      let v;
+      if (SOL_STABLES.has(mint)) { v = collectedTotalByMint[mint]; }
+      else {
+        const events = [];
+        for (const c of feeCollectsByMint[mint]) events.push({ type: "collect", amount: c.amount, ts: c.ts });
+        for (const sw of (swapsByMint[mint] || [])) events.push({ type: "swap", amount: sw.amountIn, usdcOut: sw.usdcOut, ts: sw.ts });
+        v = valueRealizableFeesForMint(events, curPrice(mint));
+      }
+      realizableByMint[mint] = v;
+      realizable += v;
     }
-    state._feesRealizableUSD = realizable;
+    state._feesRealizableUSD = realizable; // total wallet (parte A)
+    // ── Parte B: reparto del valor realizable POR POSICIÓN + recálculo de PnL/APR ──
+    // La fee de un token es fungible a nivel wallet → repartimos su valor realizable
+    // entre las posiciones que lo generaron, proporcional a lo que cada una cobró.
+    for (const p of state.positions) {
+      if (p.pnlBasis !== "birdeye" || !p._feeAmtByMint) continue;
+      let rf = 0;
+      for (const mint in p._feeAmtByMint) {
+        const tot = collectedTotalByMint[mint];
+        if (tot > 0) rf += (p._feeAmtByMint[mint] / tot) * (realizableByMint[mint] || 0);
+      }
+      p.feesCollectedUSD = rf; // valor realizable (el "al cobrar" queda en p._feesAtCollectUSD)
+      const pend = p.feesPendingUSD || 0;
+      p.pnlUSD = (p.currentValueUSD || 0) + (p.withdrawnUSD || 0) + rf + pend - (p.depositedUSD || 0);
+      p.apr = (p.ageDays && p.depositedUSD > 0) ? ((rf + pend) / p.depositedUSD) * (365 / p.ageDays) * 100 : null;
+    }
   } catch (e) { console.warn("[fees-realizable]", e); state._feesRealizableUSD = null; }
 
   // Resumen de fuentes al final del análisis. Visible en consola para que el
