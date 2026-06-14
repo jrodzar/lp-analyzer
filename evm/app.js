@@ -3203,7 +3203,13 @@ document.addEventListener("DOMContentLoaded", init);
           try {
             // Incluimos también las cerradas (tienen snapshots históricos); siempre
             // cuentan en el Histórico (cada serie va tagueada con `closed`).
-            const toFetch = (state.positions || []).slice(0, 20);
+            // Solo posiciones LP de subgraph con id: las de lending (Revert Lend, sin
+            // `id`, usan `vault`) y las RPC-only (HyperEVM, sin subgraph) no tienen
+            // positionSnapshots → pedirlas daba warnings "#undefined"/"sin subgraph"
+            // y peticiones fallidas. Su histórico ya viene por `timelineSeries`.
+            const toFetch = (state.positions || [])
+              .filter((p) => !p._lending && !p._rpcOnly && p.id && state.chains[p.chainKey]?.subgraphId)
+              .slice(0, 20);
             if (toFetch.length) {
               const bundles = await Promise.all(toFetch.map(async (p) => {
                 try {
