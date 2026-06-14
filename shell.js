@@ -2643,7 +2643,7 @@ function idleIndicatorHTML(t) {
   }
 
   const detail = `ahora ${px(cur)}${entry ? ` · entró ${px(entry)}` : ""}${ctx ? ` · ${ctx}` : ""}`;
-  return `<div class="mt-1.5 flex items-center gap-2 flex-wrap text-[10px] text-slate-500">${badge}${bar}<span class="whitespace-nowrap">${detail}</span></div>`;
+  return `<div data-idle-ind class="mt-1.5 basis-full order-last flex items-center gap-2 flex-wrap text-[10px] text-slate-500">${badge}${bar}<span class="whitespace-nowrap">${detail}</span></div>`;
 }
 
 function idleTokensBlock(tokens, opts = {}) {
