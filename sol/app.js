@@ -1885,8 +1885,9 @@ async function reconstructClosedSol(owner, openVaults) {
   const events = [];           // {vault, mint, ts, usd, dir:'dep'|'recv', isWd, proto}
   const adj = new Map();       // vault -> Set(vaults co-ocurrentes) (grafo de pools)
   const ensure = (v) => { if (!adj.has(v)) adj.set(v, new Set()); return adj.get(v); };
+  const liqDiscs = await clmmLiqDiscs();
   for (const tx of txs) {
-    const proto = SRC[tx.source]; if (!proto) continue;
+    const proto = SRC[tx.source] || clmmProtoFromTx(tx, liqDiscs); if (!proto) continue;
     const ts = tx.timestamp || 0;
     const isWd = txHasRealWithdraw(tx);
     const txVaults = [];
@@ -1970,6 +1971,80 @@ function txHasRealWithdraw(tx) {
     for (let i = 8; i < 24; i++) { if (bytes[i] !== 0) return true; } // liquidity (u128 LE) > 0
   }
   return false;
+}
+
+// Discriminador de instrucción Anchor (primeros 8 bytes de sha256("global:<ix>")).
+// Igual que anchorDisc pero con prefijo "global:" (instrucciones, no cuentas).
+async function globalDisc(name) {
+  const key = "global:" + name;
+  if (discriminatorCache.has(key)) return discriminatorCache.get(key);
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  const disc = new Uint8Array(hash).slice(0, 8);
+  discriminatorCache.set(key, disc);
+  return disc;
+}
+
+// Instrucciones de LIQUIDEZ/FEES de CLMM (NO swaps). Sirven para RESCATAR txs
+// que Helius etiqueta mal: cobrar/retirar/añadir por la UI nativa de Raydium/Orca
+// suele salir con `source` = "UNKNOWN" (no RAYDIUM/ORCA), y el filtro `SRC` las
+// descartaba enteras → las fees cobradas por la UI de Raydium no se contaban.
+// Detectamos la instrucción por discriminador (excluyendo swaps) para no
+// contaminar depósito/retiro con swaps hechos en el mismo pool.
+const CLMM_LIQ_IX_NAMES = [
+  "decrease_liquidity_v2", "decrease_liquidity", // retiro + cobro (Raydium cobra con liquidity=0)
+  "collect_fees_v2", "collect_fees",             // cobro de fees (Orca)
+  "increase_liquidity_v2", "increase_liquidity", // depósito
+  "open_position_with_token22_nft", "open_position_with_metadata", "open_position_v2", "open_position",
+  "close_position",
+];
+let _clmmLiqDiscs = null;
+async function clmmLiqDiscs() {
+  if (!_clmmLiqDiscs) _clmmLiqDiscs = await Promise.all(CLMM_LIQ_IX_NAMES.map(globalDisc));
+  return _clmmLiqDiscs;
+}
+// ¿La tx tiene una op de liquidez/fee CLMM (no swap)? Mira top-level e inner.
+function txHasClmmLiqOp(tx, discs) {
+  const hit = (ix) => {
+    if (!ix) return false;
+    const pid = ix.programId;
+    if (pid !== ORCA_WHIRLPOOL_PROGRAM && pid !== RAYDIUM_CLMM_PROGRAM) return false;
+    let bytes; try { bytes = base58Decode(ix.data || ""); } catch (e) { return false; }
+    if (bytes.length < 8) return false;
+    for (const d of discs) {
+      let ok = true;
+      for (let i = 0; i < 8; i++) { if (bytes[i] !== d[i]) { ok = false; break; } }
+      if (ok) return true;
+    }
+    return false;
+  };
+  for (const ix of (tx.instructions || [])) {
+    if (hit(ix)) return true;
+    for (const inner of (ix.innerInstructions || [])) if (hit(inner)) return true;
+  }
+  return false;
+}
+// Igual que txHasClmmLiqOp pero devuelve el protocolo ("orca"|"raydium") de la
+// op de liquidez/fee encontrada, o null. Para reconstructClosedSol, que necesita
+// etiquetar el protocolo cuando Helius marca la tx como UNKNOWN.
+function clmmProtoFromTx(tx, discs) {
+  const proto = (ix) => {
+    if (!ix) return null;
+    const pid = ix.programId;
+    if (pid !== ORCA_WHIRLPOOL_PROGRAM && pid !== RAYDIUM_CLMM_PROGRAM) return null;
+    let bytes; try { bytes = base58Decode(ix.data || ""); } catch (e) { return null; }
+    if (bytes.length < 8) return null;
+    for (const d of discs) {
+      let ok = true;
+      for (let i = 0; i < 8; i++) { if (bytes[i] !== d[i]) { ok = false; break; } }
+      if (ok) return pid === ORCA_WHIRLPOOL_PROGRAM ? "orca" : "raydium";
+    }
+    return null;
+  };
+  for (const ix of (tx.instructions || [])) {
+    const p = proto(ix); if (p) return p;
+    for (const inner of (ix.innerInstructions || [])) { const pi = proto(inner); if (pi) return pi; }
+  }
+  return null;
 }
 
 // ============================================================================
@@ -2166,8 +2241,12 @@ async function enrichSolanaPnL(owner) {
   // si la tx también tiene flujos wallet→vault es un rebalance/compound y un
   // residuo "in" tras netting no es una fee — es la asimetría del rebalance.
   const perPos = new Map();
+  const liqDiscs = await clmmLiqDiscs();
   for (const tx of txs) {
-    if (!SRC.has(tx.source)) continue;
+    // Aceptamos la tx si Helius la etiqueta como Raydium/Orca O si lleva una
+    // op de liquidez/fee CLMM (rescata cobros/retiros por la UI nativa que
+    // Helius marca "UNKNOWN" y antes se descartaban → fees no contadas).
+    if (!SRC.has(tx.source) && !txHasClmmLiqOp(tx, liqDiscs)) continue;
     const ts = tx.timestamp || 0;
     const sig = tx.signature || "";
     const isWd = txHasRealWithdraw(tx); // retiro real → no tratar como fee aunque sea pequeño
@@ -2666,8 +2745,11 @@ async function fetchSolanaHistory(owner) {
     if (!perPos.has(posId)) perPos.set(posId, { label, events: [] });
     perPos.get(posId).events.push({ ts, net, isWd });
   };
+  const liqDiscs = await clmmLiqDiscs();
   for (const tx of txs) {
-    if (!SRC.has(tx.source)) continue;
+    // Igual que en enrichSolanaPnL: rescatar txs de liquidez/fee que Helius
+    // etiqueta mal (source != RAYDIUM/ORCA) para no perder cobros por la UI nativa.
+    if (!SRC.has(tx.source) && !txHasClmmLiqOp(tx, liqDiscs)) continue;
     const ts = tx.timestamp || 0;
     const isWd = txHasRealWithdraw(tx); // retiro real → no tratar como fee aunque sea pequeño
     // agregado por tx para el fallback
