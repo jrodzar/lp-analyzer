@@ -1652,6 +1652,20 @@ const _NATIVE_CG = { ETH: "ethereum", WETH: "ethereum", HYPE: "hyperliquid", BNB
 // idle NATIVO (ETH/HYPE, addr 0x0) a la entrada del wrapped (WETH/WHYPE) que sí
 // depositan las posiciones; son el mismo activo 1:1.
 const _WRAPPED_NATIVE = { ethereum: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", arbitrum: "0x82af49447d8a07e3bd95bd0d56f35241523fbab1", optimism: "0x4200000000000000000000000000000000000006", base: "0x4200000000000000000000000000000000000006", polygon: "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270", bnb: "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c", hyperevm: "0x5555555555555555555555555555555555555555" };
+// id de CoinGecko del NATIVO por chain — para el precio HISTÓRICO del wrapped-native
+// (WHYPE/WETH) en chains que DefiLlama no cubre por dirección (HyperEVM) → la entrada.
+const _NATIVE_CG_BY_CHAIN = { ethereum: "ethereum", arbitrum: "ethereum", optimism: "ethereum", base: "ethereum", polygon: "polygon-ecosystem-token", bnb: "binancecoin", hyperevm: "hyperliquid" };
+// Precio histórico de un nativo vía DefiLlama por clave coingecko (chains sin soporte
+// por dirección, p.ej. HyperEVM → coingecko:hyperliquid). 0 si falla.
+async function defiLlamaHistCoingecko(cgId, ts) {
+  try {
+    const r = await fetch(`https://coins.llama.fi/prices/historical/${ts}/coingecko:${cgId}?searchWidth=4h`);
+    if (!r.ok) return 0;
+    const j = await r.json();
+    const v = j && j.coins && j.coins[`coingecko:${cgId}`] && j.coins[`coingecko:${cgId}`].price;
+    return (typeof v === "number" && isFinite(v)) ? v : 0;
+  } catch (e) { return 0; }
+}
 
 async function enrichIdleIndicatorsEVM(owner) {
   const idle = state.idleTokens || [];
@@ -1661,19 +1675,29 @@ async function enrichIdleIndicatorsEVM(owner) {
   //    cubre RPC-direct Y subgraph (Arbitrum/Base), sin depender de explorerApi.
   const entryAgg = {}; // `${chainKey}:${addrLower}` -> {usd, amt}
   for (const p of (state.positions || [])) {
-    if (p._lending || p.reconstructed) continue;
-    if (!DEFILLAMA_CHAIN_PREFIX[p.chainKey] || !p.openedAt) continue;
+    if (p._lending || p.reconstructed || !p.openedAt) continue;
     if (!(p.deposited0 > 0) && !(p.deposited1 > 0)) continue;
-    const px = await fetchDefiLlamaPrices(p.chainKey, [p.token0.id, p.token1.id], [p.openedAt]).catch(() => ({}));
-    const add = (tk, amt) => {
+    const onLlama = !!DEFILLAMA_CHAIN_PREFIX[p.chainKey];
+    const px = onLlama ? await fetchDefiLlamaPrices(p.chainKey, [p.token0.id, p.token1.id], [p.openedAt]).catch(() => ({})) : {};
+    const wrapped = (_WRAPPED_NATIVE[p.chainKey] || "").toLowerCase();
+    const cgNative = _NATIVE_CG_BY_CHAIN[p.chainKey];
+    let cgHist; // precio histórico del nativo (coingecko), perezoso
+    const add = async (tk, amt) => {
       if (!(amt > 0) || !tk || !tk.id) return;
-      const hp = px[`${tk.id.toLowerCase()}:${p.openedAt}`];
+      const addr = tk.id.toLowerCase();
+      let hp = onLlama ? px[`${addr}:${p.openedAt}`] : 0;
+      // Fallback: el wrapped-native en chains sin DefiLlama por dirección (p.ej. WHYPE
+      // en HyperEVM) usa el histórico del nativo vía coingecko → habilita "vs entrada".
+      if (!(hp > 0) && addr === wrapped && cgNative) {
+        if (cgHist === undefined) cgHist = await defiLlamaHistCoingecko(cgNative, p.openedAt);
+        hp = cgHist;
+      }
       if (!(hp > 0)) return;
-      const k = `${p.chainKey}:${tk.id.toLowerCase()}`;
+      const k = `${p.chainKey}:${addr}`;
       const a = entryAgg[k] || (entryAgg[k] = { usd: 0, amt: 0 });
       a.usd += amt * hp; a.amt += amt;
     };
-    add(p.token0, p.deposited0); add(p.token1, p.deposited1);
+    await add(p.token0, p.deposited0); await add(p.token1, p.deposited1);
   }
   // 2) Adjuntar entryPx + range30d a los idle no-stable con valor. Nativos
   //    (ETH/HYPE/…) usan clave coingecko: para el rango (no tienen entrada).
