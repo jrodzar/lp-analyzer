@@ -2599,6 +2599,53 @@ function closedPositionsBlock(items, colorOf) {
 // USD descendente. Por defecto oculta los tokens con valor < $1 para evitar el
 // spam de airdrops, con un toggle para mostrarlos.
 const IDLE_DUST_THRESHOLD = 0.1;
+// Stablecoins → no indicador (son el destino del swap, no tiene sentido).
+const IDLE_STABLE_SYMS = new Set(["USDC", "USDT", "DAI", "USDE", "FDUSD", "USDC.E", "USDBC", "TUSD", "USDS", "PYUSD", "USDT0", "USD₮0", "SUSDE", "GUSD", "LUSD", "FRAX", "MIM", "USDD"]);
+function isStableSym(t) {
+  const s = (t.symbol || "").toUpperCase();
+  return IDLE_STABLE_SYMS.has(s) || s.startsWith("USD") || s.startsWith("EUR");
+}
+
+// Indicador "¿buen momento para pasar a USDC?" en cada token idle no-stable.
+// Datos OBJETIVOS (no recomienda comprar/vender): precio actual vs. precio medio
+// de ENTRADA (t.entryPx, del coste base) + termómetro del rango de 30d (t.range30d).
+// Degradación por token: si falta la entrada se muestra solo el rango y viceversa.
+// Incógnito: difumina los importes $ pero mantiene los % y el termómetro (sin $).
+function idleIndicatorHTML(t) {
+  if (!t || isStableSym(t) || isLikelyScamToken(t)) return "";
+  const cur = (t.priceUSD != null && isFinite(t.priceUSD)) ? t.priceUSD : (t.balance ? (t.valueUSD || 0) / t.balance : null);
+  const entry = (t.entryPx != null && isFinite(t.entryPx) && t.entryPx > 0) ? t.entryPx : null;
+  const range = (t.range30d && t.range30d.max > t.range30d.min) ? t.range30d : null;
+  if (!cur || (!entry && !range)) return "";
+  const priv = lpPriv();
+  const fmtPx = (n) => "$" + (n >= 1 ? n.toLocaleString("es-ES", { maximumFractionDigits: 2 }) : fmtTiny(n, 3));
+  const px = (n) => (priv ? blurSpan(fmtPx(n)) : fmtPx(n));
+
+  let badge = "";
+  if (entry) {
+    const d = (cur - entry) / entry * 100;
+    const up = d >= 0;
+    const cls = up ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" : "bg-amber-500/15 text-amber-300 border-amber-500/30";
+    badge = `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border whitespace-nowrap ${cls}" title="Precio actual frente a tu precio medio de entrada al aportar liquidez. Dato objetivo, no es una recomendación.">${up ? "▲ +" : "▼ "}${d.toFixed(1)}% vs entrada</span>`;
+  }
+
+  let bar = "", ctx = "";
+  if (range) {
+    const clamp = (x) => Math.max(0, Math.min(1, x));
+    const pos = (v) => clamp((v - range.min) / (range.max - range.min)) * 100;
+    const cp = pos(cur);
+    const ep = entry ? pos(entry) : null;
+    const curColor = (entry ? cur >= entry : true) ? "#34d399" : "#fbbf24";
+    const entryTick = ep != null ? `<span class="absolute -top-0.5 w-px h-2.5 bg-slate-500" style="left:${ep.toFixed(1)}%"></span>` : "";
+    bar = `<span class="relative inline-block flex-1 min-w-[80px] h-1.5 rounded-full bg-slate-800 align-middle" title="Posición del precio actual dentro de su rango de 30 días (la marca fina es tu entrada).">${entryTick}<span class="absolute -top-1 w-1.5 h-3.5 rounded-sm" style="left:calc(${cp.toFixed(1)}% - 3px);background:${curColor}"></span></span>`;
+    const f = cp / 100;
+    ctx = f > 0.8 ? "cerca de máx 30d" : f < 0.2 ? "cerca de mín 30d" : "zona media 30d";
+  }
+
+  const detail = `ahora ${px(cur)}${entry ? ` · entró ${px(entry)}` : ""}${ctx ? ` · ${ctx}` : ""}`;
+  return `<div class="mt-1.5 flex items-center gap-2 flex-wrap text-[10px] text-slate-500">${badge}${bar}<span class="whitespace-nowrap">${detail}</span></div>`;
+}
+
 function idleTokensBlock(tokens, opts = {}) {
   if (!Array.isArray(tokens) || !tokens.length) return null;
   const known = tokens.filter((t) => t.valueUSD != null);
@@ -2677,6 +2724,8 @@ function idleTokensBlock(tokens, opts = {}) {
     // (no enlazar a nada relacionado con un token malicioso).
     const scamBadge = scam ? `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/40 whitespace-nowrap mr-1 align-middle" title="Token sospechoso de estafa: el nombre lleva un enlace o el símbolo está falsificado. NO interactúes con él ni visites enlaces que aparezcan en su nombre.">⚠️ posible scam</span>` : "";
     const chartIcon = scam ? "" : `<a href="${chartHref}" target="_blank" rel="noopener noreferrer" title="Ver ${chartLabel}" aria-label="Ver ${chartLabel}" class="shrink-0 text-slate-500 hover:text-cyan-300 transition"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg></a>`;
+    // Indicador "¿buen momento para pasar a USDC?" (vs entrada + rango 30d). "" si no hay datos.
+    const ind = idleIndicatorHTML(t);
     // Dos layouts:
     //   - Desktop (sm+): una sola fila con 5 columnas alineadas
     //     [SYMBOL w-20] [CHAIN w-24] [NAME flex-1] [BALANCE w-28 derecha] [USD w-20 derecha]
@@ -2707,6 +2756,7 @@ function idleTokensBlock(tokens, opts = {}) {
             <span class="font-mono text-[10px] text-slate-400 shrink-0">${bal}</span>
           </div>
         </div>
+        ${ind}
       </div>`;
   };
   body.innerHTML = significant.map(rowFor).join("");

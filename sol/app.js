@@ -1803,6 +1803,24 @@ async function analyze() {
       }
     }
 
+    // Indicador "convertir a USDC" en tokens idle (no-stables): adjuntamos a cada
+    // token su precio de entrada (del coste base reconstruido) y el rango de 30d.
+    // La UI (shell.js) pinta el badge "vs entrada" + termómetro. Solo tokens con
+    // algo de valor (no polvo) para no disparar llamadas Birdeye innecesarias.
+    try {
+      const entry = state.tokenEntry || {};
+      for (const t of (state.idleTokens || [])) {
+        const mint = t.address;
+        if (!mint || SOL_STABLES.has(mint)) continue;
+        if (t.priceUSD == null && t.balance) t.priceUSD = (t.valueUSD || 0) / t.balance;
+        if (entry[mint] != null) t.entryPx = entry[mint];
+        if ((t.valueUSD || 0) >= 0.25) {
+          const rg = await priceRange30d(mint).catch(() => null);
+          if (rg) t.range30d = rg;
+        }
+      }
+    } catch (e) { console.warn("[idle-indicator]", e); }
+
     // Reconstruir posiciones CERRADAS/QUEMADAS desde el histórico (en Solana cerrar
     // quema el NFT → no se descubren por holdings). Recupera sus fees cobradas.
     if (state.heliusKey || PROXY_BASE) {
@@ -2108,6 +2126,41 @@ function beThrottle() {
   return turn;
 }
 
+// Rango de precios de los ÚLTIMOS 30 DÍAS (min/max) vía Birdeye history_price.
+// 1 sola llamada por mint, cacheada en memoria por (mint, día). Para el termómetro
+// del indicador de tokens idle. Devuelve { min, max } | null (stables/sin datos).
+async function priceRange30d(mint) {
+  if (SOL_STABLES.has(mint)) return null;
+  if ((!state.birdeyeKey && !PROXY_BASE) || !mint) return null;
+  if (!state._range30dCache) state._range30dCache = new Map();
+  const dayNum = Math.floor(Date.now() / 86400000);
+  const key = mint + ":" + dayNum;
+  if (state._range30dCache.has(key)) return state._range30dCache.get(key);
+  const now = Math.floor(Date.now() / 1000);
+  const qs = `address=${mint}&address_type=token&type=1D&time_from=${now - 30 * 86400}&time_to=${now}`;
+  const url = state.birdeyeKey
+    ? `https://public-api.birdeye.so/defi/history_price?${qs}`
+    : `${PROXY_BASE}/birdeye/defi/history_price?${qs}`;
+  const headers = state.birdeyeKey
+    ? { "X-API-KEY": state.birdeyeKey, "x-chain": "solana", accept: "application/json" }
+    : { accept: "application/json", ...proxyAuth(url) };
+  let res = null;
+  try {
+    await beThrottle();
+    const r = await fetch(url, { headers });
+    if (r.ok) {
+      const j = await r.json();
+      const items = j && j.data && j.data.items;
+      if (Array.isArray(items)) {
+        const vals = items.map((it) => it && it.value).filter((v) => typeof v === "number" && isFinite(v) && v > 0);
+        if (vals.length >= 2) res = { min: Math.min(...vals), max: Math.max(...vals) };
+      }
+    }
+  } catch (e) { res = null; }
+  state._range30dCache.set(key, res);
+  return res;
+}
+
 // Precio USD histórico de un token en un instante (unix segundos) vía Birdeye.
 // Cachea por (mint, día) para minimizar llamadas. Stables → 1.
 // Fallback xStocks: si Birdeye no lo cubre y el token es un xStock conocido
@@ -2282,6 +2335,12 @@ async function enrichSolanaPnL(owner) {
 
   const curPrice = (mint) => (state.prices[mint] != null ? state.prices[mint] : (SOL_STABLES.has(mint) ? 1 : 0));
 
+  // Precio medio de ENTRADA por token (para el indicador "vs entrada" de los
+  // tokens idle): acumulamos USD y cantidad de cada depósito (restando refunds)
+  // a través de TODAS las posiciones. px medio = usd/amt. Se vuelca a
+  // state.tokenEntry al cerrar el bucle y lo lee analyze() para los idle.
+  const entryAgg = {};
+
   for (const p of state.positions) {
     const evs = perPos.get(p.mint);
     if (!evs || !evs.length) continue;
@@ -2306,6 +2365,8 @@ async function enrichSolanaPnL(owner) {
       if (e.dir === "out") {
         costBasisUSD += usd; cumDep += usd;
         netAmt.set(e.mint, (netAmt.get(e.mint) || 0) + e.amount);
+        const ea = entryAgg[e.mint] || (entryAgg[e.mint] = { usd: 0, amt: 0 });
+        ea.usd += usd; ea.amt += e.amount;
         cls = "deposit";
       } else {
         // heurística refinada:
@@ -2326,6 +2387,8 @@ async function enrichSolanaPnL(owner) {
             // depósito. Resta del coste base y de los tokens netos depositados.
             costBasisUSD -= usd; cumDep -= usd;
             netAmt.set(e.mint, (netAmt.get(e.mint) || 0) - e.amount);
+            const ea = entryAgg[e.mint] || (entryAgg[e.mint] = { usd: 0, amt: 0 });
+            ea.usd -= usd; ea.amt -= e.amount;
             cls = "refund (mixed)";
           }
         } else {
@@ -2420,6 +2483,13 @@ async function enrichSolanaPnL(owner) {
     // mostrará "Birdeye + Yahoo fallback" en lugar de solo "Birdeye".
     const yh = state._yahooFallbackMints;
     p.pnlUsedYahoo = !!(yh && ((p.token0?.mint && yh.has(p.token0.mint)) || (p.token1?.mint && yh.has(p.token1.mint))));
+  }
+
+  // Precio medio de entrada por mint (usd/amt). Solo positivos y con cantidad.
+  state.tokenEntry = {};
+  for (const m in entryAgg) {
+    const a = entryAgg[m];
+    if (a.amt > 0 && a.usd > 0) state.tokenEntry[m] = a.usd / a.amt;
   }
 
   // Resumen de fuentes al final del análisis. Visible en consola para que el
