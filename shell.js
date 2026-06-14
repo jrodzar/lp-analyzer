@@ -2029,7 +2029,7 @@ async function analyzeAll(opts = {}) {
       // Marcar "en curso" antes del await: la lista del modal muestra spinner.
       if (!silent) setAnalyzeStatus(i, "running");
       const r = await analyzeAddressHeadless(entry.address, entry.type);
-      results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [], analysisStatus: r.analysisStatus || null, idleTokens: r.idleTokens || [] };
+      results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [], analysisStatus: r.analysisStatus || null, idleTokens: r.idleTokens || [], feesRealizableUSD: r.feesRealizableUSD != null ? r.feesRealizableUSD : null };
       // Estado final: error si timeout o status problemático; done en otro caso.
       const isError = (r.status || "").toLowerCase().includes("timeout") || (r.status || "").toLowerCase().includes("error");
       if (!silent) setAnalyzeStatus(i, isError ? "error" : "done");
@@ -2370,8 +2370,7 @@ function buildWalletSection(r, colorOf, grouped) {
         <span class="text-slate-600">·</span>
         <span class="font-semibold text-slate-100">${fmtUSD(subVal)}</span><span class="text-slate-500 text-[11px] ml-1">DeFi</span>${subIdle > 0 ? ` <span class="text-slate-600">+</span> <span class="font-semibold text-slate-100">${fmtUSD(subIdle)}</span><span class="text-slate-500 text-[11px] ml-1">idle</span>` : ""}
         <span class="text-slate-600">·</span>
-        <span title="Suma de fees cobradas + fees pendientes de todas las posiciones del wallet">fees totales <span class="font-semibold text-emerald-400">${fmtUSD(subFees)}</span></span>
-      </span>
+        <span title="Suma de fees cobradas + fees pendientes de todas las posiciones del wallet">fees totales <span class="font-semibold text-emerald-400">${fmtUSD(subFees)}</span></span>${r.feesRealizableUSD != null ? ` <span class="text-slate-600">·</span> <span title="Valor REALIZABLE de las fees cobradas: lo que sigues teniendo idle a precio de HOY + lo vendido a USDC al precio del día del swap.">fees cobradas (valor actual) <span class="font-semibold text-cyan-300">${lpPriv() ? blurSpan(fmtUSD(r.feesRealizableUSD)) : fmtUSD(r.feesRealizableUSD)}</span></span>` : ""}</span>
     </div>`;
   section.appendChild(head);
 
@@ -3160,7 +3159,7 @@ window.addEventListener("message", (e) => {
   } else if (d.type === "lp-result" && pendingReqs.has(d.reqId)) {
     const resolve = pendingReqs.get(d.reqId);
     pendingReqs.delete(d.reqId);
-    resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [], analysisStatus: d.analysisStatus || null, idleTokens: d.idleTokens || [] });
+    resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [], analysisStatus: d.analysisStatus || null, idleTokens: d.idleTokens || [], feesRealizableUSD: d.feesRealizableUSD != null ? d.feesRealizableUSD : null });
   } else if (d.type === "lp-analyze-done") {
     // el engine terminó el análisis de Quick → cerrar el modal de progreso
     clearTimeout(_quickModalTimer);

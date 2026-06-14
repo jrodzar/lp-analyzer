@@ -2126,6 +2126,24 @@ function beThrottle() {
   return turn;
 }
 
+// Valor REALIZABLE de las fees de UN token. events: [{type:'collect'|'swap', amount,
+// usdcOut?, ts}]. Los swaps (token→stable) consumen el inventario de fees FIFO,
+// realizando el USDC recibido (topado a lo cobrado: un swap que venda principal NO
+// cuenta como fee); el resto no vendido se valora a `currentPrice` (precio de hoy).
+function valueRealizableFeesForMint(events, currentPrice) {
+  const evs = events.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  let inv = 0, realized = 0;
+  for (const e of evs) {
+    if (e.type === "collect") inv += e.amount;
+    else if (e.amount > 0) {
+      const feePart = Math.min(e.amount, inv);
+      if (feePart > 0) realized += feePart * (e.usdcOut / e.amount);
+      inv -= feePart;
+    }
+  }
+  return realized + inv * (currentPrice || 0);
+}
+
 // Rango de precios de los ÚLTIMOS 30 DÍAS (min/max). Cripto/tokens on-chain → Birdeye
 // history_price (1 llamada). xStocks/RWA (TSLAx…) que Birdeye no cubre → serie de la
 // ACCIÓN SUBYACENTE vía proxy → Stooq (muestreada ~cada 3 días; cada día se cachea en
@@ -2282,6 +2300,7 @@ async function birdeyePriceAt(mint, unixSec) {
 async function enrichSolanaPnL(owner) {
   state._beStats = { ok: 0, denied: 0, rate: 0, error: 0, partial: 0 };
   state._yahooFallbackMints = new Set(); // reset por análisis
+  state._feesRealizableUSD = null; // valor realizable de fees cobradas (nivel wallet)
   if ((!state.birdeyeKey && !PROXY_BASE) || !owner || !(state.positions || []).length) return;
   const txs = await fetchEnhancedTxs(owner);
   if (!txs.length) return;
@@ -2354,6 +2373,9 @@ async function enrichSolanaPnL(owner) {
   // a través de TODAS las posiciones. px medio = usd/amt. Se vuelca a
   // state.tokenEntry al cerrar el bucle y lo lee analyze() para los idle.
   const entryAgg = {};
+  // Cantidades de fee cobradas por token (nivel wallet) → valor REALIZABLE: lo que
+  // sigues teniendo idle a precio de hoy + lo vendido a USDC al precio del swap.
+  const feeCollectsByMint = {}; // mint -> [{ amount, ts }]
 
   for (const p of state.positions) {
     const evs = perPos.get(p.mint);
@@ -2412,6 +2434,7 @@ async function enrichSolanaPnL(owner) {
             cls = "withdraw";
           } else {
             feesCollectedUSD += usd;
+            (feeCollectsByMint[e.mint] = feeCollectsByMint[e.mint] || []).push({ amount: e.amount, ts: e.ts });
             cls = "fee";
           }
         }
@@ -2505,6 +2528,42 @@ async function enrichSolanaPnL(owner) {
     const a = entryAgg[m];
     if (a.amt > 0 && a.usd > 0) state.tokenEntry[m] = a.usd / a.amt;
   }
+
+  // ── Valor REALIZABLE de las fees cobradas (nivel wallet) ──────────────────
+  // Por token: las fees que sigues teniendo idle → precio de HOY; las vendidas a
+  // un stable (USDC/USDT) → precio del swap (FIFO, topado a lo cobrado; un swap
+  // que venda principal no infla las fees). Fees ya en stable → su valor nominal.
+  try {
+    // Swaps token→stable del histórico: el owner ENVÍA un fee-mint y RECIBE stable.
+    const swapsByMint = {}; // mint -> [{ amountIn, usdcOut, ts }]
+    for (const tx of txs) {
+      const ts = tx.timestamp || 0;
+      const delta = {};
+      for (const t of (tx.tokenTransfers || [])) {
+        if (t.fromUserAccount === owner) delta[t.mint] = (delta[t.mint] || 0) - (t.tokenAmount || 0);
+        else if (t.toUserAccount === owner) delta[t.mint] = (delta[t.mint] || 0) + (t.tokenAmount || 0);
+      }
+      let stableIn = 0;
+      for (const m in delta) if (SOL_STABLES.has(m) && delta[m] > 0) stableIn += delta[m];
+      if (stableIn <= 0) continue; // un swap a USDC recibe stable neto
+      let bestMint = null, bestOut = 0;
+      for (const m in delta) {
+        if (SOL_STABLES.has(m)) continue;
+        const out = -delta[m];
+        if (out > 0 && feeCollectsByMint[m] && out > bestOut) { bestOut = out; bestMint = m; }
+      }
+      if (bestMint) (swapsByMint[bestMint] = swapsByMint[bestMint] || []).push({ amountIn: bestOut, usdcOut: stableIn, ts });
+    }
+    let realizable = 0;
+    for (const mint in feeCollectsByMint) {
+      if (SOL_STABLES.has(mint)) { realizable += feeCollectsByMint[mint].reduce((s, c) => s + c.amount, 0); continue; }
+      const events = [];
+      for (const c of feeCollectsByMint[mint]) events.push({ type: "collect", amount: c.amount, ts: c.ts });
+      for (const sw of (swapsByMint[mint] || [])) events.push({ type: "swap", amount: sw.amountIn, usdcOut: sw.usdcOut, ts: sw.ts });
+      realizable += valueRealizableFeesForMint(events, curPrice(mint));
+    }
+    state._feesRealizableUSD = realizable;
+  } catch (e) { console.warn("[fees-realizable]", e); state._feesRealizableUSD = null; }
 
   // Resumen de fuentes al final del análisis. Visible en consola para que el
   // usuario pueda verificar de dónde salió cada precio sin tocar la UI.
@@ -3054,7 +3113,7 @@ document.addEventListener("DOMContentLoaded", init);
           for (const s of timeline) { const pp = _posByMint.get(s.posId); s.closed = !!(pp && pp.closed); }
           const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
           const idleTokens = state.idleTokens || [];
-          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline, analysisStatus, idleTokens }, "*");
+          window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline, analysisStatus, idleTokens, feesRealizableUSD: state._feesRealizableUSD }, "*");
         })
         .catch((err) => {
           window.parent.postMessage({ type: "lp-result", app: "sol", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err), idleTokens: [], analysisStatus: { ok: false, errors: [{ source: "Solana", reason: String(err) }] } }, "*");
