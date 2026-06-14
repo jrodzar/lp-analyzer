@@ -1815,7 +1815,7 @@ async function analyze() {
         if (t.priceUSD == null && t.balance) t.priceUSD = (t.valueUSD || 0) / t.balance;
         if (entry[mint] != null) t.entryPx = entry[mint];
         if ((t.valueUSD || 0) >= 0.25) {
-          const rg = await priceRange30d(mint).catch(() => null);
+          const rg = await priceRange30d(mint, t).catch(() => null);
           if (rg) t.range30d = rg;
         }
       }
@@ -2126,37 +2126,51 @@ function beThrottle() {
   return turn;
 }
 
-// Rango de precios de los ÚLTIMOS 30 DÍAS (min/max) vía Birdeye history_price.
-// 1 sola llamada por mint, cacheada en memoria por (mint, día). Para el termómetro
-// del indicador de tokens idle. Devuelve { min, max } | null (stables/sin datos).
-async function priceRange30d(mint) {
-  if (SOL_STABLES.has(mint)) return null;
-  if ((!state.birdeyeKey && !PROXY_BASE) || !mint) return null;
+// Rango de precios de los ÚLTIMOS 30 DÍAS (min/max). Cripto/tokens on-chain → Birdeye
+// history_price (1 llamada). xStocks/RWA (TSLAx…) que Birdeye no cubre → serie de la
+// ACCIÓN SUBYACENTE vía proxy → Stooq (muestreada ~cada 3 días; cada día se cachea en
+// memoria + KV del proxy). Cacheado por (mint, día). Devuelve { min, max } | null.
+async function priceRange30d(mint, meta) {
+  if (SOL_STABLES.has(mint) || !mint) return null;
   if (!state._range30dCache) state._range30dCache = new Map();
-  const dayNum = Math.floor(Date.now() / 86400000);
-  const key = mint + ":" + dayNum;
+  const key = mint + ":" + Math.floor(Date.now() / 86400000);
   if (state._range30dCache.has(key)) return state._range30dCache.get(key);
   const now = Math.floor(Date.now() / 1000);
-  const qs = `address=${mint}&address_type=token&type=1D&time_from=${now - 30 * 86400}&time_to=${now}`;
-  const url = state.birdeyeKey
-    ? `https://public-api.birdeye.so/defi/history_price?${qs}`
-    : `${PROXY_BASE}/birdeye/defi/history_price?${qs}`;
-  const headers = state.birdeyeKey
-    ? { "X-API-KEY": state.birdeyeKey, "x-chain": "solana", accept: "application/json" }
-    : { accept: "application/json", ...proxyAuth(url) };
   let res = null;
-  try {
-    await beThrottle();
-    const r = await fetch(url, { headers });
-    if (r.ok) {
-      const j = await r.json();
-      const items = j && j.data && j.data.items;
-      if (Array.isArray(items)) {
-        const vals = items.map((it) => it && it.value).filter((v) => typeof v === "number" && isFinite(v) && v > 0);
-        if (vals.length >= 2) res = { min: Math.min(...vals), max: Math.max(...vals) };
+  // 1) Birdeye history_price (cripto + xStocks que sí cubre, p.ej. CRCLx)
+  if (state.birdeyeKey || PROXY_BASE) {
+    const qs = `address=${mint}&address_type=token&type=1D&time_from=${now - 30 * 86400}&time_to=${now}`;
+    const url = state.birdeyeKey
+      ? `https://public-api.birdeye.so/defi/history_price?${qs}`
+      : `${PROXY_BASE}/birdeye/defi/history_price?${qs}`;
+    const headers = state.birdeyeKey
+      ? { "X-API-KEY": state.birdeyeKey, "x-chain": "solana", accept: "application/json" }
+      : { accept: "application/json", ...proxyAuth(url) };
+    try {
+      await beThrottle();
+      const r = await fetch(url, { headers });
+      if (r.ok) {
+        const j = await r.json();
+        const items = j && j.data && j.data.items;
+        if (Array.isArray(items)) {
+          const vals = items.map((it) => it && it.value).filter((v) => typeof v === "number" && isFinite(v) && v > 0);
+          if (vals.length >= 2) res = { min: Math.min(...vals), max: Math.max(...vals) };
+        }
       }
+    } catch (e) { res = null; }
+  }
+  // 2) Fallback xStock/RWA: serie de la acción subyacente (Stooq vía proxy), muestreada.
+  if (!res && PROXY_BASE) {
+    const ticker = detectXStockTicker(meta);
+    if (ticker) {
+      const vals = [];
+      for (let d = 0; d <= 30; d += 3) {
+        const p = await xstockPriceAt(ticker, now - d * 86400);
+        if (p > 0) vals.push(p);
+      }
+      if (vals.length >= 2) res = { min: Math.min(...vals), max: Math.max(...vals) };
     }
-  } catch (e) { res = null; }
+  }
   state._range30dCache.set(key, res);
   return res;
 }
