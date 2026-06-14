@@ -1606,6 +1606,79 @@ async function fetchDefiLlamaPrices(chainKey, tokenIds, dates) {
   return out;
 }
 
+// ── Indicador idle ("¿buen momento para pasar a USDC?") — EVM ────────────────
+// entryPx = precio medio de entrada (coste base histórico de los depósitos, precio
+// DefiLlama al minteo) + range30d (serie de 30d de DefiLlama, 1 llamada/token). Se
+// adjuntan a state.idleTokens; la UI compartida (shell.js) pinta badge + termómetro.
+// Nativos (ETH/HYPE, addr 0x0) y HyperEVM no están en DefiLlama → se omiten (degrada
+// limpio: si falta la entrada sale solo el termómetro y viceversa).
+const _evmRange30dCache = new Map();
+async function evmPriceRange30d(chainKey, addr) {
+  const prefix = DEFILLAMA_CHAIN_PREFIX[chainKey];
+  if (!prefix || !addr) return null;
+  const a = addr.toLowerCase();
+  const key = `${chainKey}:${a}:${Math.floor(Date.now() / 86400000)}`;
+  if (_evmRange30dCache.has(key)) return _evmRange30dCache.get(key);
+  let res = null;
+  try {
+    const start = Math.floor(Date.now() / 1000) - 30 * 86400;
+    const r = await fetch(`https://coins.llama.fi/chart/${prefix}:${a}?start=${start}&span=30&period=1d&searchWidth=600`);
+    if (r.ok) {
+      const j = await r.json();
+      const c = j && j.coins && j.coins[`${prefix}:${a}`];
+      const series = c && c.prices;
+      if (Array.isArray(series)) {
+        const vals = series.map((p) => p && p.price).filter((v) => typeof v === "number" && isFinite(v) && v > 0);
+        if (vals.length >= 2) res = { min: Math.min(...vals), max: Math.max(...vals) };
+      }
+    }
+  } catch (e) { res = null; }
+  _evmRange30dCache.set(key, res);
+  return res;
+}
+
+function _isStableEVMSym(sym) {
+  const s = (sym || "").toUpperCase();
+  return s.startsWith("USD") || s.startsWith("EUR") || ["DAI", "FRAX", "MIM", "TUSD", "LUSD", "GUSD", "USDD"].includes(s);
+}
+
+async function enrichIdleIndicatorsEVM(owner) {
+  const idle = state.idleTokens || [];
+  if (!idle.length) return;
+  // 1) Precio medio de entrada por token desde los depósitos de las posiciones
+  //    (histórico vía DefiLlama al timestamp de minteo). Reusa el caché de hist.
+  const entryAgg = {}; // `${chainKey}:${addrLower}` -> {usd, amt}
+  for (const p of (state.positions || [])) {
+    if (p._lending || p.reconstructed) continue;
+    const chain = state.chains[p.chainKey];
+    if (!chain || !DEFILLAMA_CHAIN_PREFIX[p.chainKey] || !chain.explorerApi || !chain.nftManagerAddress) continue;
+    let hist;
+    try { hist = await fetchPositionHistory(chain.explorerApi, chain.nftManagerAddress, p.nftId, p.token0.decimals, p.token1.decimals); }
+    catch (e) { continue; }
+    if (!hist || !hist.mintTs) continue;
+    const px = await fetchDefiLlamaPrices(p.chainKey, [p.token0.id, p.token1.id], [hist.mintTs]).catch(() => ({}));
+    const add = (tk, amt) => {
+      if (!(amt > 0) || !tk || !tk.id) return;
+      const hp = px[`${tk.id.toLowerCase()}:${hist.mintTs}`];
+      if (!(hp > 0)) return;
+      const k = `${p.chainKey}:${tk.id.toLowerCase()}`;
+      const a = entryAgg[k] || (entryAgg[k] = { usd: 0, amt: 0 });
+      a.usd += amt * hp; a.amt += amt;
+    };
+    add(p.token0, hist.deposited0); add(p.token1, hist.deposited1);
+  }
+  // 2) Adjuntar entryPx + range30d a los idle no-stable, no-nativos, con valor.
+  for (const t of idle) {
+    const addr = (t.address || "").toLowerCase();
+    if (!addr || /^0x0+$/.test(addr) || t.native) continue;
+    if (_isStableEVMSym(t.symbol) || (t.valueUSD || 0) < 0.25) continue;
+    const ea = entryAgg[`${t.chain}:${addr}`];
+    if (ea && ea.amt > 0 && ea.usd > 0) t.entryPx = ea.usd / ea.amt;
+    const rg = await evmPriceRange30d(t.chain, addr).catch(() => null);
+    if (rg) t.range30d = rg;
+  }
+}
+
 // Precio USD histórico de tokens por día vía The Graph (tokenDayDatas). Cacheado.
 const _dayPriceCache = new Map(); // `${chain}:${token}:${date}` -> priceUSD | null
 async function fetchTokenDayPrices(chainKey, tokenIds, dates) {
@@ -2666,6 +2739,10 @@ async function analyze() {
       const tokenLists = await Promise.all(chainsForIdle.map((k) => fetchIdleTokensEVM(k, addr)));
       state.idleTokens = tokenLists.flat();
     } catch (e) { console.warn("idle tokens:", e); state.idleTokens = []; }
+
+    // Indicador idle "¿buen momento para pasar a USDC?" (entrada + rango 30d).
+    // best-effort: nunca rompe el análisis si DefiLlama / histórico fallan.
+    try { await enrichIdleIndicatorsEVM(addr); } catch (e) { console.warn("[idle-indicator-evm]", e); }
 
     const skippedNote = skipped.length ? ` (saltadas: ${skipped.map((s) => state.chains[s.chainKey].name).join(", ")})` : "";
     const lendN = state.positions.filter((p) => p._lending).length;
