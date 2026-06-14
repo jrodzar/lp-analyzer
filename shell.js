@@ -2640,7 +2640,7 @@ function idleIndicatorHTML(t) {
     const ep = entry ? pos(entry) : null;
     const curColor = (entry ? cur >= entry : true) ? "#34d399" : "#fbbf24";
     const entryTick = ep != null ? `<span class="absolute -top-0.5 w-px h-2.5 bg-slate-500" style="left:${ep.toFixed(1)}%"></span>` : "";
-    bar = `<span class="relative inline-block flex-1 min-w-[80px] h-1.5 rounded-full bg-slate-800 align-middle" title="Posición del precio actual dentro de su rango de 30 días (la marca fina es tu entrada).">${entryTick}<span class="absolute -top-1 w-1.5 h-3.5 rounded-sm" style="left:calc(${cp.toFixed(1)}% - 3px);background:${curColor}"></span></span>`;
+    bar = `<span class="relative inline-block w-32 shrink-0 h-1.5 rounded-full bg-slate-800 align-middle" title="Posición del precio actual dentro de su rango de 30 días (la marca fina es tu entrada).">${entryTick}<span class="absolute -top-1 w-1.5 h-3.5 rounded-sm" style="left:calc(${cp.toFixed(1)}% - 3px);background:${curColor}"></span></span>`;
     const f = cp / 100;
     ctx = f > 0.8 ? "cerca de máx 30d" : f < 0.2 ? "cerca de mín 30d" : "zona media 30d";
   }
