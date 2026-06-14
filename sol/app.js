@@ -2587,6 +2587,20 @@ async function applyRealizableFeesSol(owner) {
   if (!Object.keys(feeCollectsByMint).length) { state._feesRealizableUSD = 0; return; }
   const curPrice = (mint) => (state.prices[mint] != null ? state.prices[mint] : (SOL_STABLES.has(mint) ? 1 : 0));
   try {
+    // ── LIMITACIONES CONOCIDAS del modelo realizable (documentadas para el futuro) ──
+    // Una "venta" SOLO se detecta cuando el owner RECIBE un stable neto en la tx. Por
+    // tanto NO se reconocen como realización a precio de venta (se quedan "retenidas"
+    // a precio de HOY) estos dos casos:
+    //   1) COMPOUND (re-depositar la fee al pool): no recibes stable. Además, si el
+    //      cobro y el re-add van en la MISMA tx, el netting/“refund (mixed)” lo absorbe
+    //      y ni siquiera aparece como fee cobrada (sí cuenta en PnL vía coste base).
+    //   2) MOVER la fee a OTRA WALLET: tampoco recibes stable → no es swap. Se sigue
+    //      valorando a precio de hoy en ESTA wallet (sobreestima si fue a un tercero;
+    //      no se puede distinguir "mi otra wallet" de un pago externo). Si luego la
+    //      vendes desde la otra wallet, este análisis no lo ve.
+    // MEJORA FUTURA posible: (a) lista de "direcciones propias" → tratar transfers a
+    // ellas como movimiento interno (no retenido en origen / atribuible al destino);
+    // (b) tratar el compound como dos eventos (cobro + depósito) aunque vengan en 1 tx.
     // Swaps token→stable del histórico: el owner ENVÍA un fee-mint y RECIBE stable.
     let txs = [];
     try { txs = await fetchEnhancedTxs(owner); } catch (e) { txs = []; }

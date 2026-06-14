@@ -1809,6 +1809,17 @@ async function fetchOwnerSwapsEVM(chainKey, owner, feeTokenSet) {
     }
   } catch (e) { console.warn(`[realizable-evm] transfers ${chainKey}:`, e?.message || e); }
   if (truncated) console.warn(`[realizable-evm] ${chainKey}: histórico de transfers truncado a ${MAX_PAGES} págs; algún swap antiguo de fees podría no detectarse.`);
+  // ── LIMITACIONES CONOCIDAS del modelo realizable (documentadas para el futuro) ──
+  // Una "venta" SOLO se detecta cuando el owner RECIBE un stable neto en la tx. NO se
+  // reconocen como realización a precio de venta (quedan "retenidas" a precio de HOY):
+  //   1) COMPOUND (re-depositar la fee al pool/posición): no recibes stable.
+  //   2) MOVER la fee a OTRA WALLET: tampoco recibes stable → no es swap. Sigue
+  //      valorada a precio de hoy en ESTA wallet (sobreestima si fue a un tercero; no
+  //      se distingue "mi otra wallet" de un pago externo). Si la vendes desde la otra
+  //      wallet, este análisis no lo ve.
+  //   3) Swaps cuyo leg sea el NATIVO (ETH→…) no son transfers ERC-20 → no se ven.
+  // MEJORA FUTURA: (a) lista de "direcciones propias" → transfers a ellas = movimiento
+  // interno; (b) compound como evento explícito de fee.
   const swaps = {};
   for (const [, e] of byTx) {
     let stableIn = 0;
