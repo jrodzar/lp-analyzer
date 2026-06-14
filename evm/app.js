@@ -1727,6 +1727,13 @@ async function enrichIdleIndicatorsEVM(owner) {
     } else {
       const prefix = DEFILLAMA_CHAIN_PREFIX[t.chain];
       if (prefix) coinKey = `${prefix}:${addr}`;
+      // Fallback termómetro: el WRAPPED-native (WHYPE) en chains que DefiLlama no
+      // cubre por dirección (HyperEVM) usa la clave coingecko del nativo, igual que
+      // el nativo (HYPE). Si no, WHYPE se quedaba sin rango 30d aunque HYPE sí.
+      if (!coinKey && addr === (_WRAPPED_NATIVE[t.chain] || "").toLowerCase()) {
+        const cg = _NATIVE_CG_BY_CHAIN[t.chain];
+        if (cg) coinKey = `coingecko:${cg}`;
+      }
       const ea = entryAgg[`${t.chain}:${addr}`];
       if (ea && ea.amt > 0 && ea.usd > 0) t.entryPx = ea.usd / ea.amt;
     }
