@@ -1648,6 +1648,10 @@ function _isStableEVMSym(sym) {
 // Nativos por símbolo → id de CoinGecko (DefiLlama acepta `coingecko:<id>`), para
 // que ETH/HYPE/BNB/POL idle tengan termómetro aunque no estén en DefiLlama por addr.
 const _NATIVE_CG = { ETH: "ethereum", WETH: "ethereum", HYPE: "hyperliquid", BNB: "binancecoin", WBNB: "binancecoin", POL: "polygon-ecosystem-token", MATIC: "matic-network", AVAX: "avalanche-2" };
+// Token envuelto del nativo por chain (lowercase) — para anclar la "entrada" del
+// idle NATIVO (ETH/HYPE, addr 0x0) a la entrada del wrapped (WETH/WHYPE) que sí
+// depositan las posiciones; son el mismo activo 1:1.
+const _WRAPPED_NATIVE = { ethereum: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", arbitrum: "0x82af49447d8a07e3bd95bd0d56f35241523fbab1", optimism: "0x4200000000000000000000000000000000000006", base: "0x4200000000000000000000000000000000000006", polygon: "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270", bnb: "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c", hyperevm: "0x5555555555555555555555555555555555555555" };
 
 async function enrichIdleIndicatorsEVM(owner) {
   const idle = state.idleTokens || [];
@@ -1681,6 +1685,10 @@ async function enrichIdleIndicatorsEVM(owner) {
     if (isNative) {
       const cg = _NATIVE_CG[(t.symbol || "").toUpperCase()];
       if (cg) coinKey = `coingecko:${cg}`;
+      // ETH/HYPE nativo ≈ su wrapped (WETH/WHYPE, 1:1): si depositaste el wrapped
+      // en una posición, ancla la "entrada" del idle nativo a esa entrada.
+      const wrapped = _WRAPPED_NATIVE[t.chain];
+      if (wrapped) { const ea = entryAgg[`${t.chain}:${wrapped}`]; if (ea && ea.amt > 0 && ea.usd > 0) t.entryPx = ea.usd / ea.amt; }
     } else {
       const prefix = DEFILLAMA_CHAIN_PREFIX[t.chain];
       if (prefix) coinKey = `${prefix}:${addr}`;
