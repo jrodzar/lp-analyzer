@@ -1482,6 +1482,8 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
         amounts: { amount0: 0, amount1: 0 }, liquidity: "0",
         currentValueUSD: 0, feesUSD, uncollected: null, uncollectedUSD: null,
         feesTotalUSD: feesUSD, depositedUSD, withdrawnUSD,
+        // cantidades de fees por token (NETAS) → valor realizable (enrichRealizableFeesEVM)
+        collectedFees0: hist.collectedFees0, collectedFees1: hist.collectedFees1,
         hodlUSD: depositedUSD, pnlUSD: null, ilUSD: null, ilPct: null, apr: null,
         ageDays: hist.mintTs ? Math.max(0, (Date.now() / 1000 - hist.mintTs) / 86400) : 0,
         openedAt: hist.mintTs || 0, _rpcOnly: true,
@@ -1902,9 +1904,13 @@ async function enrichRealizableFeesEVM(owner) {
     p._feesRealizable = true;
     const pend = p.uncollectedUSD || 0;
     p.feesTotalUSD = rf + pend;
-    p.pnlUSD = (p.currentValueUSD || 0) + (p.withdrawnUSD || 0) + rf + pend - (p.depositedUSD || 0);
-    const aprBase = p.depositedUSD > 0 ? p.depositedUSD : (p.currentValueUSD || 0);
-    if (p.ageDays && aprBase > 0) p.apr = ((rf + pend) / aprBase) * (365 / p.ageDays) * 100;
+    // Recalcular PnL/APR SOLO si ya tenían valor fiable. Las reconstruidas quemadas
+    // de HyperEVM dejan PnL como estaba (null): su depo/retiro es aproximado.
+    if (p.pnlUSD != null) {
+      p.pnlUSD = (p.currentValueUSD || 0) + (p.withdrawnUSD || 0) + rf + pend - (p.depositedUSD || 0);
+      const aprBase = p.depositedUSD > 0 ? p.depositedUSD : (p.currentValueUSD || 0);
+      if (p.ageDays && aprBase > 0) p.apr = ((rf + pend) / aprBase) * (365 / p.ageDays) * 100;
+    }
   }
   // 6) Total wallet = Σ fees (realizable donde se pudo, original donde no)
   state._feesRealizableUSD = positions.reduce((s, p) => s + (p.feesUSD || 0), 0);

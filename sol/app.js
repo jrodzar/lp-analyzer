@@ -1570,8 +1570,8 @@ function reconstructedCard(p) {
       </div>
     </div>
     <div class="bg-slate-950/40 rounded-lg p-2 text-xs">
-      <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees cobradas (aprox.)</div>
-      <div class="font-semibold text-emerald-400">${fmtUSD(p.feesCollectedUSD || 0)}</div>
+      <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees cobradas (valor actual, aprox.)</div>
+      <div class="font-semibold text-emerald-400" title="Valor ACTUAL de las fees cobradas (retenidas a precio de hoy + vendidas a USDC al precio del swap)${p._feesAtCollectUSD != null ? ` · al cobrar: ${fmtUSD(p._feesAtCollectUSD)}` : ""}">${fmtUSD(p.feesCollectedUSD || 0)}</div>
     </div>
     <div class="text-[10px] text-slate-500">Reconstruida del histórico de transacciones (NFT quemado al cerrar). Fees estimadas por heurística. No se muestran depósitos/retiros: el histórico previo a las últimas transacciones del wallet puede estar incompleto y no cuadrarían.</div>
   `;
@@ -1833,6 +1833,10 @@ async function analyze() {
       } catch (e) { console.warn("[sol-recon]", e); }
     }
 
+    // Valor realizable de fees (parte A wallet + parte B por posición), YA con las
+    // reconstruidas incluidas en el inventario por token. best-effort.
+    try { await applyRealizableFeesSol(addr); } catch (e) { console.warn("applyRealizableFeesSol:", e); }
+
     state.analysisStatus = {
       ok: !beError,
       errors: beError ? [{ source: "Birdeye", reason: beError }] : [],
@@ -1916,7 +1920,7 @@ async function reconstructClosedSol(owner, openVaults) {
       else continue;
       if (!cp || openVaults.has(cp)) continue;           // de una posición abierta o sin vault
       let pr = await birdeyePriceAt(t.mint, ts); if (pr == null) pr = priceOf(t.mint);
-      events.push({ vault: cp, mint: t.mint, ts, usd: (t.tokenAmount || 0) * (pr || 0), dir, isWd, proto });
+      events.push({ vault: cp, mint: t.mint, ts, amount: t.tokenAmount || 0, usd: (t.tokenAmount || 0) * (pr || 0), dir, isWd, proto });
       txVaults.push(cp);
     }
     for (let i = 0; i < txVaults.length; i++) { ensure(txVaults[i]); for (let j = i + 1; j < txVaults.length; j++) { ensure(txVaults[i]).add(txVaults[j]); ensure(txVaults[j]).add(txVaults[i]); } }
@@ -1941,10 +1945,18 @@ async function reconstructClosedSol(owner, openVaults) {
   for (const [c, rec] of byComp) {
     rec.events.sort((a, b) => a.ts - b.ts);
     let cumDep = 0, cumWd = 0, cumFees = 0, firstTs = null;
+    const feeAmtByMint = {}, feeCollects = []; // cantidades de fee por token (para el valor realizable)
     for (const e of rec.events) {
       if (firstTs == null) firstTs = e.ts;
       if (e.dir === "dep") cumDep += e.usd;
-      else { const r = e.usd; if (e.isWd || r > 0.05 * Math.max(cumDep - cumWd, 1)) cumWd += r; else cumFees += r; }
+      else {
+        const r = e.usd;
+        if (e.isWd || r > 0.05 * Math.max(cumDep - cumWd, 1)) cumWd += r;
+        else {
+          cumFees += r;
+          if (e.amount > 0) { feeAmtByMint[e.mint] = (feeAmtByMint[e.mint] || 0) + e.amount; feeCollects.push({ mint: e.mint, amount: e.amount, ts: e.ts }); }
+        }
+      }
     }
     if (cumFees <= 0.01 && cumDep <= 0.01) continue;     // nada útil que mostrar
     // par = los 2 mints con más volumen
@@ -1959,6 +1971,9 @@ async function reconstructClosedSol(owner, openVaults) {
       tickLower: null, tickUpper: null, tick: null, tickSpacing: null,
       currentValueUSD: 0, feesPendingUSD: 0,
       feesCollectedUSD: cumFees, feesUSD: cumFees,
+      _feesAtCollectUSD: cumFees,      // referencia "al cobrar" (la parte realizable lo sobrescribe)
+      _feeAmtByMint: feeAmtByMint,     // cantidades de fee por token → reparto realizable
+      _feeCollects: feeCollects,       // cobros {mint,amount,ts} → inventario FIFO wallet
       depositedUSD: cumDep, withdrawnUSD: cumWd,
       ageDays: firstTs ? Math.max(0, (Date.now() / 1000 - firstTs) / 86400) : 0,
       feesA: 0, feesB: 0, pnlBasis: "recon",
@@ -2373,9 +2388,10 @@ async function enrichSolanaPnL(owner) {
   // a través de TODAS las posiciones. px medio = usd/amt. Se vuelca a
   // state.tokenEntry al cerrar el bucle y lo lee analyze() para los idle.
   const entryAgg = {};
-  // Cantidades de fee cobradas por token (nivel wallet) → valor REALIZABLE: lo que
-  // sigues teniendo idle a precio de hoy + lo vendido a USDC al precio del swap.
-  const feeCollectsByMint = {}; // mint -> [{ amount, ts }]
+  // El valor REALIZABLE de las fees (lo que sigues teniendo idle a precio de hoy +
+  // lo vendido a USDC al precio del swap) se calcula en applyRealizableFeesSol,
+  // DESPUÉS de reconstruir las posiciones cerradas, para incluirlas. Aquí solo
+  // guardamos en cada posición sus cobros por token (_feeAmtByMint / _feeCollects).
 
   for (const p of state.positions) {
     const evs = perPos.get(p.mint);
@@ -2384,6 +2400,7 @@ async function enrichSolanaPnL(owner) {
     let costBasisUSD = 0, withdrawnUSD = 0, feesCollectedUSD = 0;
     let cumDep = 0, cumWd = 0, incomplete = false;
     const feeAmtByMint = {}; // cantidades de fee de ESTA posición (para reparto realizable, parte B)
+    const feeCollects = [];  // cobros {mint,amount,ts} de ESTA posición (inventario FIFO wallet)
     const netAmt = new Map(); // mint -> cantidad neta de principal (depósito - retiro)
     const debugLog = []; // diagnóstico: cada evento con su clasificación
     for (const e of evs) {
@@ -2435,8 +2452,8 @@ async function enrichSolanaPnL(owner) {
             cls = "withdraw";
           } else {
             feesCollectedUSD += usd;
-            (feeCollectsByMint[e.mint] = feeCollectsByMint[e.mint] || []).push({ amount: e.amount, ts: e.ts });
             feeAmtByMint[e.mint] = (feeAmtByMint[e.mint] || 0) + e.amount;
+            feeCollects.push({ mint: e.mint, amount: e.amount, ts: e.ts });
             cls = "fee";
           }
         }
@@ -2463,8 +2480,9 @@ async function enrichSolanaPnL(owner) {
     p.depositedUSD = costBasisUSD;
     p.withdrawnUSD = withdrawnUSD;
     p.feesCollectedUSD = feesCollectedUSD;
-    p._feesAtCollectUSD = feesCollectedUSD; // valor "al cobrar" (referencia; la parte B sobreescribe feesCollectedUSD con el realizable)
+    p._feesAtCollectUSD = feesCollectedUSD; // valor "al cobrar" (referencia; la parte realizable lo sobreescribe)
     p._feeAmtByMint = feeAmtByMint;          // cantidades de fee por token de esta posición (reparto realizable)
+    p._feeCollects = feeCollects;            // cobros {mint,amount,ts} → inventario FIFO wallet
     p.hodlUSD = hodlUSD;
     p.ilUSD = (p.currentValueUSD || 0) - hodlUSD;
     p.ilPct = hodlUSD > 0 ? (p.ilUSD / hodlUSD) * 100 : null;
@@ -2533,12 +2551,45 @@ async function enrichSolanaPnL(owner) {
     if (a.amt > 0 && a.usd > 0) state.tokenEntry[m] = a.usd / a.amt;
   }
 
-  // ── Valor REALIZABLE de las fees cobradas (nivel wallet) ──────────────────
-  // Por token: las fees que sigues teniendo idle → precio de HOY; las vendidas a
-  // un stable (USDC/USDT) → precio del swap (FIFO, topado a lo cobrado; un swap
-  // que venda principal no infla las fees). Fees ya en stable → su valor nominal.
+  // El valor realizable de las fees (parte A wallet + parte B por posición) se
+  // calcula en applyRealizableFeesSol(), invocado tras reconstruir las cerradas.
+
+  // Resumen de fuentes al final del análisis. Visible en consola para que el
+  // usuario pueda verificar de dónde salió cada precio sin tocar la UI.
+  const st = state._beStats || {};
+  const yhCount = (state._yahooFallbackMints || new Set()).size;
+  const bgColor = yhCount > 0 ? "#fbbf24" : "#34d399";
+  console.log(
+    `%c[PnL-sources]%c Birdeye OK: ${st.ok - yhCount} · Yahoo fallback (xStocks): ${yhCount} mint(s) · failures: ${st.denied + st.error + st.rate} · partial pos: ${st.partial}`,
+    `color:${bgColor};font-weight:bold`,
+    "color:#94a3b8",
+  );
+}
+
+// ── Valor REALIZABLE de las fees cobradas (parte A wallet + parte B por posición) ──
+// Por token: las fees que sigues teniendo idle → precio de HOY; las vendidas a un
+// stable (USDC/USDT) → precio del swap (FIFO, topado a lo cobrado; un swap que venda
+// principal no infla las fees). Fees ya en stable → su valor nominal. Se ejecuta
+// DESPUÉS de reconstruir las posiciones cerradas/quemadas, de modo que SUS fees
+// también entran en el inventario por token y se les recalcula el valor.
+async function applyRealizableFeesSol(owner) {
+  state._feesRealizableUSD = null;
+  const positions = state.positions || [];
+  if (!positions.length) return;
+  // Inventario de cobros por token, de TODAS las posiciones (abiertas + reconstruidas).
+  const feeCollectsByMint = {}; // mint -> [{ amount, ts }]
+  for (const p of positions) {
+    for (const c of (p._feeCollects || [])) {
+      if (!(c.amount > 0)) continue;
+      (feeCollectsByMint[c.mint] = feeCollectsByMint[c.mint] || []).push({ amount: c.amount, ts: c.ts });
+    }
+  }
+  if (!Object.keys(feeCollectsByMint).length) { state._feesRealizableUSD = 0; return; }
+  const curPrice = (mint) => (state.prices[mint] != null ? state.prices[mint] : (SOL_STABLES.has(mint) ? 1 : 0));
   try {
     // Swaps token→stable del histórico: el owner ENVÍA un fee-mint y RECIBE stable.
+    let txs = [];
+    try { txs = await fetchEnhancedTxs(owner); } catch (e) { txs = []; }
     const swapsByMint = {}; // mint -> [{ amountIn, usdcOut, ts }]
     for (const tx of txs) {
       const ts = tx.timestamp || 0;
@@ -2574,33 +2625,26 @@ async function enrichSolanaPnL(owner) {
       realizable += v;
     }
     state._feesRealizableUSD = realizable; // total wallet (parte A)
-    // ── Parte B: reparto del valor realizable POR POSICIÓN + recálculo de PnL/APR ──
-    // La fee de un token es fungible a nivel wallet → repartimos su valor realizable
-    // entre las posiciones que lo generaron, proporcional a lo que cada una cobró.
-    for (const p of state.positions) {
-      if (p.pnlBasis !== "birdeye" || !p._feeAmtByMint) continue;
+    // Parte B: reparto del valor realizable POR POSICIÓN (proporcional a lo cobrado)
+    // + recálculo de PnL/APR. Cubre abiertas (birdeye) Y reconstruidas (recon).
+    for (const p of positions) {
+      if (!p._feeAmtByMint || !Object.keys(p._feeAmtByMint).length) continue;
       let rf = 0;
       for (const mint in p._feeAmtByMint) {
         const tot = collectedTotalByMint[mint];
         if (tot > 0) rf += (p._feeAmtByMint[mint] / tot) * (realizableByMint[mint] || 0);
       }
       p.feesCollectedUSD = rf; // valor realizable (el "al cobrar" queda en p._feesAtCollectUSD)
+      p.feesUSD = rf;          // shim para shell.js (item.feesUSD)
       const pend = p.feesPendingUSD || 0;
-      p.pnlUSD = (p.currentValueUSD || 0) + (p.withdrawnUSD || 0) + rf + pend - (p.depositedUSD || 0);
-      p.apr = (p.ageDays && p.depositedUSD > 0) ? ((rf + pend) / p.depositedUSD) * (365 / p.ageDays) * 100 : null;
+      // Recalcular PnL/APR SOLO si ya tenían un valor fiable (posiciones abiertas con
+      // coste base). Las reconstruidas dejan PnL como estaba (su depo/retiro es aprox).
+      if (p.pnlUSD != null && p.depositedUSD != null) {
+        p.pnlUSD = (p.currentValueUSD || 0) + (p.withdrawnUSD || 0) + rf + pend - (p.depositedUSD || 0);
+        p.apr = (p.ageDays && p.depositedUSD > 0) ? ((rf + pend) / p.depositedUSD) * (365 / p.ageDays) * 100 : p.apr;
+      }
     }
   } catch (e) { console.warn("[fees-realizable]", e); state._feesRealizableUSD = null; }
-
-  // Resumen de fuentes al final del análisis. Visible en consola para que el
-  // usuario pueda verificar de dónde salió cada precio sin tocar la UI.
-  const st = state._beStats || {};
-  const yhCount = (state._yahooFallbackMints || new Set()).size;
-  const bgColor = yhCount > 0 ? "#fbbf24" : "#34d399";
-  console.log(
-    `%c[PnL-sources]%c Birdeye OK: ${st.ok - yhCount} · Yahoo fallback (xStocks): ${yhCount} mint(s) · failures: ${st.denied + st.error + st.rate} · partial pos: ${st.partial}`,
-    `color:${bgColor};font-weight:bold`,
-    "color:#94a3b8",
-  );
 }
 
 // Reconstruye coste base / interés / APR de posiciones Jupiter Lend a partir
