@@ -1263,6 +1263,11 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
       openedAt,
       deposited0: hist ? hist.deposited0 : 0,
       deposited1: hist ? hist.deposited1 : 0,
+      // cantidades de fees cobradas por token (NETAS de principal). Para el valor
+      // realizable se agrupan como un cobro único en openedAt (los eventos col
+      // crudos incluyen principal, así que no sirven por evento).
+      collectedFees0: hist ? hist.collectedFees0 : 0,
+      collectedFees1: hist ? hist.collectedFees1 : 0,
       raw: fakeRaw,
       _rpcOnly: true, // marca para el UI
       // serie temporal (depósitos + fees) reconstruida de eventos para el histórico
@@ -1367,6 +1372,10 @@ function enrichPosition(raw, ethPriceUSD, chainKey) {
     openedAt: Number(raw.transaction.timestamp),
     deposited0,
     deposited1,
+    // cantidades de fees cobradas por token (para el valor realizable; buildPortfolioTimeline
+    // afina con cobros reales por snapshot cuando los hay).
+    collectedFees0: fees0,
+    collectedFees1: fees1,
     raw,
   };
 }
@@ -1723,6 +1732,184 @@ async function enrichIdleIndicatorsEVM(owner) {
   }
 }
 
+// ============================================================================
+// FEES COBRADAS A VALOR REALIZABLE (parte A wallet + parte B por posición)
+// ============================================================================
+// Modelo (igual que Solana): el valor de las fees cobradas de un token =
+//   · lo que SIGUES teniendo idle  → a precio de HOY
+//   · lo que VENDISTE a un stable  → al precio del día del swap (el USDC recibido)
+// FIFO por token: los cobros (collect) alimentan el inventario; los swaps
+// token→stable lo consumen (topado a lo cobrado, para que vender principal no
+// infle las fees); el resto se valora a precio actual. Sustituye al feesUSD
+// actual (que el subgraph valora "al cobrar" y HyperEVM "a hoy").
+
+// Valora el inventario de fees de un token combinando cobros y swaps a stable.
+function valueRealizableFeesForToken(events, currentPrice) {
+  const evs = events.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  let inv = 0, realized = 0;
+  for (const e of evs) {
+    if (e.type === "collect") inv += e.amount;
+    else if (e.amount > 0) { // swap token→stable
+      const feePart = Math.min(e.amount, inv);
+      if (feePart > 0) realized += feePart * (e.usdcOut / e.amount);
+      inv -= feePart;
+    }
+  }
+  return realized + inv * (currentPrice || 0);
+}
+
+// Detecta swaps token→stable del histórico COMPLETO de transfers ERC-20 del owner
+// (Blockscout v2), agrupando por tx: si en una tx el owner ENVÍA un fee-token y
+// RECIBE neto un stable → venta de ese token a USDC al precio de ese día.
+// Devuelve { [addrLower]: [{ amountIn, usdcOut, ts }] }. Solo chains con blockscoutApi.
+async function fetchOwnerSwapsEVM(chainKey, owner, feeTokenSet) {
+  const c = state.chains[chainKey];
+  if (!c || !c.blockscoutApi || !feeTokenSet || !feeTokenSet.size) return {};
+  const ownerL = owner.toLowerCase();
+  const MAX_PAGES = 20; // tope para acotar coste; se avisa si se trunca
+  const base = `${c.blockscoutApi}/v2/addresses/${owner}/token-transfers?type=ERC-20`;
+  let url = base;
+  const byTx = new Map(); // txHash -> { ts, delta:{addr:amount}, sym:{addr:symbol} }
+  let truncated = false;
+  try {
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const r = await fetch(url);
+      if (!r.ok) break;
+      const j = await r.json();
+      const items = j.items || [];
+      for (const it of items) {
+        const tk = it.token || {};
+        const addr = (tk.address || tk.address_hash || "").toLowerCase();
+        if (!addr) continue;
+        const dec = Number(tk.decimals || 0);
+        const rawVal = (it.total && it.total.value != null) ? it.total.value : it.value;
+        if (rawVal == null) continue;
+        let amt;
+        try { amt = bigIntToDecimal(BigInt(rawVal), dec); } catch { amt = Number(rawVal) / 10 ** dec; }
+        if (!isFinite(amt) || amt === 0) continue;
+        const from = ((it.from && (it.from.hash || it.from)) || "").toLowerCase();
+        const to = ((it.to && (it.to.hash || it.to)) || "").toLowerCase();
+        const dir = (to === ownerL) ? 1 : (from === ownerL ? -1 : 0);
+        if (!dir) continue;
+        const txHash = it.tx_hash || it.transaction_hash || it.hash;
+        if (!txHash) continue;
+        let e = byTx.get(txHash);
+        if (!e) { e = { ts: 0, delta: {}, sym: {} }; byTx.set(txHash, e); }
+        e.delta[addr] = (e.delta[addr] || 0) + dir * amt;
+        e.sym[addr] = tk.symbol || "";
+        const ts = it.timestamp ? Math.floor(new Date(it.timestamp).getTime() / 1000) : 0;
+        if (ts && (!e.ts || ts < e.ts)) e.ts = ts;
+      }
+      const np = j.next_page_params;
+      if (!np) break;
+      if (page === MAX_PAGES - 1) { truncated = true; break; }
+      url = `${base}&${new URLSearchParams(np).toString()}`;
+    }
+  } catch (e) { console.warn(`[realizable-evm] transfers ${chainKey}:`, e?.message || e); }
+  if (truncated) console.warn(`[realizable-evm] ${chainKey}: histórico de transfers truncado a ${MAX_PAGES} págs; algún swap antiguo de fees podría no detectarse.`);
+  const swaps = {};
+  for (const [, e] of byTx) {
+    let stableIn = 0;
+    for (const a in e.delta) if (_isStableEVMSym(e.sym[a]) && e.delta[a] > 0) stableIn += e.delta[a];
+    if (stableIn <= 0) continue;
+    let bestAddr = null, bestOut = 0;
+    for (const a in e.delta) {
+      if (_isStableEVMSym(e.sym[a])) continue;
+      const out = -e.delta[a];
+      if (out > 0 && feeTokenSet.has(a) && out > bestOut) { bestOut = out; bestAddr = a; }
+    }
+    if (bestAddr) (swaps[bestAddr] = swaps[bestAddr] || []).push({ amountIn: bestOut, usdcOut: stableIn, ts: e.ts });
+  }
+  return swaps;
+}
+
+// Parte A (total wallet) + parte B (por posición: reescribe feesUSD y recalcula
+// PnL/APR). Debe ejecutarse DESPUÉS de buildPortfolioTimeline (que fija feesUSD).
+async function enrichRealizableFeesEVM(owner) {
+  state._feesRealizableUSD = null;
+  const positions = (state.positions || []).filter((p) => !p._lending);
+  if (!positions.length) return;
+  // 1) Precio HOY + símbolo por token (clave chainKey:addr)
+  const priceByTok = {}, symByTok = {};
+  for (const p of positions) {
+    for (const t of [p.token0, p.token1]) {
+      if (!t || !t.id) continue;
+      const k = `${p.chainKey}:${t.id.toLowerCase()}`;
+      if (priceByTok[k] == null && typeof t.priceUSD === "number") priceByTok[k] = t.priceUSD;
+      if (!symByTok[k]) symByTok[k] = t.symbol || "";
+    }
+  }
+  // 2) Fees cobradas por token (wallet) + asegurar _feeAmtByToken por posición.
+  //    Cobros reales (subgraph con snapshots) o lump en openedAt (resto / HyperEVM).
+  const feeCollectsByTok = {}; // k -> [{amount, ts}]
+  for (const p of positions) {
+    if (!p._feeAmtByToken) {
+      const m = {};
+      if ((p.collectedFees0 || 0) > 0 && p.token0?.id) m[p.token0.id.toLowerCase()] = p.collectedFees0;
+      if ((p.collectedFees1 || 0) > 0 && p.token1?.id) m[p.token1.id.toLowerCase()] = p.collectedFees1;
+      p._feeAmtByToken = m;
+    }
+    let collects = p._feeCollects;
+    if (!collects || !collects.length) {
+      collects = [];
+      const ts = p.openedAt || 0;
+      for (const addr in p._feeAmtByToken) collects.push({ addr, amount: p._feeAmtByToken[addr], ts });
+    }
+    for (const c of collects) (feeCollectsByTok[`${p.chainKey}:${c.addr}`] = feeCollectsByTok[`${p.chainKey}:${c.addr}`] || []).push({ amount: c.amount, ts: c.ts });
+  }
+  // 3) Swaps token→stable por chain (solo con blockscoutApi)
+  const chains = [...new Set(positions.map((p) => p.chainKey))];
+  const swapsByTok = {};
+  await Promise.all(chains.map(async (chainKey) => {
+    const c = state.chains[chainKey];
+    if (!c || !c.blockscoutApi) return;
+    const feeSet = new Set();
+    for (const k in feeCollectsByTok) {
+      if (!k.startsWith(chainKey + ":")) continue;
+      if (!_isStableEVMSym(symByTok[k])) feeSet.add(k.slice(chainKey.length + 1));
+    }
+    if (!feeSet.size) return;
+    const sw = await fetchOwnerSwapsEVM(chainKey, owner, feeSet).catch(() => ({}));
+    for (const addr in sw) swapsByTok[`${chainKey}:${addr}`] = sw[addr];
+  }));
+  // 4) Valor realizable por token
+  const realizableByTok = {}, collectedTotalByTok = {};
+  for (const k in feeCollectsByTok) {
+    collectedTotalByTok[k] = feeCollectsByTok[k].reduce((s, c) => s + c.amount, 0);
+    let v;
+    if (_isStableEVMSym(symByTok[k])) { v = collectedTotalByTok[k]; } // stable ≈ $1
+    else {
+      const events = [];
+      for (const c of feeCollectsByTok[k]) events.push({ type: "collect", amount: c.amount, ts: c.ts });
+      for (const s of (swapsByTok[k] || [])) events.push({ type: "swap", amount: s.amountIn, usdcOut: s.usdcOut, ts: s.ts });
+      v = valueRealizableFeesForToken(events, priceByTok[k] || 0);
+    }
+    realizableByTok[k] = v;
+  }
+  // 5) Re-atribuir por posición + recomputar PnL/APR
+  for (const p of positions) {
+    if (!p._feeAmtByToken || !Object.keys(p._feeAmtByToken).length) continue;
+    let rf = 0, any = false;
+    for (const addr in p._feeAmtByToken) {
+      const k = `${p.chainKey}:${addr}`;
+      const tot = collectedTotalByTok[k];
+      if (tot > 0) { rf += (p._feeAmtByToken[addr] / tot) * (realizableByTok[k] || 0); any = true; }
+    }
+    if (!any) continue;
+    p._feesAtCollectUSD = p.feesUSD; // referencia "al cobrar" para el tooltip
+    p.feesUSD = rf;
+    p.feesCollectedUSD = rf; // shim para shell.js
+    p._feesRealizable = true;
+    const pend = p.uncollectedUSD || 0;
+    p.feesTotalUSD = rf + pend;
+    p.pnlUSD = (p.currentValueUSD || 0) + (p.withdrawnUSD || 0) + rf + pend - (p.depositedUSD || 0);
+    const aprBase = p.depositedUSD > 0 ? p.depositedUSD : (p.currentValueUSD || 0);
+    if (p.ageDays && aprBase > 0) p.apr = ((rf + pend) / aprBase) * (365 / p.ageDays) * 100;
+  }
+  // 6) Total wallet = Σ fees (realizable donde se pudo, original donde no)
+  state._feesRealizableUSD = positions.reduce((s, p) => s + (p.feesUSD || 0), 0);
+}
+
 // Precio USD histórico de tokens por día vía The Graph (tokenDayDatas). Cacheado.
 const _dayPriceCache = new Map(); // `${chain}:${token}:${date}` -> priceUSD | null
 async function fetchTokenDayPrices(chainKey, tokenIds, dates) {
@@ -1805,6 +1992,7 @@ async function buildPortfolioTimeline(bundles) {
     let pD0 = 0, pD1 = 0, pW0 = 0, pW1 = 0, pC0 = 0, pC1 = 0;
     let costBasis = 0, withdrawn = 0, fees = 0, anyHist = false, anyCur = false;
     const byDay = new Map();
+    const feeCollects = []; // cobros reales por token+ts (para el valor realizable)
     for (const s of sorted) {
       const ts = Number(s.timestamp);
       const h0 = priceAt(t0, ts), h1 = priceAt(t1, ts);
@@ -1817,6 +2005,9 @@ async function buildPortfolioTimeline(bundles) {
       costBasis += Math.max(0, d0 - pD0) * pr0 + Math.max(0, d1 - pD1) * pr1;
       withdrawn += Math.max(0, w0 - pW0) * pr0 + Math.max(0, w1 - pW1) * pr1;
       fees      += Math.max(0, c0 - pC0) * pr0 + Math.max(0, c1 - pC1) * pr1;
+      const dC0 = Math.max(0, c0 - pC0), dC1 = Math.max(0, c1 - pC1);
+      if (dC0 > 0 && t0) feeCollects.push({ addr: t0, amount: dC0, ts });
+      if (dC1 > 0 && t1) feeCollects.push({ addr: t1, amount: dC1, ts });
       pD0 = d0; pD1 = d1; pW0 = w0; pW1 = w1; pC0 = c0; pC1 = c1;
       const day = Math.floor(ts * 1000 / 86400000) * 86400000;
       byDay.set(day, { depositedUSD: Math.max(0, costBasis - withdrawn), withdrawnUSD: withdrawn, feesUSD: fees });
@@ -1844,6 +2035,15 @@ async function buildPortfolioTimeline(bundles) {
       // no cambia nada visible.)
       p.feesUSD = fees;
       p.feesCollectedUSD = fees; // shim para shell.js
+    }
+    // Cobros reales por token (para el valor realizable). Si los hubo, fijan también
+    // _feeAmtByToken con los totales por token (pC0/pC1 = acumulado final).
+    if (feeCollects.length) {
+      p._feeCollects = feeCollects;
+      const m = {};
+      if (pC0 > 0 && t0) m[t0] = pC0;
+      if (pC1 > 0 && t1) m[t1] = pC1;
+      p._feeAmtByToken = m;
     }
     const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, c) => a.ts - c.ts);
     if (points.length) result.push({ posId: p.id, label: `${p.token0.symbol}/${p.token1.symbol}`, points, closed: !!p.closed });
@@ -2503,14 +2703,16 @@ function positionCard(p) {
         })()}
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees <span class="cursor-help" title="${p.histBasis === "full"
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees <span class="cursor-help" title="${p._feesRealizable
+          ? "Fees cobradas a VALOR REALIZABLE: lo que sigues teniendo idle valorado a precio de HOY + lo que vendiste a USDC valorado al precio del día del swap. 'Pendientes' usa precio actual."
+          : p.histBasis === "full"
           ? "Fees cobradas valoradas con el precio de cada token EN EL MOMENTO de cada cobro (tokenDayDatas del subgraph). Refleja el dinero real ganado, no afectado por movimientos de precio posteriores."
           : p.histBasis === "mixed"
             ? "Fees cobradas valoradas parcialmente con precios históricos del subgraph y parcialmente con el precio actual (algunas fechas concretas no tenían dato histórico). 'Pendientes' siempre usa precio actual."
             : p.histBasis === "none"
               ? "Fees cobradas valoradas con el precio ACTUAL (tokenDayDatas no devolvió datos — el proxy puede haber saturado por rate limit, o el subgraph no expone precios para esos tokens). 'Pendientes' usa precio actual."
-              : "Fees cobradas valoradas con el precio ACTUAL de los tokens (no se pudo cargar el histórico — posición sin snapshots, HyperEVM RPC-only, o error de red). NO refleja lo que valían cuando se cobraron. 'Pendientes' usa precio actual."}">ⓘ</span>${p.histBasis === "full" ? " <span title='Cálculo histórico'>📜</span>" : ""}</div>
-        <div class="font-semibold text-emerald-400 leading-tight">${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>
+              : "Fees cobradas valoradas con el precio ACTUAL de los tokens (no se pudo cargar el histórico — posición sin snapshots, HyperEVM RPC-only, o error de red). NO refleja lo que valían cuando se cobraron. 'Pendientes' usa precio actual."}">ⓘ</span>${p._feesRealizable ? " <span title='Valor realizable'>💵</span>" : p.histBasis === "full" ? " <span title='Cálculo histórico'>📜</span>" : ""}</div>
+        <div class="font-semibold text-emerald-400 leading-tight"${p._feesRealizable ? ` title="Valor ACTUAL de las fees cobradas (retenidas a precio de hoy + vendidas a USDC al precio del swap)${p._feesAtCollectUSD != null ? ` · al cobrar: ${fmtUSD(p._feesAtCollectUSD)}` : ""}"` : ""}>${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>
         <div class="text-amber-300 font-semibold leading-tight">${p.uncollectedUSD === null ? "n/d" : fmtUSD(p.uncollectedUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>
         <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${isFinite(p.apr) ? p.apr.toFixed(1) + "%" : "—"}</div>
       </div>
@@ -3030,10 +3232,13 @@ document.addEventListener("DOMContentLoaded", init);
               timeline.push({ posId: p.id || p.vault || label, label, points: p.timelineSeries, closed: !!p.closed });
             }
           }
+          // Fees cobradas a valor REALIZABLE (parte A+B). Después del timeline,
+          // que es quien fija feesUSD por posición. best-effort: nunca rompe.
+          try { await enrichRealizableFeesEVM(d.address); } catch (e) { console.warn("[realizable-evm]", e); }
           const status = (document.getElementById("status-msg") || {}).textContent || "";
           const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
           const idleTokens = state.idleTokens || [];
-          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline, analysisStatus, idleTokens }, "*");
+          window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: toPortfolioItems(), status, timeline, analysisStatus, idleTokens, feesRealizableUSD: state._feesRealizableUSD }, "*");
         })
         .catch((err) => {
           window.parent.postMessage({ type: "lp-result", app: "evm", reqId: d.reqId, address: d.address, items: [], status: "error", error: String(err), idleTokens: [], analysisStatus: { ok: false, errors: [{ source: "EVM", reason: String(err) }] } }, "*");
