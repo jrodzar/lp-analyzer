@@ -1666,6 +1666,12 @@ const _WRAPPED_NATIVE = { ethereum: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
 // id de CoinGecko del NATIVO por chain — para el precio HISTÓRICO del wrapped-native
 // (WHYPE/WETH) en chains que DefiLlama no cubre por dirección (HyperEVM) → la entrada.
 const _NATIVE_CG_BY_CHAIN = { ethereum: "ethereum", arbitrum: "ethereum", optimism: "ethereum", base: "ethereum", polygon: "polygon-ecosystem-token", bnb: "binancecoin", hyperevm: "hyperliquid" };
+// Tokens "proxy"/bridged por SÍMBOLO → id de CoinGecko, para histórico (entrada +
+// rango 30d) en chains que DefiLlama no cubre por dirección. Pensado para los
+// tokens "Unit" de HyperEVM (UETH=ETH, UBTC=BTC, USOL=SOL): 1:1 con el activo real.
+// Solo se usa como FALLBACK cuando no hay precio por dirección (→ no afecta a chains
+// con DefiLlama, donde el lookup por addr resuelve primero).
+const _PROXY_CG_BY_SYMBOL = { UETH: "ethereum", UBTC: "bitcoin", USOL: "solana" };
 // Precio histórico de un nativo vía DefiLlama por clave coingecko (chains sin soporte
 // por dirección, p.ej. HyperEVM → coingecko:hyperliquid). 0 si falla.
 async function defiLlamaHistCoingecko(cgId, ts) {
@@ -1703,6 +1709,12 @@ async function enrichIdleIndicatorsEVM(owner) {
         if (cgHist === undefined) cgHist = await defiLlamaHistCoingecko(cgNative, p.openedAt);
         hp = cgHist;
       }
+      // Fallback: tokens "Unit" de HyperEVM (UETH/UBTC/USOL) → histórico vía coingecko
+      // del activo real (1:1) → habilita "vs entrada" aunque DefiLlama no los tenga.
+      if (!(hp > 0)) {
+        const cgP = _PROXY_CG_BY_SYMBOL[(tk.symbol || "").toUpperCase()];
+        if (cgP) hp = await defiLlamaHistCoingecko(cgP, p.openedAt);
+      }
       if (!(hp > 0)) return;
       const k = `${p.chainKey}:${addr}`;
       const a = entryAgg[k] || (entryAgg[k] = { usd: 0, amt: 0 });
@@ -1733,6 +1745,11 @@ async function enrichIdleIndicatorsEVM(owner) {
       if (!coinKey && addr === (_WRAPPED_NATIVE[t.chain] || "").toLowerCase()) {
         const cg = _NATIVE_CG_BY_CHAIN[t.chain];
         if (cg) coinKey = `coingecko:${cg}`;
+      }
+      // Fallback termómetro para tokens "Unit" de HyperEVM (UETH/UBTC/USOL) por símbolo.
+      if (!coinKey) {
+        const cgP = _PROXY_CG_BY_SYMBOL[(t.symbol || "").toUpperCase()];
+        if (cgP) coinKey = `coingecko:${cgP}`;
       }
       const ea = entryAgg[`${t.chain}:${addr}`];
       if (ea && ea.amt > 0 && ea.usd > 0) t.entryPx = ea.usd / ea.amt;
