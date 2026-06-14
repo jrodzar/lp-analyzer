@@ -2352,6 +2352,9 @@ function buildWalletSection(r, colorOf, grouped) {
   section.className = grouped
     ? "pf-section rounded-lg border border-slate-800 bg-slate-950/30 overflow-hidden"
     : `pf-section rounded-xl border border-slate-800 border-l-4 ${borderCls} ${bgCls} mb-4 overflow-hidden`;
+  // Dirección del wallet para que los inyectores de pro (active/*) localicen el
+  // result por dirección y NO por índice DOM (que se rompe al agrupar por pilares).
+  section.dataset.lpWallet = String(r.entry.address || "").toLowerCase();
 
   const head = document.createElement("summary");
   head.className = "px-4 py-3 cursor-pointer hover:brightness-110 select-none";
