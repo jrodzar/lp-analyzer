@@ -1261,6 +1261,8 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
       apr,
       ageDays,
       openedAt,
+      deposited0: hist ? hist.deposited0 : 0,
+      deposited1: hist ? hist.deposited1 : 0,
       raw: fakeRaw,
       _rpcOnly: true, // marca para el UI
       // serie temporal (depósitos + fees) reconstruida de eventos para el histórico
@@ -1363,6 +1365,8 @@ function enrichPosition(raw, ethPriceUSD, chainKey) {
     apr,
     ageDays,
     openedAt: Number(raw.transaction.timestamp),
+    deposited0,
+    deposited1,
     raw,
   };
 }
@@ -1613,19 +1617,19 @@ async function fetchDefiLlamaPrices(chainKey, tokenIds, dates) {
 // Nativos (ETH/HYPE, addr 0x0) y HyperEVM no están en DefiLlama → se omiten (degrada
 // limpio: si falta la entrada sale solo el termómetro y viceversa).
 const _evmRange30dCache = new Map();
-async function evmPriceRange30d(chainKey, addr) {
-  const prefix = DEFILLAMA_CHAIN_PREFIX[chainKey];
-  if (!prefix || !addr) return null;
-  const a = addr.toLowerCase();
-  const key = `${chainKey}:${a}:${Math.floor(Date.now() / 86400000)}`;
-  if (_evmRange30dCache.has(key)) return _evmRange30dCache.get(key);
+// Rango 30d por clave DefiLlama (`${chain}:${addr}` para ERC-20, `coingecko:${id}`
+// para nativos). 1 llamada/clave, cacheada por día. Devuelve {min,max}|null.
+async function defiLlamaRange30d(coinKey) {
+  if (!coinKey) return null;
+  const cacheKey = `${coinKey}:${Math.floor(Date.now() / 86400000)}`;
+  if (_evmRange30dCache.has(cacheKey)) return _evmRange30dCache.get(cacheKey);
   let res = null;
   try {
     const start = Math.floor(Date.now() / 1000) - 30 * 86400;
-    const r = await fetch(`https://coins.llama.fi/chart/${prefix}:${a}?start=${start}&span=30&period=1d&searchWidth=600`);
+    const r = await fetch(`https://coins.llama.fi/chart/${coinKey}?start=${start}&span=30&period=1d&searchWidth=600`);
     if (r.ok) {
       const j = await r.json();
-      const c = j && j.coins && j.coins[`${prefix}:${a}`];
+      const c = j && j.coins && j.coins[coinKey];
       const series = c && c.prices;
       if (Array.isArray(series)) {
         const vals = series.map((p) => p && p.price).filter((v) => typeof v === "number" && isFinite(v) && v > 0);
@@ -1633,7 +1637,7 @@ async function evmPriceRange30d(chainKey, addr) {
       }
     }
   } catch (e) { res = null; }
-  _evmRange30dCache.set(key, res);
+  _evmRange30dCache.set(cacheKey, res);
   return res;
 }
 
@@ -1641,41 +1645,49 @@ function _isStableEVMSym(sym) {
   const s = (sym || "").toUpperCase();
   return s.startsWith("USD") || s.startsWith("EUR") || ["DAI", "FRAX", "MIM", "TUSD", "LUSD", "GUSD", "USDD"].includes(s);
 }
+// Nativos por símbolo → id de CoinGecko (DefiLlama acepta `coingecko:<id>`), para
+// que ETH/HYPE/BNB/POL idle tengan termómetro aunque no estén en DefiLlama por addr.
+const _NATIVE_CG = { ETH: "ethereum", WETH: "ethereum", HYPE: "hyperliquid", BNB: "binancecoin", WBNB: "binancecoin", POL: "polygon-ecosystem-token", MATIC: "matic-network", AVAX: "avalanche-2" };
 
 async function enrichIdleIndicatorsEVM(owner) {
   const idle = state.idleTokens || [];
   if (!idle.length) return;
-  // 1) Precio medio de entrada por token desde los depósitos de las posiciones
-  //    (histórico vía DefiLlama al timestamp de minteo). Reusa el caché de hist.
+  // 1) Precio medio de ENTRADA por token desde los depósitos de las posiciones,
+  //    a precio histórico DefiLlama del minteo. Usa p.deposited0/1 + p.openedAt →
+  //    cubre RPC-direct Y subgraph (Arbitrum/Base), sin depender de explorerApi.
   const entryAgg = {}; // `${chainKey}:${addrLower}` -> {usd, amt}
   for (const p of (state.positions || [])) {
     if (p._lending || p.reconstructed) continue;
-    const chain = state.chains[p.chainKey];
-    if (!chain || !DEFILLAMA_CHAIN_PREFIX[p.chainKey] || !chain.explorerApi || !chain.nftManagerAddress) continue;
-    let hist;
-    try { hist = await fetchPositionHistory(chain.explorerApi, chain.nftManagerAddress, p.nftId, p.token0.decimals, p.token1.decimals); }
-    catch (e) { continue; }
-    if (!hist || !hist.mintTs) continue;
-    const px = await fetchDefiLlamaPrices(p.chainKey, [p.token0.id, p.token1.id], [hist.mintTs]).catch(() => ({}));
+    if (!DEFILLAMA_CHAIN_PREFIX[p.chainKey] || !p.openedAt) continue;
+    if (!(p.deposited0 > 0) && !(p.deposited1 > 0)) continue;
+    const px = await fetchDefiLlamaPrices(p.chainKey, [p.token0.id, p.token1.id], [p.openedAt]).catch(() => ({}));
     const add = (tk, amt) => {
       if (!(amt > 0) || !tk || !tk.id) return;
-      const hp = px[`${tk.id.toLowerCase()}:${hist.mintTs}`];
+      const hp = px[`${tk.id.toLowerCase()}:${p.openedAt}`];
       if (!(hp > 0)) return;
       const k = `${p.chainKey}:${tk.id.toLowerCase()}`;
       const a = entryAgg[k] || (entryAgg[k] = { usd: 0, amt: 0 });
       a.usd += amt * hp; a.amt += amt;
     };
-    add(p.token0, hist.deposited0); add(p.token1, hist.deposited1);
+    add(p.token0, p.deposited0); add(p.token1, p.deposited1);
   }
-  // 2) Adjuntar entryPx + range30d a los idle no-stable, no-nativos, con valor.
+  // 2) Adjuntar entryPx + range30d a los idle no-stable con valor. Nativos
+  //    (ETH/HYPE/…) usan clave coingecko: para el rango (no tienen entrada).
   for (const t of idle) {
-    const addr = (t.address || "").toLowerCase();
-    if (!addr || /^0x0+$/.test(addr) || t.native) continue;
     if (_isStableEVMSym(t.symbol) || (t.valueUSD || 0) < 0.25) continue;
-    const ea = entryAgg[`${t.chain}:${addr}`];
-    if (ea && ea.amt > 0 && ea.usd > 0) t.entryPx = ea.usd / ea.amt;
-    const rg = await evmPriceRange30d(t.chain, addr).catch(() => null);
-    if (rg) t.range30d = rg;
+    const addr = (t.address || "").toLowerCase();
+    const isNative = !addr || /^0x0+$/.test(addr) || t.native;
+    let coinKey = null;
+    if (isNative) {
+      const cg = _NATIVE_CG[(t.symbol || "").toUpperCase()];
+      if (cg) coinKey = `coingecko:${cg}`;
+    } else {
+      const prefix = DEFILLAMA_CHAIN_PREFIX[t.chain];
+      if (prefix) coinKey = `${prefix}:${addr}`;
+      const ea = entryAgg[`${t.chain}:${addr}`];
+      if (ea && ea.amt > 0 && ea.usd > 0) t.entryPx = ea.usd / ea.amt;
+    }
+    if (coinKey) { const rg = await defiLlamaRange30d(coinKey).catch(() => null); if (rg) t.range30d = rg; }
   }
 }
 
