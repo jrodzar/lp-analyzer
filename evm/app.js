@@ -582,18 +582,24 @@ async function explorerFetch(fullUrl) {
         // failover (ETH/Arb/Polygon/HyperEVM) mantienen 25s + reintento Blockscout/Etherscan.
         const isLogs = /[?&]action=getLogs(&|$)/.test(fullUrl);
         const noFailover = !EVM_ETHERSCAN_CHAINID[k];
-        const down = noFailover && EXPLORER_GETLOGS_DOWN[k] && Date.now() < EXPLORER_GETLOGS_DOWN[k];
-        // Chain marcada caída: los getLogs ni se intentan; el resto (tokens/transfers) con
-        // timeout corto (si está cacheado en el Worker vuelve ya; si no, degradar rápido).
-        if (down && isLogs) throw new Error(`explorer ${k} caído (circuit breaker)`);
-        const tmo = down ? 3000 : (noFailover ? 7000 : 25000);
+        // El Worker SÍ recupera los getLogs de Base/BNB (thirdweb Insight) → si está
+        // configurado, el proxy responde en ~1-2s y nunca se llega al fail-fast. El
+        // circuit breaker es la red de seguridad por si NO lo está: SOLO lo arman/consultan
+        // los getLogs (un tokens lento de Base no debe tumbar sus getLogs, que sí tienen
+        // failover). Timeout 9s en getLogs (margen para thirdweb), 7s en el resto.
+        const down = noFailover && isLogs && EXPLORER_GETLOGS_DOWN[k] && Date.now() < EXPLORER_GETLOGS_DOWN[k];
+        if (down) throw new Error(`explorer ${k} caído (circuit breaker)`);
+        const tmo = down ? 3000 : (noFailover ? (isLogs ? 9000 : 7000) : 25000);
         try {
           const r = await fetchWithTimeout(proxyUrl, { headers: { ...proxyAuth(proxyUrl) } }, { timeoutMs: tmo, tries: 1 });
           if (r.ok) return r; // 401/5xx → al directo (solo chains con failover)
         } catch (e) { /* proxy caído/timeout */ }
-        // Cualquier fallo de una chain sin failover la marca caída (cooldown 90s) y NO
-        // reintenta Blockscout directo (mismo explorador degradado, otros ~15s) → degradar ya.
-        if (noFailover) { EXPLORER_GETLOGS_DOWN[k] = Date.now() + 90000; throw new Error(`explorer ${k} no disponible (sin failover)`); }
+        // Chain sin failover client-side: NO reintentar Blockscout directo (mismo explorador
+        // degradado, otros ~15s). Solo los getLogs arman el breaker (los tokens no).
+        if (noFailover) {
+          if (isLogs) EXPLORER_GETLOGS_DOWN[k] = Date.now() + 90000;
+          throw new Error(`explorer ${k} no disponible (sin failover)`);
+        }
         break;
       }
     }

@@ -13,9 +13,12 @@
  *      GRAPH_KEY     = tu API key de The Graph
  *      HELIUS_KEY    = tu API key de Helius
  *      BIRDEYE_KEY   = tu API key de Birdeye   (opcional)
- *      ETHERSCAN_KEY = tu API key de Etherscan V2 (opcional; failover de
- *                      exploradores EVM. 1 key gratis cubre Ethereum/Arbitrum/
- *                      Polygon/HyperEVM. Base/BNB son de pago → no failover ahí)
+ *      ETHERSCAN_KEY = tu API key de Etherscan V2 (opcional; failover de getLogs
+ *                      EVM. 1 key gratis cubre Ethereum/Arbitrum/Polygon/HyperEVM.
+ *                      Base/BNB son de pago en Etherscan → usan thirdweb, ver abajo)
+ *      THIRDWEB_CLIENT_ID = client id GRATIS de thirdweb.com (opcional; failover de
+ *                      getLogs para Base/BNB, que Etherscan no cubre gratis. Crear en
+ *                      thirdweb.com → Projects → Create → copiar Client ID)
  *    (opcional) ALLOWED_ORIGINS = "https://jrodzar.github.io,http://localhost:5180"
  *    (opcional) DAILY_LIMIT_GRAPH / DAILY_LIMIT_HELIUS / DAILY_LIMIT_BIRDEYE (números)
  * 4. Pásame la URL del Worker y la pongo en PROXY_BASE de evm/app.js y sol/app.js.
@@ -232,6 +235,8 @@ const EVM_BLOCKSCOUT = {
   hyperevm: "https://www.hyperscan.com/api",
 };
 const EVM_ETHERSCAN_FREE = { ethereum: 1, arbitrum: 42161, polygon: 137, hyperevm: 999 };
+// Chains que Etherscan NO cubre gratis (Base/BNB) → failover de getLogs a thirdweb Insight.
+const EVM_THIRDWEB_CHAINID = { base: 8453, bnb: 56 };
 
 async function fetchTimeout(u, ms, opts) {
   const ctrl = new AbortController();
@@ -245,6 +250,50 @@ function rawJson(text, cors) {
 async function sha256hex(s) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// thirdweb Insight: failover de getLogs para chains sin Etherscan-free (Base/BNB),
+// cuyo Blockscout va degradado. Lee address + topic0..3 del query estilo Blockscout y
+// consulta /v1/events/{address} (historia completa, pagina por resultados). Normaliza
+// al shape Blockscout/Etherscan {status,message,result:[{address,topics,data,blockNumber,
+// timeStamp,transactionHash,logIndex,...}]} que el cliente ya parsea. Devuelve el JSON
+// string, o null si falla (→ se cae a Blockscout). Requiere env.THIRDWEB_CLIENT_ID.
+async function fetchThirdwebLogs(chain, search, env) {
+  const cid = EVM_THIRDWEB_CHAINID[chain];
+  const p = new URLSearchParams((search || "").replace(/^\?/, ""));
+  const address = (p.get("address") || "").toLowerCase();
+  if (!cid || !/^0x[0-9a-f]{40}$/.test(address)) return null;
+  const endpoint = `https://${cid}.insight.thirdweb.com/v1/events/${address}`;
+  const result = [];
+  for (let page = 0; page < 10; page++) {            // tope 10 páginas (10k eventos) de seguridad
+    const q = new URLSearchParams();
+    q.set("chain_id", String(cid));
+    for (let i = 0; i < 4; i++) { const t = p.get("topic" + i); if (t) q.set("filter_topic_" + i, t); }
+    q.set("sort_by", "block_number");
+    q.set("sort_order", "asc");
+    q.set("limit", "1000");
+    q.set("page", String(page));
+    const r = await fetchTimeout(`${endpoint}?${q.toString()}`, 10000, { headers: { "x-client-id": env.THIRDWEB_CLIENT_ID } });
+    if (!r.ok) return null;
+    let j; try { j = JSON.parse(await r.text()); } catch (e) { return null; }
+    const items = j && Array.isArray(j.data) ? j.data : null;
+    if (items == null) return null;
+    for (const e of items) {
+      result.push({
+        address: e.address,
+        topics: Array.isArray(e.topics) ? e.topics : [],
+        data: e.data || "0x",
+        blockNumber: "0x" + Number(e.block_number).toString(16),
+        timeStamp: "0x" + Number(e.block_timestamp).toString(16),
+        transactionHash: e.transaction_hash,
+        logIndex: "0x" + Number(e.log_index || 0).toString(16),
+        transactionIndex: "0x" + Number(e.transaction_index || 0).toString(16),
+        gasPrice: "0x0", gasUsed: "0x0",
+      });
+    }
+    if (items.length < 1000) break;                  // última página (devolvió menos del límite)
+  }
+  return JSON.stringify({ status: "1", message: "OK", result });
 }
 
 // /evm/{chain}/{pathTrasBase}?{query}. El cliente manda la MISMA URL que ya
@@ -275,22 +324,31 @@ async function handleEvmExplorer(seg, url, cors, env) {
     try { const c = await env.QUOTA.get(cacheKey); if (c) return rawJson(c, cors); } catch (e) {}
   }
 
-  // 2) Blockscout con timeout server-side. Más corto (7s) en chains CON failover
-  //    Etherscan (free) para que el failover entre antes; más margen (12s) en
-  //    Base/BNB que NO tienen failover. Para getLogs validamos que result sea
-  //    array (si no, lo tratamos como fallo → failover).
-  const bsTimeout = EVM_ETHERSCAN_FREE[chain] ? 7000 : 12000;
   let bodyText = null, okData = false;
-  try {
-    const r = await fetchTimeout(target, bsTimeout);
-    if (r.ok) {
-      bodyText = await r.text();
-      if (isLogs) { try { okData = Array.isArray(JSON.parse(bodyText).result); } catch (e) { okData = false; } }
-      else okData = true;
-    }
-  } catch (e) { /* timeout/red → failover */ }
 
-  // 3) Failover de getLogs → Etherscan V2 (mismos params + chainid + apikey; mismo
+  // 2a) getLogs de Base/BNB: su Blockscout va degradado y Etherscan los cobra (sin
+  //     failover ahí) → thirdweb Insight PRIMERO (rápido y fiable). Su respuesta REST
+  //     se normaliza al shape Blockscout {status,message,result:[...]}.
+  if (isLogs && EVM_THIRDWEB_CHAINID[chain] && env.THIRDWEB_CLIENT_ID) {
+    try { const tw = await fetchThirdwebLogs(chain, search, env); if (tw) { bodyText = tw; okData = true; } } catch (e) {}
+  }
+
+  // 2b) Blockscout con timeout server-side (primario salvo que thirdweb ya resolviera).
+  //     Más corto (7s) en chains CON failover Etherscan para que entre antes; 12s en
+  //     Base/BNB. Para getLogs validamos que result sea array (si no → fallo → failover).
+  if (!okData) {
+    const bsTimeout = EVM_ETHERSCAN_FREE[chain] ? 7000 : 12000;
+    try {
+      const r = await fetchTimeout(target, bsTimeout);
+      if (r.ok) {
+        bodyText = await r.text();
+        if (isLogs) { try { okData = Array.isArray(JSON.parse(bodyText).result); } catch (e) { okData = false; } }
+        else okData = true;
+      }
+    } catch (e) { /* timeout/red → failover */ }
+  }
+
+  // 2c) Failover de getLogs → Etherscan V2 (mismos params + chainid + apikey; mismo
   //    shape {status,message,result:[...]} que ya consume el cliente). Solo free.
   if (!okData && isLogs && EVM_ETHERSCAN_FREE[chain] && env.ETHERSCAN_KEY) {
     try {
