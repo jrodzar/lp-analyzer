@@ -13,6 +13,9 @@
  *      GRAPH_KEY     = tu API key de The Graph
  *      HELIUS_KEY    = tu API key de Helius
  *      BIRDEYE_KEY   = tu API key de Birdeye   (opcional)
+ *      ETHERSCAN_KEY = tu API key de Etherscan V2 (opcional; failover de
+ *                      exploradores EVM. 1 key gratis cubre Ethereum/Arbitrum/
+ *                      Polygon/HyperEVM. Base/BNB son de pago → no failover ahí)
  *    (opcional) ALLOWED_ORIGINS = "https://jrodzar.github.io,http://localhost:5180"
  *    (opcional) DAILY_LIMIT_GRAPH / DAILY_LIMIT_HELIUS / DAILY_LIMIT_BIRDEYE (números)
  * 4. Pásame la URL del Worker y la pongo en PROXY_BASE de evm/app.js y sol/app.js.
@@ -31,6 +34,8 @@
  *   POST /helius-rpc              -> mainnet.helius-rpc.com (JSON-RPC + DAS)
  *   GET  /helius-tx/{owner}?...   -> api.helius.xyz Enhanced Transactions
  *   GET  /birdeye/{path}?...      -> public-api.birdeye.so (añade X-API-KEY)
+ *   GET  /evm/{chain}/{path}?... -> explorador EVM (Blockscout/Hyperscan) con
+ *        timeout + failover de getLogs a Etherscan V2 + caché KV del histórico
  *   GET  /stock/{ticker}/{YYYY-MM-DD} -> Yahoo Finance daily close (cierre
  *        más cercano ≤ fecha pedida). Sin key. Cacheado en KV indefinidamente
  *        (price) o 24h (null). Pensado como fallback de Birdeye para xStocks
@@ -99,6 +104,21 @@ export default {
         } catch (e) { /* binding falla → no bloqueamos */ }
       }
       return await handleStockRequest(seg, cors, env);
+    }
+
+    // ── Ruta /evm: proxy de exploradores EVM (Blockscout/Hyperscan) con timeout
+    // server-side + failover de getLogs a Etherscan V2 + caché KV del histórico.
+    // Auth ya aplicada arriba; RL por IP igual que las demás. Additiva: no toca
+    // las rutas existentes (nada la llama hasta que el cliente la enrute).
+    if (seg[0] === "evm") {
+      if (env.RL) {
+        const ip = request.headers.get("cf-connecting-ip") || "anon";
+        try {
+          const { success } = await env.RL.limit({ key: ip });
+          if (!success) return json({ error: "Demasiadas peticiones. Espera un momento." }, 429, cors);
+        } catch (e) { /* binding falla → no bloqueamos */ }
+      }
+      return await handleEvmExplorer(seg, url, cors, env);
     }
 
     try {
@@ -201,6 +221,91 @@ function json(obj, status, cors) {
 //   - hits (price != null): TTL infinito (los cierres no cambian).
 //   - misses (price = null): TTL 24 h (por si la fecha era pre-IPO o el
 //     ticker aún no se reconoce y luego sí).
+// ── EVM explorer proxy + failover ────────────────────────────────────────────
+// Blockscout/Hyperscan keyless por chain. Etherscan V2 (chainid) SOLO como failover
+// de getLogs y SOLO en chains de su tier GRATIS (Base/BNB/Optimism son de pago).
+const EVM_BLOCKSCOUT = {
+  ethereum: "https://eth.blockscout.com/api",
+  arbitrum: "https://arbitrum.blockscout.com/api",
+  polygon:  "https://polygon.blockscout.com/api",
+  base:     "https://base.blockscout.com/api",
+  hyperevm: "https://www.hyperscan.com/api",
+};
+const EVM_ETHERSCAN_FREE = { ethereum: 1, arbitrum: 42161, polygon: 137, hyperevm: 999 };
+
+async function fetchTimeout(u, ms, opts) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try { return await fetch(u, { ...(opts || {}), signal: ctrl.signal }); }
+  finally { clearTimeout(t); }
+}
+function rawJson(text, cors) {
+  return new Response(text, { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+}
+async function sha256hex(s) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// /evm/{chain}/{pathTrasBase}?{query}. El cliente manda la MISMA URL que ya
+// construye para Blockscout, pero tras "/evm/{chain}/" en vez del host. Primario:
+// Blockscout con timeout 12 s; si falla/timeout o un getLogs trae result NO-array
+// (vacío de los días malos), failover de getLogs a Etherscan V2 (mismo shape, solo
+// chains free). Cachea logs/transfers en KV 10 min (el histórico casi no cambia) →
+// reanálisis y otros usuarios van instantáneos, esquivando la lentitud de Blockscout.
+async function handleEvmExplorer(seg, url, cors, env) {
+  const chain = seg[1] || "";
+  const base = EVM_BLOCKSCOUT[chain];
+  if (!base) return json({ error: "EVM chain no soportada: " + chain }, 400, cors);
+  const extraPath = seg.slice(2).join("/");   // lo que va tras "{base}"
+  const search = url.search || "";            // incluye el "?"
+  const target = base + (extraPath ? "/" + extraPath : "") + search;
+
+  const isLogs = /[?&]action=getLogs(&|$)/.test(search);
+  const isTransfers = /token-transfers/.test(extraPath);
+  const cacheable = isLogs || isTransfers;    // histórico estable → cacheable
+  const cacheKey = cacheable ? "evm:" + chain + ":" + (await sha256hex(extraPath + search)) : null;
+
+  // 1) Caché KV
+  if (cacheKey && env.QUOTA) {
+    try { const c = await env.QUOTA.get(cacheKey); if (c) return rawJson(c, cors); } catch (e) {}
+  }
+
+  // 2) Blockscout con timeout server-side. Para getLogs, validamos que result sea
+  //    array (si no, lo tratamos como fallo → failover).
+  let bodyText = null, okData = false;
+  try {
+    const r = await fetchTimeout(target, 12000);
+    if (r.ok) {
+      bodyText = await r.text();
+      if (isLogs) { try { okData = Array.isArray(JSON.parse(bodyText).result); } catch (e) { okData = false; } }
+      else okData = true;
+    }
+  } catch (e) { /* timeout/red → failover */ }
+
+  // 3) Failover de getLogs → Etherscan V2 (mismos params + chainid + apikey; mismo
+  //    shape {status,message,result:[...]} que ya consume el cliente). Solo free.
+  if (!okData && isLogs && EVM_ETHERSCAN_FREE[chain] && env.ETHERSCAN_KEY) {
+    try {
+      const p = new URLSearchParams(search.replace(/^\?/, ""));
+      p.set("chainid", String(EVM_ETHERSCAN_FREE[chain]));
+      p.set("apikey", env.ETHERSCAN_KEY);
+      const r2 = await fetchTimeout("https://api.etherscan.io/v2/api?" + p.toString(), 12000);
+      if (r2.ok) {
+        const t2 = await r2.text();
+        try { if (Array.isArray(JSON.parse(t2).result)) { bodyText = t2; okData = true; } } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  if (bodyText == null) return json({ error: "explorer EVM no disponible (" + chain + ")" }, 502, cors);
+  // Cachear SOLO respuestas válidas (no errores ni getLogs vacíos/no-array).
+  if (cacheKey && okData && env.QUOTA) {
+    try { await env.QUOTA.put(cacheKey, bodyText, { expirationTtl: 600 }); } catch (e) {}
+  }
+  return rawJson(bodyText, cors);
+}
+
 async function handleStockRequest(seg, cors, env) {
   const ticker = (seg[1] || "").toUpperCase().replace(/[^A-Z0-9.\-]/g, "");
   const dateStr = seg[2] || "";
