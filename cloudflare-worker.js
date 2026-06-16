@@ -52,7 +52,7 @@ const DEFAULT_ALLOWED = [
 ];
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const origin = request.headers.get("Origin") || "";
     const allowed = env.ALLOWED_ORIGINS
@@ -121,7 +121,7 @@ export default {
           if (!success) return json({ error: "Demasiadas peticiones. Espera un momento." }, 429, cors);
         } catch (e) { /* binding falla → no bloqueamos */ }
       }
-      return await handleEvmExplorer(seg, url, cors, env);
+      return await handleEvmExplorer(seg, url, cors, env, ctx);
     }
 
     try {
@@ -302,7 +302,7 @@ async function fetchThirdwebLogs(chain, search, env) {
 // (vacío de los días malos), failover de getLogs a Etherscan V2 (mismo shape, solo
 // chains free). Cachea logs/transfers en KV 10 min (el histórico casi no cambia) →
 // reanálisis y otros usuarios van instantáneos, esquivando la lentitud de Blockscout.
-async function handleEvmExplorer(seg, url, cors, env) {
+async function handleEvmExplorer(seg, url, cors, env, ctx) {
   const chain = seg[1] || "";
   const base = EVM_BLOCKSCOUT[chain];
   if (!base) return json({ error: "EVM chain no soportada: " + chain }, 400, cors);
@@ -316,7 +316,9 @@ async function handleEvmExplorer(seg, url, cors, env) {
   // se cachean (TTL corto): son la MAYORÍA de las llamadas y no cambian cada segundo.
   const isBalances = /^v2\/addresses\//.test(extraPath) && !isTransfers;
   const cacheable = isLogs || isTransfers || isBalances;
-  const cacheTtl = (isLogs || isTransfers) ? 600 : 120; // histórico estable 10min; balances 2min
+  // getLogs de Base/BNB (thirdweb) → TTL largo (30min): reconstrucción es histórico estable
+  // y la query es cara/variable, interesa mantenerla caliente. Resto: 10min / balances 2min.
+  const cacheTtl = (isLogs && EVM_THIRDWEB_CHAINID[chain]) ? 1800 : (isLogs || isTransfers) ? 600 : 120;
   const cacheKey = cacheable ? "evm:" + chain + ":" + (await sha256hex(extraPath + search)) : null;
 
   // 1) Caché KV
@@ -324,19 +326,33 @@ async function handleEvmExplorer(seg, url, cors, env) {
     try { const c = await env.QUOTA.get(cacheKey); if (c) return rawJson(c, cors); } catch (e) {}
   }
 
-  let bodyText = null, okData = false;
+  let bodyText = null, okData = false, deferred = false;
 
-  // 2a) getLogs de Base/BNB: su Blockscout va degradado y Etherscan los cobra (sin
-  //     failover ahí) → thirdweb Insight PRIMERO (rápido y fiable). Su respuesta REST
-  //     se normaliza al shape Blockscout {status,message,result:[...]}.
+  // 2a) getLogs de Base/BNB: su Blockscout va degradado y Etherscan los cobra → thirdweb
+  //     Insight. Las queries CON datos responden ~1s; las VACÍAS (escaneo completo sin
+  //     hallazgos) son lentas/variables (3-15s). Para no atascar el análisis: CARRERA de
+  //     3.5s — si thirdweb responde rápido (caso con datos) lo servimos YA; si tarda,
+  //     devolvemos vacío al instante y COMPLETAMOS en background (ctx.waitUntil → caché),
+  //     de modo que el SIGUIENTE análisis lo tenga cacheado (TTL 30min). Una vez en caché,
+  //     instantáneo. UNA sola petición a thirdweb (se reutiliza la misma promesa).
   if (isLogs && EVM_THIRDWEB_CHAINID[chain] && env.THIRDWEB_CLIENT_ID) {
-    try { const tw = await fetchThirdwebLogs(chain, search, env); if (tw) { bodyText = tw; okData = true; } } catch (e) {}
+    const twPromise = fetchThirdwebLogs(chain, search, env).catch(() => null);
+    const winner = await Promise.race([twPromise, new Promise((res) => setTimeout(() => res("__t__"), 3500))]);
+    if (winner && winner !== "__t__") {
+      bodyText = winner; okData = true;                 // respondió rápido → servir (+ caché normal abajo)
+    } else {
+      if (ctx && ctx.waitUntil && cacheKey && env.QUOTA) {
+        ctx.waitUntil(twPromise.then((tw) => tw && env.QUOTA.put(cacheKey, tw, { expirationTtl: cacheTtl })).catch(() => {}));
+      }
+      bodyText = JSON.stringify({ status: "1", message: "OK", result: [] }); // vacío temporal (NO se cachea)
+      deferred = true;
+    }
   }
 
-  // 2b) Blockscout con timeout server-side (primario salvo que thirdweb ya resolviera).
-  //     Más corto (7s) en chains CON failover Etherscan para que entre antes; 12s en
-  //     Base/BNB. Para getLogs validamos que result sea array (si no → fallo → failover).
-  if (!okData) {
+  // 2b) Blockscout con timeout server-side (primario salvo que thirdweb resolviera o quede
+  //     diferido). Más corto (7s) en chains CON failover Etherscan; 12s en Base/BNB. Para
+  //     getLogs validamos que result sea array (si no → fallo → failover).
+  if (!okData && !deferred) {
     const bsTimeout = EVM_ETHERSCAN_FREE[chain] ? 7000 : 12000;
     try {
       const r = await fetchTimeout(target, bsTimeout);
@@ -350,7 +366,7 @@ async function handleEvmExplorer(seg, url, cors, env) {
 
   // 2c) Failover de getLogs → Etherscan V2 (mismos params + chainid + apikey; mismo
   //    shape {status,message,result:[...]} que ya consume el cliente). Solo free.
-  if (!okData && isLogs && EVM_ETHERSCAN_FREE[chain] && env.ETHERSCAN_KEY) {
+  if (!okData && !deferred && isLogs && EVM_ETHERSCAN_FREE[chain] && env.ETHERSCAN_KEY) {
     try {
       const p = new URLSearchParams(search.replace(/^\?/, ""));
       p.set("chainid", String(EVM_ETHERSCAN_FREE[chain]));
