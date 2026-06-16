@@ -774,13 +774,20 @@ async function fetchRevertLending(owner) {
       if (c.explorerApi) {
         try {
           const h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec);
-          const net = h.deposited - h.withdrawn;
-          depositedUSD = net * priceUSD;
-          gainsUSD = currentValueUSD - depositedUSD;
-          openedAt = h.firstTs;
-          ageDays = openedAt ? Math.max((now - openedAt) / 86400, 1 / 24) : null;
-          apr = (depositedUSD > 0 && ageDays) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
-          timelineSeries = buildLendingTimeline(h.events, gainsUSD, now);
+          // Solo computamos interés si se encontró ALGÚN depósito. Si el histórico
+          // vino VACÍO (típico cuando Blockscout va degradado y responde result vacío
+          // en consultas lentas) pero SÍ hay saldo, NO inflar el "interés" al valor
+          // entero (depositado=0 → gain=valor): dejar todo null → la card muestra "—"
+          // y el total global no se contamina con un interés ficticio.
+          if (h.deposited > 0) {
+            const net = h.deposited - h.withdrawn;
+            depositedUSD = net * priceUSD;
+            gainsUSD = currentValueUSD - depositedUSD;
+            openedAt = h.firstTs;
+            ageDays = openedAt ? Math.max((now - openedAt) / 86400, 1 / 24) : null;
+            apr = (depositedUSD > 0 && ageDays) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
+            timelineSeries = buildLendingTimeline(h.events, gainsUSD, now);
+          }
         } catch (e) { /* sin histórico: solo valor actual */ }
       }
       return {
