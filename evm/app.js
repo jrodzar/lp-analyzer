@@ -577,23 +577,23 @@ async function explorerFetch(fullUrl) {
       if (base && fullUrl.startsWith(base)) {
         const proxyUrl = `${PROXY_BASE}/evm/${k}${fullUrl.slice(base.length)}`;
         // Chains SIN failover (no están en Etherscan-free, p.ej. Base): si su Blockscout
-        // está degradado, ni el proxy ni el directo lo arreglan. Para esos getLogs
-        // (reconstrucción/lending, secundarios) degradamos RÁPIDO: timeout corto y sin
-        // reintento en directo. Las chains con failover mantienen 25s (Blockscout+Etherscan).
+        // está degradado, ni el proxy ni el directo lo arreglan (el directo es el MISMO
+        // Blockscout). Degradamos rápido y NO reintentamos en directo. Las chains con
+        // failover (ETH/Arb/Polygon/HyperEVM) mantienen 25s + reintento Blockscout/Etherscan.
         const isLogs = /[?&]action=getLogs(&|$)/.test(fullUrl);
         const noFailover = !EVM_ETHERSCAN_CHAINID[k];
-        const failFast = isLogs && noFailover;
-        // Si ya falló en esta sesión (cooldown 90s), no reintentar: degradar al instante.
-        if (failFast && EXPLORER_GETLOGS_DOWN[k] && Date.now() < EXPLORER_GETLOGS_DOWN[k]) {
-          throw new Error(`explorer ${k} caído (circuit breaker)`);
-        }
+        const down = noFailover && EXPLORER_GETLOGS_DOWN[k] && Date.now() < EXPLORER_GETLOGS_DOWN[k];
+        // Chain marcada caída: los getLogs ni se intentan; el resto (tokens/transfers) con
+        // timeout corto (si está cacheado en el Worker vuelve ya; si no, degradar rápido).
+        if (down && isLogs) throw new Error(`explorer ${k} caído (circuit breaker)`);
+        const tmo = down ? 3000 : (noFailover ? 7000 : 25000);
         try {
-          const r = await fetchWithTimeout(proxyUrl, { headers: { ...proxyAuth(proxyUrl) } }, { timeoutMs: failFast ? 9000 : 25000, tries: 1 });
-          if (r.ok) return r; // 401/5xx → caemos al directo
-        } catch (e) { /* proxy caído/timeout → directo */ }
-        // Reintentar Blockscout directo es inútil si no hay failover (mismo explorador lento)
-        // → marcar la chain como caída y degradar ya en vez de gastar otros ~15s.
-        if (failFast) { EXPLORER_GETLOGS_DOWN[k] = Date.now() + 90000; throw new Error(`explorer ${k} no disponible (sin failover)`); }
+          const r = await fetchWithTimeout(proxyUrl, { headers: { ...proxyAuth(proxyUrl) } }, { timeoutMs: tmo, tries: 1 });
+          if (r.ok) return r; // 401/5xx → al directo (solo chains con failover)
+        } catch (e) { /* proxy caído/timeout */ }
+        // Cualquier fallo de una chain sin failover la marca caída (cooldown 90s) y NO
+        // reintenta Blockscout directo (mismo explorador degradado, otros ~15s) → degradar ya.
+        if (noFailover) { EXPLORER_GETLOGS_DOWN[k] = Date.now() + 90000; throw new Error(`explorer ${k} no disponible (sin failover)`); }
         break;
       }
     }
