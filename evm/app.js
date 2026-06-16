@@ -564,6 +564,11 @@ async function fetchWithTimeout(url, opts = {}, { timeoutMs = 15000, tries = 2, 
 // chainId de Etherscan V2 SOLO para chains en su tier GRATIS (Base/BNB de pago).
 const EVM_ETHERSCAN_CHAINID = { ethereum: 1, arbitrum: 42161, polygon: 137, hyperevm: 999 };
 
+// Circuit breaker: chains SIN failover cuyo Blockscout ya falló (degradado) → saltar sus
+// siguientes getLogs al instante. Las wallets se analizan en SERIE (mismo iframe), así que
+// sin esto se acumularían 9s × N wallets en calls que degradan igual. chainKey → ts (ms).
+const EXPLORER_GETLOGS_DOWN = {};
+
 async function explorerFetch(fullUrl) {
   // 1) PROXY (sesión): caché + failover server-side con la key del owner.
   if (PROXY_BASE && proxyToken) {
@@ -578,13 +583,17 @@ async function explorerFetch(fullUrl) {
         const isLogs = /[?&]action=getLogs(&|$)/.test(fullUrl);
         const noFailover = !EVM_ETHERSCAN_CHAINID[k];
         const failFast = isLogs && noFailover;
+        // Si ya falló en esta sesión (cooldown 90s), no reintentar: degradar al instante.
+        if (failFast && EXPLORER_GETLOGS_DOWN[k] && Date.now() < EXPLORER_GETLOGS_DOWN[k]) {
+          throw new Error(`explorer ${k} caído (circuit breaker)`);
+        }
         try {
           const r = await fetchWithTimeout(proxyUrl, { headers: { ...proxyAuth(proxyUrl) } }, { timeoutMs: failFast ? 9000 : 25000, tries: 1 });
           if (r.ok) return r; // 401/5xx → caemos al directo
         } catch (e) { /* proxy caído/timeout → directo */ }
         // Reintentar Blockscout directo es inútil si no hay failover (mismo explorador lento)
-        // → degradar ya en vez de gastar otros ~15s.
-        if (failFast) throw new Error(`explorer ${k} no disponible (sin failover)`);
+        // → marcar la chain como caída y degradar ya en vez de gastar otros ~15s.
+        if (failFast) { EXPLORER_GETLOGS_DOWN[k] = Date.now() + 90000; throw new Error(`explorer ${k} no disponible (sin failover)`); }
         break;
       }
     }
