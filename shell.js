@@ -2131,7 +2131,7 @@ function fillSummary(prefix, items, extra = {}) {
     if (a.aprAnual != null) {
       const color = a.aprAnual >= 0 ? "text-emerald-400" : "text-rose-400";
       $i("yield").className = "text-xl font-bold mt-1 " + color;
-      $i("yield").innerHTML = `${a.aprMensual >= 0 ? "+" : ""}${a.aprMensual.toFixed(2)}% <span class="text-[11px] text-slate-400 font-normal">mensual</span>`;
+      $i("yield").innerHTML = `${a.aprMensual >= 0 ? "+" : ""}${a.aprMensual.toFixed(2)}% <span class="text-[11px] text-slate-400 font-normal">mensual (MPR)</span>`;
       if ($i("yield-sub")) $i("yield-sub").innerHTML = `<span class="${color} font-semibold">${a.aprAnual >= 0 ? "+" : ""}${a.aprAnual.toFixed(2)}%</span> anual (APR) · ${a.aprN}/${a.count} pos.`;
     } else {
       $i("yield").className = "text-xl font-bold mt-1";
@@ -3064,7 +3064,7 @@ function portfolioCard(it, color) {
   // Va DENTRO de la columna "Fees" (bajo cobradas/pendientes), como en la ficha
   // completa del motor.
   const aprLine = (typeof it.apr === "number" && isFinite(it.apr))
-    ? `<div class="text-[10px] text-slate-400 pt-0.5">APR ~ <span class="text-slate-200 font-semibold">${it.apr.toFixed(1)}%</span></div>`
+    ? `<div class="text-[10px] text-slate-400 pt-0.5">APR ~ <span class="text-slate-200 font-semibold">${it.apr.toFixed(1)}%</span> · MPR ~ <span class="text-slate-200 font-semibold">${(it.apr / 12).toFixed(2)}%</span></div>`
     : "";
   let feesLine;
   if (it.lending) {

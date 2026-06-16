@@ -1425,7 +1425,7 @@ function lendingCard(p) {
         <div class="font-semibold ${gain == null ? "" : pnlColor(gain)}">${gain == null ? "—" : fmtUSD(gain)}</div>
         <div class="text-[10px] text-slate-400 mt-0.5">APR ~ ${p.apr == null
           ? (p._aprTooEarly ? `— <span class="text-slate-500">(esperando ≥ 1 día)</span>` : "—")
-          : p.apr.toFixed(1) + "%"}</div>
+          : p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%"}</div>
       </div>
     </div>
     <details class="text-xs">
@@ -1632,7 +1632,7 @@ function positionCard(p) {
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees</div>
         ${p.pnlBasis === "birdeye" ? `<div class="font-semibold text-emerald-400 leading-tight" title="Valor ACTUAL de las fees cobradas (retenidas a precio de hoy + vendidas a USDC al precio del swap)${p._feesAtCollectUSD != null ? ` · al cobrar: ${fmtUSD(p._feesAtCollectUSD)}` : ""}">${fmtUSD(p.feesCollectedUSD || 0)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>` : ""}
         <div class="font-semibold text-amber-300 leading-tight">${fmtUSD(p.feesPendingUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>
-        <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${(p.apr != null && isFinite(p.apr)) ? p.apr.toFixed(1) + "%" : "—"}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${(p.apr != null && isFinite(p.apr)) ? p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%" : "—"}</div>
         <div class="text-[10px] text-slate-400">${fmtToken(p.feesA, p.token0.symbol)}</div>
         <div class="text-[10px] text-slate-400">${fmtToken(p.feesB, p.token1.symbol)}</div>
       </div>

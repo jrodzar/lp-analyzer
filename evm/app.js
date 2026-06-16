@@ -2578,7 +2578,7 @@ function lendingCard(p) {
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Ganancias (interés)</div>
         <div class="font-semibold ${pnlColor(gain)}">${gain == null ? "—" : fmtUSD(gain)}</div>
-        <div class="text-[10px] text-slate-400 mt-0.5">APR ~ ${p.apr == null ? "—" : p.apr.toFixed(1) + "%"}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">APR ~ ${p.apr == null ? "—" : p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%"}</div>
       </div>
     </div>
     <details class="text-xs">
@@ -2875,7 +2875,7 @@ function positionCard(p) {
               : "Fees cobradas valoradas con el precio ACTUAL de los tokens (no se pudo cargar el histórico — posición sin snapshots, HyperEVM RPC-only, o error de red). NO refleja lo que valían cuando se cobraron. 'Pendientes' usa precio actual."}">ⓘ</span>${p._feesRealizable ? " <span title='Valor realizable'>💵</span>" : p.histBasis === "full" ? " <span title='Cálculo histórico'>📜</span>" : ""}</div>
         <div class="font-semibold text-emerald-400 leading-tight"${p._feesRealizable ? ` title="Valor ACTUAL de las fees cobradas (retenidas a precio de hoy + vendidas a USDC al precio del swap)${p._feesAtCollectUSD != null ? ` · al cobrar: ${fmtUSD(p._feesAtCollectUSD)}` : ""}"` : ""}>${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>
         <div class="text-amber-300 font-semibold leading-tight">${p.uncollectedUSD === null ? "n/d" : fmtUSD(p.uncollectedUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>
-        <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${isFinite(p.apr) ? p.apr.toFixed(1) + "%" : "—"}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${isFinite(p.apr) ? p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%" : "—"}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL <span class="cursor-help" title="Valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Estimación; no incluye gas.">ⓘ</span></div>
