@@ -690,16 +690,30 @@ async function fetchIdleTokensEVM(chainKey, address) {
   const c = state.chains[chainKey];
   if (!c || !c.blockscoutApi) return []; // chain sin soporte (p. ej. BNB / Optimism)
   if (c._noIdleSupport) return [];        // ya falló antes (CORS / red) → no reintentamos
-  // Dos peticiones en paralelo:
-  //   /v2/addresses/{addr}/tokens?type=ERC-20  → tokens ERC-20 con balance
-  //   /v2/addresses/{addr}                     → coin_balance (nativo: ETH, HYPE, etc.)
+
+  // 1) Balance nativo (ETH, HYPE, MATIC…). Preferimos el RPC en VIVO (eth_getBalance):
+  // el `coin_balance` del explorer va con retraso. Lo sacamos PRIMERO para evitar pedir
+  // /v2/addresses/{addr} al explorer salvo que el RPC falle — esa call es lenta si el
+  // explorer está degradado (Base) y era redundante con el RPC. Read-only.
+  let nativeRaw = null;
+  if (c.nativeSymbol) {
+    try { const hex = await rpcGetBalance(c.rpcUrls || c.rpcUrl, address); if (hex) nativeRaw = BigInt(hex); }
+    catch (e) { /* RPC caído → pediremos el coin_balance del explorer como fallback */ }
+  }
+
+  // 2) Tokens ERC-20 (requerido). El addr-info del explorer SOLO se pide si el RPC
+  // nativo falló (fallback del coin_balance) → en el caso normal ahorramos esa llamada.
   const urlTokens = `${c.blockscoutApi}/v2/addresses/${address}/tokens?type=ERC-20`;
-  const urlAddr   = `${c.blockscoutApi}/v2/addresses/${address}`;
-  let items = [], addrInfo = null;
+  const needAddr  = !!(c.nativeSymbol && nativeRaw == null);
+  let items = [];
   try {
-    const [rT, rA] = await Promise.all([explorerFetch(urlTokens), explorerFetch(urlAddr)]);
-    if (rT.ok) items = (await rT.json()).items || [];
-    if (rA.ok) addrInfo = await rA.json();
+    const reqs = [explorerFetch(urlTokens)];
+    if (needAddr) reqs.push(explorerFetch(`${c.blockscoutApi}/v2/addresses/${address}`));
+    const res = await Promise.all(reqs);
+    if (res[0].ok) items = (await res[0].json()).items || [];
+    if (needAddr && res[1] && res[1].ok) {
+      try { const ai = await res[1].json(); if (ai && ai.coin_balance) nativeRaw = BigInt(ai.coin_balance); } catch (e) {}
+    }
   } catch (e) {
     // CORS o red caída → marcar la chain para no volver a intentar en esta sesión.
     c._noIdleSupport = true;
@@ -709,18 +723,11 @@ async function fetchIdleTokensEVM(chainKey, address) {
   // Procesar y filtrar tokens sin balance
   const tokens = [];
   const missingPrice = [];
-  // 1) Balance nativo (ETH, HYPE, MATIC, BNB…). Preferimos el RPC en VIVO
-  // (eth_getBalance) en vez del `coin_balance` del explorer, que va con retraso
-  // (cachea el balance y no refleja la actividad reciente). Fallback al explorer
-  // si el RPC falla. Read-only.
-  if (c.nativeSymbol) {
-    let raw = null;
-    try { const hex = await rpcGetBalance(c.rpcUrls || c.rpcUrl, address); if (hex) raw = BigInt(hex); }
-    catch (e) { /* RPC caído → caemos al coin_balance del explorer */ }
-    if (raw == null && addrInfo && addrInfo.coin_balance) { try { raw = BigInt(addrInfo.coin_balance); } catch (e) { raw = null; } }
+  // Balance nativo (de RPC, o del coin_balance del explorer como fallback).
+  if (c.nativeSymbol && nativeRaw != null) {
     try {
-      if (raw != null && raw > 0n) {
-        const balance = bigIntToDecimal(raw, 18); // todos los nativos EVM usan 18 decimales
+      if (nativeRaw > 0n) {
+        const balance = bigIntToDecimal(nativeRaw, 18); // todos los nativos EVM usan 18 decimales
         const obj = {
           chain: chainKey,
           symbol: c.nativeSymbol,
