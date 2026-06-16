@@ -263,7 +263,11 @@ async function handleEvmExplorer(seg, url, cors, env) {
 
   const isLogs = /[?&]action=getLogs(&|$)/.test(search);
   const isTransfers = /token-transfers/.test(extraPath);
-  const cacheable = isLogs || isTransfers;    // histórico estable → cacheable
+  // tokens idle (/v2/addresses/{a}/tokens) + addr-info (/v2/addresses/{a}) → también
+  // se cachean (TTL corto): son la MAYORÍA de las llamadas y no cambian cada segundo.
+  const isBalances = /^v2\/addresses\//.test(extraPath) && !isTransfers;
+  const cacheable = isLogs || isTransfers || isBalances;
+  const cacheTtl = (isLogs || isTransfers) ? 600 : 120; // histórico estable 10min; balances 2min
   const cacheKey = cacheable ? "evm:" + chain + ":" + (await sha256hex(extraPath + search)) : null;
 
   // 1) Caché KV
@@ -304,7 +308,7 @@ async function handleEvmExplorer(seg, url, cors, env) {
   if (bodyText == null) return json({ error: "explorer EVM no disponible (" + chain + ")" }, 502, cors);
   // Cachear SOLO respuestas válidas (no errores ni getLogs vacíos/no-array).
   if (cacheKey && okData && env.QUOTA) {
-    try { await env.QUOTA.put(cacheKey, bodyText, { expirationTtl: 600 }); } catch (e) {}
+    try { await env.QUOTA.put(cacheKey, bodyText, { expirationTtl: cacheTtl }); } catch (e) {}
   }
   return rawJson(bodyText, cors);
 }
