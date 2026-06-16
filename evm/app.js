@@ -533,7 +533,7 @@ const EV_4626_WITHDRAW = "0xfbde797d201c681b91056529119e0b02407c7bb96a4a2c75c01f
 // Promise.all). Al agotar los intentos LANZA → los callers ya tienen try/catch
 // que degradan con gracia (idle sin esa chain, posición sin histórico, etc.).
 // No es failover a otra fuente (eso requiere el proxy); es el escudo anti-cuelgue.
-async function fetchWithTimeout(url, opts = {}, { timeoutMs = 8000, tries = 2, retryDelayMs = 300 } = {}) {
+async function fetchWithTimeout(url, opts = {}, { timeoutMs = 15000, tries = 2, retryDelayMs = 300 } = {}) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
     const ctrl = new AbortController();
@@ -542,6 +542,10 @@ async function fetchWithTimeout(url, opts = {}, { timeoutMs = 8000, tries = 2, r
       return await fetch(url, { ...opts, signal: ctrl.signal });
     } catch (e) {
       lastErr = e;
+      // Si fue TIMEOUT (AbortError) NO reintentamos: el host está lento y reintentar
+      // solo duplica la espera (justo lo que pasa los días que Blockscout va mal).
+      // Reintentamos SOLO ante error de red transitorio (Failed to fetch, etc.).
+      if (e && e.name === "AbortError") break;
       if (i < tries - 1) await new Promise((r) => setTimeout(r, retryDelayMs));
     } finally {
       clearTimeout(timer);
