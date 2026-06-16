@@ -57,7 +57,7 @@ const els = {
   settingsModal: $("settings-modal"), settingsClose: $("settings-close"),
   settingsCancel: $("settings-cancel"), settingsSave: $("settings-save"),
   settingsTest: $("settings-test"), settingsStatus: $("settings-status"),
-  setGraphKey: $("set-graph-key"), setHeliusKey: $("set-helius-key"), setBirdeyeKey: $("set-birdeye-key"),
+  setGraphKey: $("set-graph-key"), setHeliusKey: $("set-helius-key"), setBirdeyeKey: $("set-birdeye-key"), setEtherscanKey: $("set-etherscan-key"),
   frameEvm: $("frame-evm"), frameSol: $("frame-sol"),
   // histórico
   histEmpty: $("hist-empty"), histContent: $("hist-content"),
@@ -1202,7 +1202,7 @@ async function handleForgotPassword() {
     }, { merge: true });
     forgetKey(state.user.uid);
     _pendingEnc = null; _legacyPortfolio = null;
-    _pendingApiKeysEnc = null; _apiKeys = { graph: "", helius: "", birdeye: "" };
+    _pendingApiKeysEnc = null; _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" };
     crypto_.salt = crypto.getRandomValues(new Uint8Array(16));
     crypto_.key = null;
     state.portfolio = [];
@@ -1529,7 +1529,7 @@ async function onAuthChange(user) {
     els.quickContent.classList.add("hidden");
     state.portfolio = [];
     crypto_.key = null; _pendingEnc = null;
-    _pendingApiKeysEnc = null; _apiKeys = { graph: "", helius: "", birdeye: "" };
+    _pendingApiKeysEnc = null; _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" };
     pushKeysToEngines(); // limpiar también las claves en los engines
     setTab("quick"); // sin sesión, mostrar el tab quick con el gate
   }
@@ -1563,7 +1563,7 @@ let _legacyPortfolio = null; // datos en texto plano de cuentas antiguas (a migr
 
 async function loadPortfolio(uid) {
   _pendingEnc = null; _legacyPortfolio = null; _pendingApiKeysEnc = null; crypto_.key = null;
-  _apiKeys = { graph: "", helius: "", birdeye: "" };
+  _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" };
   try {
     const ref = fb.fsMod.doc(fb.db, "users", uid);
     const snap = await fb.fsMod.getDoc(ref);
@@ -3463,12 +3463,12 @@ els.modeSol.onclick = () => setMode("sol");
 // Birdeye). Se persisten CIFRADAS en Firestore (mismo AES-GCM + clave PBKDF2
 // que el portfolio) → multi-dispositivo y nunca legibles por el servidor.
 // En memoria viven en _apiKeys; el blob cifrado pendiente, en _pendingApiKeysEnc.
-let _apiKeys = { graph: "", helius: "", birdeye: "" };
+let _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" };
 let _pendingApiKeysEnc = null;
 
 function pushKeysToEngines() {
   const k = _apiKeys || {};
-  const msgEvm = { type: "lp-apply-keys", app: "evm", graph: k.graph || "" };
+  const msgEvm = { type: "lp-apply-keys", app: "evm", graph: k.graph || "", etherscan: k.etherscan || "" };
   const msgSol = { type: "lp-apply-keys", app: "sol", helius: k.helius || "", birdeye: k.birdeye || "" };
   if (els.frameEvm?.contentWindow) els.frameEvm.contentWindow.postMessage(msgEvm, "*");
   if (els.frameSol?.contentWindow) els.frameSol.contentWindow.postMessage(msgSol, "*");
@@ -3478,12 +3478,12 @@ function pushKeysToEngines() {
 // Si no hay blob cifrado y hay datos antiguos en localStorage, migra a Firestore.
 async function tryDecryptApiKeys(key) {
   if (!_pendingApiKeysEnc) {
-    _apiKeys = { graph: "", helius: "", birdeye: "" };
+    _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" };
     // Migración desde la versión anterior que guardaba en localStorage
     try {
       const legacy = JSON.parse(localStorage.getItem("lp:apiKeys") || "null");
       if (legacy && (legacy.graph || legacy.helius || legacy.birdeye)) {
-        _apiKeys = { graph: legacy.graph || "", helius: legacy.helius || "", birdeye: legacy.birdeye || "" };
+        _apiKeys = { graph: legacy.graph || "", helius: legacy.helius || "", birdeye: legacy.birdeye || "", etherscan: legacy.etherscan || "" };
         await saveApiKeysToFirestore(_apiKeys, key).catch((e) => console.warn("migrate apiKeys:", e));
         localStorage.removeItem("lp:apiKeys");
       }
@@ -3496,9 +3496,10 @@ async function tryDecryptApiKeys(key) {
       graph: typeof dec?.graph === "string" ? dec.graph : "",
       helius: typeof dec?.helius === "string" ? dec.helius : "",
       birdeye: typeof dec?.birdeye === "string" ? dec.birdeye : "",
+      etherscan: typeof dec?.etherscan === "string" ? dec.etherscan : "",
     };
     return true;
-  } catch { _apiKeys = { graph: "", helius: "", birdeye: "" }; return false; }
+  } catch { _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" }; return false; }
 }
 
 async function saveApiKeysToFirestore(keys, key) {
@@ -3527,6 +3528,7 @@ function updateApiKeyStatusIndicators() {
   set("set-graph-status",   !!(els.setGraphKey.value || "").trim());
   set("set-helius-status",  !!(els.setHeliusKey.value || "").trim());
   set("set-birdeye-status", !!(els.setBirdeyeKey.value || "").trim());
+  if (els.setEtherscanKey) set("set-etherscan-status", !!(els.setEtherscanKey.value || "").trim());
 }
 
 function openSettingsModal() {
@@ -3537,6 +3539,7 @@ function openSettingsModal() {
   els.setGraphKey.value = _apiKeys.graph || "";
   els.setHeliusKey.value = _apiKeys.helius || "";
   els.setBirdeyeKey.value = _apiKeys.birdeye || "";
+  if (els.setEtherscanKey) els.setEtherscanKey.value = _apiKeys.etherscan || "";
   updateApiKeyStatusIndicators();
   els.settingsStatus.classList.add("hidden");
   els.settingsModal.classList.remove("hidden");
@@ -3549,6 +3552,7 @@ async function saveSettingsModal() {
     graph: (els.setGraphKey.value || "").trim(),
     helius: (els.setHeliusKey.value || "").trim(),
     birdeye: (els.setBirdeyeKey.value || "").trim(),
+    etherscan: (els.setEtherscanKey?.value || "").trim(),
   };
   els.settingsStatus.className = "text-[11px] text-slate-300";
   els.settingsStatus.textContent = "Guardando…";
@@ -3593,11 +3597,19 @@ async function testBirdeyeKey(k) {
   if (j.success === false) throw new Error(j.message || "rechazada");
   return j.data?.value ? `SOL=$${j.data.value.toFixed(2)}` : "ok";
 }
+async function testEtherscanKey(k) {
+  const r = await fetch(`https://api.etherscan.io/v2/api?chainid=1&module=stats&action=ethprice&apikey=${k}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const j = await r.json();
+  if (String(j.status) !== "1") throw new Error(j.result || j.message || "rechazada");
+  return j.result?.ethusd ? `ETH=$${Number(j.result.ethusd).toFixed(0)}` : "ok";
+}
 async function runApiKeyTests() {
   const tests = [
     { id: "set-graph-status",   key: els.setGraphKey.value.trim(),   label: "The Graph", fn: testGraphKey },
     { id: "set-helius-status",  key: els.setHeliusKey.value.trim(),  label: "Helius",    fn: testHeliusKey },
     { id: "set-birdeye-status", key: els.setBirdeyeKey.value.trim(), label: "Birdeye",   fn: testBirdeyeKey },
+    { id: "set-etherscan-status", key: (els.setEtherscanKey?.value || "").trim(), label: "Etherscan", fn: testEtherscanKey },
   ];
   // Marcar todos como "probando"
   for (const t of tests) {
@@ -3627,7 +3639,7 @@ els.settingsSave.onclick = saveSettingsModal;
 els.settingsTest.onclick = runApiKeyTests;
 els.settingsModal.addEventListener("click", (e) => { if (e.target === els.settingsModal) closeSettingsModal(); });
 // Indicador en vivo: al teclear en cualquier campo, refrescar los badges.
-for (const id of ["set-graph-key", "set-helius-key", "set-birdeye-key"]) {
+for (const id of ["set-graph-key", "set-helius-key", "set-birdeye-key", "set-etherscan-key"]) {
   const el = document.getElementById(id);
   if (el) el.addEventListener("input", updateApiKeyStatusIndicators);
 }

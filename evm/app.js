@@ -129,7 +129,7 @@ const DEFAULTS_VERSION = 8; // bump cuando cambien IDs por defecto para forzar r
 
 const state = {
   apiKey: localStorage.getItem("lp:apiKey") || "",
-  etherscanKey: localStorage.getItem("lp:etherscanKey") || "", // key propia Etherscan V2 (failover client-side de getLogs)
+  etherscanKey: "", // key propia Etherscan V2 (la inyecta el shell vía lp-apply-keys, cifrada en Firestore; failover client-side de getLogs)
   chains: loadChainConfig(),
   selectedChains: JSON.parse(localStorage.getItem("lp:selectedChains") || "null") || Object.keys(DEFAULT_CHAINS),
   address: "",
@@ -2229,7 +2229,6 @@ function closeSettings(e) {
 
 function renderSettings() {
   document.getElementById("cfg-api-key").value = state.apiKey;
-  { const el = document.getElementById("cfg-etherscan-key"); if (el) el.value = state.etherscanKey; }
   const container = document.getElementById("chain-config");
   container.innerHTML = "";
   for (const key of Object.keys(state.chains)) {
@@ -2335,7 +2334,6 @@ async function testChain(chainKey) {
 function saveSettings() {
   state.apiKey = document.getElementById("cfg-api-key").value.trim();
   localStorage.setItem("lp:apiKey", state.apiKey);
-  { const el = document.getElementById("cfg-etherscan-key"); if (el) { state.etherscanKey = el.value.trim(); localStorage.setItem("lp:etherscanKey", state.etherscanKey); } }
   document.querySelectorAll(".cfg-subgraph").forEach((inp) => {
     const key = inp.dataset.chain;
     state.chains[key].subgraphId = inp.value.trim();
@@ -3295,6 +3293,7 @@ document.addEventListener("DOMContentLoaded", init);
         state.apiKey = d.graph;
         try { localStorage.setItem("lp:apiKey", d.graph); } catch (e) {}
       }
+      if (typeof d.etherscan === "string") state.etherscanKey = d.etherscan; // failover client-side (cifrada en Firestore por el shell)
     } else if (d.type === "lp-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;
