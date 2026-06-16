@@ -129,6 +129,7 @@ const DEFAULTS_VERSION = 8; // bump cuando cambien IDs por defecto para forzar r
 
 const state = {
   apiKey: localStorage.getItem("lp:apiKey") || "",
+  etherscanKey: localStorage.getItem("lp:etherscanKey") || "", // key propia Etherscan V2 (failover client-side de getLogs)
   chains: loadChainConfig(),
   selectedChains: JSON.parse(localStorage.getItem("lp:selectedChains") || "null") || Object.keys(DEFAULT_CHAINS),
   address: "",
@@ -560,7 +561,11 @@ async function fetchWithTimeout(url, opts = {}, { timeoutMs = 15000, tries = 2, 
 // proxy/sesión, o el proxy responde con error/cae, usa Blockscout DIRECTO (mismo
 // comportamiento de antes, con su timeout). Detecta la chain por el prefijo de la URL
 // (= blockscoutApi de esa chain), así no hay que cambiar firmas de funciones.
+// chainId de Etherscan V2 SOLO para chains en su tier GRATIS (Base/BNB de pago).
+const EVM_ETHERSCAN_CHAINID = { ethereum: 1, arbitrum: 42161, polygon: 137, hyperevm: 999 };
+
 async function explorerFetch(fullUrl) {
+  // 1) PROXY (sesión): caché + failover server-side con la key del owner.
   if (PROXY_BASE && proxyToken) {
     for (const k in state.chains) {
       const base = state.chains[k] && state.chains[k].blockscoutApi;
@@ -569,13 +574,39 @@ async function explorerFetch(fullUrl) {
         try {
           // 25s: el Worker hace Blockscout(≤12s)+Etherscan(≤12s) por dentro; le damos margen.
           const r = await fetchWithTimeout(proxyUrl, { headers: { ...proxyAuth(proxyUrl) } }, { timeoutMs: 25000, tries: 1 });
-          if (r.ok) return r; // 401/5xx → caemos a Blockscout directo
+          if (r.ok) return r; // 401/5xx → caemos al directo
         } catch (e) { /* proxy caído/timeout → directo */ }
         break;
       }
     }
   }
-  return fetchWithTimeout(fullUrl);
+  // 2) DIRECTO: Blockscout, y si falla y es getLogs → Etherscan V2 con la key PROPIA
+  //    del user (R4). Es la ÚNICA vía de failover para el main PÚBLICO (sin proxy).
+  return explorerDirect(fullUrl);
+}
+
+// Blockscout directo; si falla/!ok y es un getLogs, failover a Etherscan V2 con la
+// key propia del user (CORS:* → vale client-side; mismo shape {result:[...]}). Solo
+// chains free de Etherscan. Si no aplica, devuelve la respuesta de Blockscout (aunque
+// sea !ok) o relanza su error → el caller degrada como siempre.
+async function explorerDirect(fullUrl) {
+  let bsResp = null, bsErr = null;
+  try { bsResp = await fetchWithTimeout(fullUrl); if (bsResp.ok) return bsResp; } catch (e) { bsErr = e; }
+  const etherKey = (state.etherscanKey || "").trim();
+  if (etherKey && /[?&]action=getLogs(&|$)/.test(fullUrl)) {
+    for (const k in state.chains) {
+      const base = state.chains[k] && state.chains[k].blockscoutApi;
+      if (base && fullUrl.startsWith(base) && EVM_ETHERSCAN_CHAINID[k]) {
+        const p = new URLSearchParams(fullUrl.slice(fullUrl.indexOf("?") + 1));
+        p.set("chainid", String(EVM_ETHERSCAN_CHAINID[k]));
+        p.set("apikey", etherKey);
+        try { const r2 = await fetchWithTimeout("https://api.etherscan.io/v2/api?" + p.toString()); if (r2.ok) return r2; } catch (e) {}
+        break;
+      }
+    }
+  }
+  if (bsResp) return bsResp;       // Blockscout respondió !ok → que el caller lo maneje
+  throw bsErr || new Error("explorer no disponible");
 }
 
 async function fetchLendingHistory(apiBase, vault, owner, dec) {
@@ -2198,6 +2229,7 @@ function closeSettings(e) {
 
 function renderSettings() {
   document.getElementById("cfg-api-key").value = state.apiKey;
+  { const el = document.getElementById("cfg-etherscan-key"); if (el) el.value = state.etherscanKey; }
   const container = document.getElementById("chain-config");
   container.innerHTML = "";
   for (const key of Object.keys(state.chains)) {
@@ -2303,6 +2335,7 @@ async function testChain(chainKey) {
 function saveSettings() {
   state.apiKey = document.getElementById("cfg-api-key").value.trim();
   localStorage.setItem("lp:apiKey", state.apiKey);
+  { const el = document.getElementById("cfg-etherscan-key"); if (el) { state.etherscanKey = el.value.trim(); localStorage.setItem("lp:etherscanKey", state.etherscanKey); } }
   document.querySelectorAll(".cfg-subgraph").forEach((inp) => {
     const key = inp.dataset.chain;
     state.chains[key].subgraphId = inp.value.trim();
