@@ -527,6 +527,29 @@ const EV_4626_DEPOSIT  = "0xdcbc1c05240f31ff3ad067ef1ee35ce4997762752e3a09528475
 const EV_4626_WITHDRAW = "0xfbde797d201c681b91056529119e0b02407c7bb96a4a2c75c01fc9667232c8db"; // Withdraw(address,address,address,uint256,uint256)
 
 // Histórico de un lender: depositado/retirado (assets) + timestamp del primer depósito
+// fetch con TIMEOUT (AbortController) + 1 reintento. Drop-in de fetch() para las
+// llamadas a exploradores (Blockscout/Hyperscan): algunos días responden 20-30 s
+// y, sin techo, una sola llamada bloqueaba TODO el análisis (van dentro de
+// Promise.all). Al agotar los intentos LANZA → los callers ya tienen try/catch
+// que degradan con gracia (idle sin esa chain, posición sin histórico, etc.).
+// No es failover a otra fuente (eso requiere el proxy); es el escudo anti-cuelgue.
+async function fetchWithTimeout(url, opts = {}, { timeoutMs = 8000, tries = 2, retryDelayMs = 300 } = {}) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...opts, signal: ctrl.signal });
+    } catch (e) {
+      lastErr = e;
+      if (i < tries - 1) await new Promise((r) => setTimeout(r, retryDelayMs));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr || new Error("fetchWithTimeout: agotados los intentos");
+}
+
 async function fetchLendingHistory(apiBase, vault, owner, dec) {
   const cacheKey = `${apiBase}:lend:${vault}:${owner.toLowerCase()}`;
   const cached = _histCache.get(cacheKey);
@@ -534,7 +557,7 @@ async function fetchLendingHistory(apiBase, vault, owner, dec) {
   const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
   const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
   const get = async (qs) => {
-    const r = await fetch(`${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${vault}&${qs}`);
+    const r = await fetchWithTimeout(`${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${vault}&${qs}`);
     const j = await r.json();
     return Array.isArray(j.result) ? j.result : [];
   };
@@ -597,7 +620,7 @@ async function fetchIdleTokensEVM(chainKey, address) {
   const urlAddr   = `${c.blockscoutApi}/v2/addresses/${address}`;
   let items = [], addrInfo = null;
   try {
-    const [rT, rA] = await Promise.all([fetch(urlTokens), fetch(urlAddr)]);
+    const [rT, rA] = await Promise.all([fetchWithTimeout(urlTokens), fetchWithTimeout(urlAddr)]);
     if (rT.ok) items = (await rT.json()).items || [];
     if (rA.ok) addrInfo = await rA.json();
   } catch (e) {
@@ -1036,7 +1059,7 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
   const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
   const getLogs = async (topic0) => {
     const url = `${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${nftMgr}&topic0=${topic0}&topic1=${topic1}&topic0_1_opr=and`;
-    const r = await fetch(url);
+    const r = await fetchWithTimeout(url);
     const j = await r.json();
     return Array.isArray(j.result) ? j.result : [];
   };
@@ -1395,7 +1418,7 @@ const EV_ERC721_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628
 async function fetchReceivedTokenIds(apiBase, nftMgr, owner) {
   const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
   const url = `${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${nftMgr}&topic0=${EV_ERC721_TRANSFER}&topic2=${ownerTopic}&topic0_2_opr=and`;
-  const r = await fetch(url); const j = await r.json();
+  const r = await fetchWithTimeout(url); const j = await r.json();
   const ids = new Set();
   if (Array.isArray(j.result)) for (const l of j.result) { const t3 = (l.topics && l.topics[3]) || ""; if (/^0x[0-9a-fA-F]+$/.test(t3)) { try { ids.add(BigInt(t3).toString()); } catch (e) {} } }
   return ids;
@@ -1799,7 +1822,7 @@ async function fetchOwnerSwapsEVM(chainKey, owner, feeTokenSet) {
   let truncated = false;
   try {
     for (let page = 0; page < MAX_PAGES; page++) {
-      const r = await fetch(url);
+      const r = await fetchWithTimeout(url);
       if (!r.ok) break;
       const j = await r.json();
       const items = j.items || [];
