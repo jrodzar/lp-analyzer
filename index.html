@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "267";</script>
+  <script>window.APP_VERSION = "268";</script>
   <!-- Modo incógnito: difumina SOLO los importes (.lp-blur) cuando el body tiene
        .lp-private. user-select:none evita copiar el valor real. Los gráficos NO
        se difuminan (sus etiquetas $ se enmascaran como texto "$•••"). -->
@@ -581,7 +581,7 @@
              se eliminó — el desglose por pool vive solo aquí.) -->
         <div id="hist-monthly-apr-panel" class="hidden rounded-xl border border-slate-800 bg-slate-900 p-4">
           <div class="flex items-center justify-between mb-3">
-            <h3 class="text-sm font-semibold">📅 APR por mes natural <span class="cursor-help text-slate-500 text-[11px]" title="APR REALIZADO de cada mes natural: APR_mes = (fees COBRADAS en el mes / capital medio del mes) × 365/días_activos × 100. Cada % ya está anualizado (es el ritmo de ESE mes proyectado a un año). Usa solo fees efectivamente cobradas (NO las pendientes). Capital medio = ponderado por tiempo. No descuenta IL ni gas. OJO — no es lo mismo que el 'Rentabilidad fees' del resumen: aquella es el APR de toda la vida de cada posición e incluye fees pendientes; esta mide mes a mes solo lo cobrado. Clica un mes para ver el desglose por pool.">ⓘ</span></h3>
+            <h3 class="text-sm font-semibold">📅 APR/MPR por mes natural <span class="cursor-help text-slate-500 text-[11px]" title="APR REALIZADO de cada mes natural: APR_mes = (fees COBRADAS en el mes / capital medio del mes) × 365/días_activos × 100. Cada % ya está anualizado (es el ritmo de ESE mes proyectado a un año). Usa solo fees efectivamente cobradas (NO las pendientes). Capital medio = ponderado por tiempo. No descuenta IL ni gas. OJO — no es lo mismo que el 'Rentabilidad fees' del resumen: aquella es el APR de toda la vida de cada posición e incluye fees pendientes; esta mide mes a mes solo lo cobrado. Clica un mes para ver el desglose por pool. La columna MPR es ese mismo APR dividido entre 12 (tasa mensual, MPR).">ⓘ</span></h3>
             <span class="text-[11px] text-slate-400">clica un mes para el desglose por pool</span>
           </div>
           <div id="hist-monthly-apr" class="overflow-x-auto"></div>

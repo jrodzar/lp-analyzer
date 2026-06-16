@@ -645,6 +645,7 @@ function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
   // Orden cronológico ascendente (antiguo arriba), igual que la tabla previa.
   const shown = (opts.limit ? aggRows.slice(0, opts.limit) : aggRows).slice().reverse();
   const aprStr = (apr) => apr == null ? "—" : (apr >= 0 ? "+" : "") + apr.toFixed(1) + "%";
+  const mprStr = (apr) => apr == null ? "—" : (apr >= 0 ? "+" : "") + (apr / 12).toFixed(2) + "%"; // MPR = APR/12 (tasa mensual)
 
   // ── Heatmap: fondo de intensidad proporcional al valor ───────────────────
   // Curva sqrt para que valores medios-bajos sigan teniendo color visible pese
@@ -680,7 +681,8 @@ function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
         <td class="py-1"><span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full shrink-0" style="background:${p.color || "#64748b"}"></span><span class="text-slate-300">${p.label}</span>${p.venue ? `<span class="text-slate-500 text-[9px]">${p.venue}</span>` : ""}</span></td>
         <td class="py-1 pr-3 text-right font-mono">${heatPill(fmtUSD(p.feesUSD), heatBg(p.feesUSD, refFeesPool, false))}</td>
         <td class="py-1 pr-3 text-right text-slate-400 font-mono">${fmtUSD(p.capitalAvg)}</td>
-        <td class="py-1 text-right font-mono font-semibold">${heatPill(aprStr(p.apr), heatBg(p.apr, refApr, true), aprTextCls(p.apr))}</td>
+        <td class="py-1 pr-3 text-right font-mono font-semibold">${heatPill(aprStr(p.apr), heatBg(p.apr, refApr, true), aprTextCls(p.apr))}</td>
+        <td class="py-1 text-right font-mono text-slate-300">${mprStr(p.apr)}</td>
       </tr>`).join("");
     const detailInner = poolRowsHTML
       ? `<table class="w-full text-[10px]">
@@ -688,7 +690,8 @@ function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
              <th class="text-left pb-1 font-semibold">Pool</th>
              <th class="text-right pb-1 pr-3 font-semibold">Fees</th>
              <th class="text-right pb-1 pr-3 font-semibold">Capital</th>
-             <th class="text-right pb-1 font-semibold">APR</th>
+             <th class="text-right pb-1 pr-3 font-semibold">APR</th>
+             <th class="text-right pb-1 font-semibold">MPR</th>
            </tr></thead>
            <tbody>${poolRowsHTML}</tbody>
          </table>`
@@ -698,9 +701,10 @@ function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
         <td class="py-1.5"><span class="inline-flex items-center gap-1.5"><span class="apr-chev text-slate-500 text-[9px]">▸</span><span class="text-slate-200 font-medium whitespace-nowrap">${r.monthLabel}</span>${ongoingBadge}${countLbl}</span></td>
         <td class="py-1.5 pr-3 text-right font-mono">${heatPill(fmtUSD(r.feesUSD), heatBg(r.feesUSD, refFeesAgg, false))}</td>
         <td class="py-1.5 pr-3 text-right text-slate-400 font-mono">${fmtUSD(r.capitalAvg)}</td>
-        <td class="py-1.5 text-right font-mono font-semibold">${heatPill(aprStr(r.apr), heatBg(r.apr, refApr, true), aprTextCls(r.apr))}</td>
+        <td class="py-1.5 pr-3 text-right font-mono font-semibold">${heatPill(aprStr(r.apr), heatBg(r.apr, refApr, true), aprTextCls(r.apr))}</td>
+        <td class="py-1.5 text-right font-mono text-slate-300">${mprStr(r.apr)}</td>
       </tr>
-      <tr class="apr-detail-row" data-apr-detail="${r.monthKey}" hidden><td colspan="4" class="p-0">
+      <tr class="apr-detail-row" data-apr-detail="${r.monthKey}" hidden><td colspan="5" class="p-0">
         <div class="bg-slate-800/30 border-l-2 border-slate-600 px-3 py-2 mb-1 ml-3 rounded-r-lg">${detailInner}</div>
       </td></tr>`;
   }).join("");
@@ -711,7 +715,8 @@ function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
           <th class="text-left pb-2 font-semibold">Mes</th>
           <th class="text-right pb-2 pr-3 font-semibold">Fees</th>
           <th class="text-right pb-2 pr-3 font-semibold">Capital medio</th>
-          <th class="text-right pb-2 font-semibold">APR</th>
+          <th class="text-right pb-2 pr-3 font-semibold">APR</th>
+          <th class="text-right pb-2 font-semibold">MPR</th>
         </tr>
       </thead>
       <tbody>${rowsHTML}</tbody>
