@@ -554,6 +554,30 @@ async function fetchWithTimeout(url, opts = {}, { timeoutMs = 15000, tries = 2, 
   throw lastErr || new Error("fetchWithTimeout: agotados los intentos");
 }
 
+// Enruta una llamada a explorer (Blockscout/Hyperscan) por el PROXY /evm cuando hay
+// sesión (proxyToken): el Worker hace failover Blockscout→Etherscan V2 + caché KV →
+// reanálisis instantáneos y sin cuelgues los días que Blockscout va lento. Si no hay
+// proxy/sesión, o el proxy responde con error/cae, usa Blockscout DIRECTO (mismo
+// comportamiento de antes, con su timeout). Detecta la chain por el prefijo de la URL
+// (= blockscoutApi de esa chain), así no hay que cambiar firmas de funciones.
+async function explorerFetch(fullUrl) {
+  if (PROXY_BASE && proxyToken) {
+    for (const k in state.chains) {
+      const base = state.chains[k] && state.chains[k].blockscoutApi;
+      if (base && fullUrl.startsWith(base)) {
+        const proxyUrl = `${PROXY_BASE}/evm/${k}${fullUrl.slice(base.length)}`;
+        try {
+          // 25s: el Worker hace Blockscout(≤12s)+Etherscan(≤12s) por dentro; le damos margen.
+          const r = await fetchWithTimeout(proxyUrl, { headers: { ...proxyAuth(proxyUrl) } }, { timeoutMs: 25000, tries: 1 });
+          if (r.ok) return r; // 401/5xx → caemos a Blockscout directo
+        } catch (e) { /* proxy caído/timeout → directo */ }
+        break;
+      }
+    }
+  }
+  return fetchWithTimeout(fullUrl);
+}
+
 async function fetchLendingHistory(apiBase, vault, owner, dec) {
   const cacheKey = `${apiBase}:lend:${vault}:${owner.toLowerCase()}`;
   const cached = _histCache.get(cacheKey);
@@ -561,7 +585,7 @@ async function fetchLendingHistory(apiBase, vault, owner, dec) {
   const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
   const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
   const get = async (qs) => {
-    const r = await fetchWithTimeout(`${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${vault}&${qs}`);
+    const r = await explorerFetch(`${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${vault}&${qs}`);
     const j = await r.json();
     return Array.isArray(j.result) ? j.result : [];
   };
@@ -624,7 +648,7 @@ async function fetchIdleTokensEVM(chainKey, address) {
   const urlAddr   = `${c.blockscoutApi}/v2/addresses/${address}`;
   let items = [], addrInfo = null;
   try {
-    const [rT, rA] = await Promise.all([fetchWithTimeout(urlTokens), fetchWithTimeout(urlAddr)]);
+    const [rT, rA] = await Promise.all([explorerFetch(urlTokens), explorerFetch(urlAddr)]);
     if (rT.ok) items = (await rT.json()).items || [];
     if (rA.ok) addrInfo = await rA.json();
   } catch (e) {
@@ -1070,7 +1094,7 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
   const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
   const getLogs = async (topic0) => {
     const url = `${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${nftMgr}&topic0=${topic0}&topic1=${topic1}&topic0_1_opr=and`;
-    const r = await fetchWithTimeout(url);
+    const r = await explorerFetch(url);
     const j = await r.json();
     return Array.isArray(j.result) ? j.result : [];
   };
@@ -1429,7 +1453,7 @@ const EV_ERC721_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628
 async function fetchReceivedTokenIds(apiBase, nftMgr, owner) {
   const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
   const url = `${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${nftMgr}&topic0=${EV_ERC721_TRANSFER}&topic2=${ownerTopic}&topic0_2_opr=and`;
-  const r = await fetchWithTimeout(url); const j = await r.json();
+  const r = await explorerFetch(url); const j = await r.json();
   const ids = new Set();
   if (Array.isArray(j.result)) for (const l of j.result) { const t3 = (l.topics && l.topics[3]) || ""; if (/^0x[0-9a-fA-F]+$/.test(t3)) { try { ids.add(BigInt(t3).toString()); } catch (e) {} } }
   return ids;
@@ -1833,7 +1857,7 @@ async function fetchOwnerSwapsEVM(chainKey, owner, feeTokenSet) {
   let truncated = false;
   try {
     for (let page = 0; page < MAX_PAGES; page++) {
-      const r = await fetchWithTimeout(url);
+      const r = await explorerFetch(url);
       if (!r.ok) break;
       const j = await r.json();
       const items = j.items || [];

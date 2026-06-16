@@ -271,11 +271,14 @@ async function handleEvmExplorer(seg, url, cors, env) {
     try { const c = await env.QUOTA.get(cacheKey); if (c) return rawJson(c, cors); } catch (e) {}
   }
 
-  // 2) Blockscout con timeout server-side. Para getLogs, validamos que result sea
+  // 2) Blockscout con timeout server-side. Más corto (7s) en chains CON failover
+  //    Etherscan (free) para que el failover entre antes; más margen (12s) en
+  //    Base/BNB que NO tienen failover. Para getLogs validamos que result sea
   //    array (si no, lo tratamos como fallo → failover).
+  const bsTimeout = EVM_ETHERSCAN_FREE[chain] ? 7000 : 12000;
   let bodyText = null, okData = false;
   try {
-    const r = await fetchTimeout(target, 12000);
+    const r = await fetchTimeout(target, bsTimeout);
     if (r.ok) {
       bodyText = await r.text();
       if (isLogs) { try { okData = Array.isArray(JSON.parse(bodyText).result); } catch (e) { okData = false; } }
