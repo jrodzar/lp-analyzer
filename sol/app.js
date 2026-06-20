@@ -1410,9 +1410,13 @@ function lendingCard(p) {
           <span class="text-[11px] uppercase tracking-wide text-slate-400">${protoLabel} · ${p.chainName || "Solana"}</span>
         </div>
         <div class="font-semibold mt-0.5 truncate">${p.asset} (lending)</div>
-        <div class="text-[11px] text-slate-400">${[sharesTxt, p.openedAt ? `abierta ${new Date(p.openedAt * 1000).toISOString().slice(0, 10)} (${Math.round(p.ageDays || 0)}d)` : ""].filter(Boolean).join(" · ")}</div>
+        <div class="text-[11px] text-slate-400">${[p.closed ? "" : sharesTxt, p.openedAt ? `abierta ${new Date(p.openedAt * 1000).toISOString().slice(0, 10)} (${Math.round(p.ageDays || 0)}d${p.closed ? ", cerrada" : ""})` : ""].filter(Boolean).join(" · ")}</div>
       </div>
-      <span class="chip bg-sky-500/15 text-sky-300 border border-sky-500/30">préstamo</span>
+      <div class="flex flex-col items-end gap-1 shrink-0">
+        ${p.reconstructed ? `<span class="chip bg-violet-500/15 text-violet-300 border border-violet-500/30" title="Lending CERRADO, reconstruido del histórico on-chain (depósitos/retiros). Interés realizado ≈ retirado − depositado.">≈ reconstruida</span>` : ""}
+        ${p.closed ? `<span class="chip bg-slate-700 text-slate-300">cerrada</span>` : ""}
+        <span class="chip bg-sky-500/15 text-sky-300 border border-sky-500/30">préstamo</span>
+      </div>
     </div>
     <div class="grid grid-cols-2 gap-2 text-xs">
       <div class="bg-slate-950/40 rounded-lg p-2">
@@ -1831,6 +1835,13 @@ async function analyze() {
         const recon = await reconstructClosedSol(addr, openVaults);
         if (recon.length) { state.positions.push(...recon); console.log(`[sol-diag] reconstruidas ${recon.length} posición(es) cerrada(s)/quemada(s) del histórico`); }
       } catch (e) { console.warn("[sol-recon]", e); }
+      // Lending CERRADO (Jupiter Lend): al retirar todo, el share token desaparece de los
+      // holdings → se detecta escaneando las txs (interés realizado = retirado − depositado).
+      // Reutiliza el histórico ya cacheado por reconstructClosedSol → coste ~0.
+      try {
+        const lendRecon = await reconstructClosedJupiterLend(addr);
+        if (lendRecon.length) state.positions.push(...lendRecon);
+      } catch (e) { console.warn("[jl-recon]", e); }
     }
 
     // Valor realizable de fees (parte A wallet + parte B por posición), YA con las
@@ -2815,6 +2826,94 @@ async function enrichJupiterLendCost(owner) {
     p._aprTooEarly = (netInvested > 0 && ageDays < 1); // para la card
     p.pnlBasis = "tx-scan";
   }
+}
+
+// Reconstruye posiciones de Jupiter Lend CERRADAS (retiradas por completo). Al cerrar,
+// el share token (jlUSDC…) desaparece de los holdings → no se descubre por saldo. Las
+// detectamos escaneando las txs del owner (histórico ya cacheado por reconstructClosedSol):
+// un mint que el owner recibió Y devolvió (con USDC/underlying en contrapartida) y que YA
+// no tiene. Se confirma que es Jupiter Lend resolviendo su NOMBRE por metadata (getTokenMeta
+// → JUPITER_LEND_NAME_RX), el mismo criterio que las abiertas. Interés realizado = retirado
+// − depositado (valor actual 0). Devuelve fichas closed+reconstructed para no perder el interés.
+async function reconstructClosedJupiterLend(owner) {
+  if ((!state.heliusKey && !PROXY_BASE) || !owner) return [];
+  let txs = [];
+  try { txs = await fetchEnhancedTxs(owner); } catch (e) { return []; }
+  if (!txs.length) return [];
+  const now = Math.floor(Date.now() / 1000);
+
+  // Mints que el owner TIENE ahora (abiertos / idle) → no son posiciones cerradas.
+  const heldMints = new Set();
+  for (const p of (state.positions || [])) if (p.mint) heldMints.add(p.mint);
+  for (const t of (state.idleTokens || [])) if (t.address) heldMints.add(t.address);
+
+  // Emparejar transferencias del owner con su contrapartida (underlying en dirección
+  // opuesta), igual que enrichJupiterLendCost pero para TODOS los mints no-retenidos.
+  const events = new Map(); // mint -> { dep:[], wd:[] }
+  for (const tx of txs) {
+    const ts = tx.timestamp || 0; if (!ts) continue;
+    const tts = tx.tokenTransfers || [];
+    for (const t of tts) {
+      const mint = t.mint; if (!mint) continue;
+      if (SOL_STABLES.has(mint) || heldMints.has(mint)) continue; // underlying o aún en cartera → no candidato
+      const isIn = t.toUserAccount === owner, isOut = t.fromUserAccount === owner;
+      if (!isIn && !isOut) continue;
+      const wantDir = isIn ? "out" : "in";
+      let underlying = null;
+      for (const u of tts) {
+        if (u === t || u.mint === mint) continue;
+        const uDir = (u.toUserAccount === owner) ? "in" : (u.fromUserAccount === owner ? "out" : null);
+        if (uDir !== wantDir) continue;
+        const amt = u.tokenAmount || 0; if (amt <= 0) continue;
+        underlying = { mint: u.mint, amount: amt }; break;
+      }
+      if (!underlying) continue;
+      let priceUSD = SOL_STABLES.has(underlying.mint) ? 1 : (state.prices[underlying.mint] || null);
+      if (priceUSD == null) { try { priceUSD = await birdeyePriceAt(underlying.mint, ts); } catch (e) {} }
+      if (priceUSD == null) continue;
+      const usd = underlying.amount * priceUSD;
+      if (!events.has(mint)) events.set(mint, { dep: [], wd: [] });
+      (isIn ? events.get(mint).dep : events.get(mint).wd).push({ ts, usd });
+    }
+  }
+
+  // Candidatos: ciclados (depósito Y retiro) y no retenidos → confirmar que es Jupiter Lend
+  // por NOMBRE (getTokenMeta cachea, así que no re-resuelve en cada análisis). Tope de
+  // seguridad por si el wallet tiene muchos tokens ciclados (traders).
+  const out = [];
+  let checked = 0;
+  for (const [mint, { dep, wd }] of events) {
+    if (!dep.length || !wd.length) continue;
+    if (checked >= 25) { console.warn("[jl-recon] tope de candidatos (25) alcanzado"); break; }
+    checked++;
+    let name = "";
+    try { name = ((await getTokenMeta(mint)) || {}).name || ""; } catch (e) {}
+    if (!JUPITER_LEND_NAME_RX.test(name)) continue; // no es Jupiter Lend
+    const depositedUSD = dep.reduce((s, e) => s + e.usd, 0);
+    const withdrawnUSD = wd.reduce((s, e) => s + e.usd, 0);
+    if (!(depositedUSD > 0 && withdrawnUSD > 0)) continue;
+    const gainsUSD = withdrawnUSD - depositedUSD; // valor actual 0 (cerrada) → interés REALIZADO
+    const openedAt = Math.min(...dep.map((e) => e.ts));
+    const ageDays = Math.max((now - openedAt) / 86400, 1 / 24);
+    const apr = (depositedUSD > 0 && ageDays >= 1) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
+    let asset = (name.match(/jupiter\s+lend\s+(\S+)/i) || [])[1];
+    asset = asset ? asset.toUpperCase() : "?";
+    out.push({
+      _lending: true, protocol: "jupiter-lend", chainName: "Solana",
+      mint, asset, shares: 0, sharePrice: null,
+      currentValueUSD: 0, depositedUSD, withdrawnUSD, gainsUSD, apr,
+      feesUSD: gainsUSD, feesPendingUSD: 0, feesCollectedUSD: gainsUSD,
+      ilUSD: 0, pnlUSD: gainsUSD, pnlBasis: "tx-scan",
+      inRange: false, closed: true, reconstructed: true,
+      ageDays, openedAt,
+      color: hexToColorObj(JUPITER_LEND_COLOR_HEX),
+      token0: { symbol: asset, decimals: 0, priceUSD: null },
+      token1: { symbol: "lending", decimals: 0, priceUSD: null },
+      amounts: { amount0: 0, amount1: 0 }, logo: null,
+    });
+  }
+  if (out.length) console.log(`[jl-recon] ${out.length} lending Jupiter cerrado(s) reconstruido(s)`);
+  return out;
 }
 
 // ============================================================================
