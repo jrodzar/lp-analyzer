@@ -646,7 +646,9 @@ async function fetchLendingHistory(apiBase, vault, owner, dec) {
   };
   // Deposit: owner = topic2 ; Withdraw: owner = topic3
   const dep = await get(`topic0=${EV_4626_DEPOSIT}&topic2=${ownerTopic}&topic0_2_opr=and`);
-  const wth = await get(`topic0=${EV_4626_WITHDRAW}&topic3=${ownerTopic}&topic0_3_opr=and`);
+  // Si nunca depositó aquí no hay posición (ni abierta ni cerrada) → evitamos el getLogs
+  // de Withdraw. Ahorra una llamada en los vaults que el wallet nunca tocó (la mayoría).
+  const wth = dep.length ? await get(`topic0=${EV_4626_WITHDRAW}&topic3=${ownerTopic}&topic0_3_opr=and`) : [];
   let d = 0n, w = 0n, firstTs = null;
   const events = [];
   for (const l of dep) { d += word(l.data, 0); const ts = parseInt(l.timeStamp, 16); if (firstTs === null || ts < firstTs) firstTs = ts; events.push({ ts, type: "dep", amt: Number(word(l.data, 0)) / 10 ** dec }); }
@@ -848,33 +850,44 @@ async function fetchRevertLending(owner) {
     try {
       const sharesHex = await rpcCallFallback(c.rpcs, c.vault, "0x70a08231" + encodeAddr32(owner));
       const shares = decU(sharesHex, 0);
-      if (shares === 0n) return null;
-      const assets = decU(await rpcCallFallback(c.rpcs, c.vault, SEL_CONVERT_TO_ASSETS + shares.toString(16).padStart(64, "0")), 0);
+      const open = shares > 0n;
       const assetAddr = decAddr(await rpcCallFallback(c.rpcs, c.vault, SEL_ASSET), 0);
       const dec = Number(decU(await rpcCallFallback(c.rpcs, assetAddr, "0x313ce567"), 0));
       const symbol = decABIString(await rpcCallFallback(c.rpcs, assetAddr, "0x95d89b41")) || "?";
       const priceUSD = /usd/i.test(symbol) ? 1 : 1; // USDC/stable ≈ $1 (mejor esfuerzo)
-      const currentValueUSD = (Number(assets) / 10 ** dec) * priceUSD;
+      const currentValueUSD = open
+        ? (Number(decU(await rpcCallFallback(c.rpcs, c.vault, SEL_CONVERT_TO_ASSETS + shares.toString(16).padStart(64, "0")), 0)) / 10 ** dec) * priceUSD
+        : 0;
+
+      // Histórico SIEMPRE (depósitos/retiros del owner): detecta también posiciones
+      // CERRADAS (shares=0 pero depositó+retiró en el pasado) para reconstruir el interés
+      // realizado y NO perderlo del total. fetchLendingHistory salta el getLogs de Withdraw
+      // si nunca depositó → barato en vaults nunca tocados.
+      let h = null;
+      if (c.explorerApi) { try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec); } catch (e) {} }
+      const everDeposited = !!(h && h.deposited > 0);
+
+      // Cerrada solo si depositó Y retiró (shares=0 sin retiro = shares transferidas a otra
+      // wallet, no un cierre → no se puede computar interés realizado → omitir).
+      if (!open && !(everDeposited && h.withdrawn > 0)) return null;
 
       let depositedUSD = null, gainsUSD = null, openedAt = null, ageDays = null, apr = null, timelineSeries = null;
-      if (c.explorerApi) {
-        try {
-          const h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec);
-          // Solo computamos interés si se encontró ALGÚN depósito. Si el histórico
-          // vino VACÍO (típico cuando Blockscout va degradado y responde result vacío
-          // en consultas lentas) pero SÍ hay saldo, NO inflar el "interés" al valor
-          // entero (depositado=0 → gain=valor): dejar todo null → la card muestra "—"
-          // y el total global no se contamina con un interés ficticio.
-          if (h.deposited > 0) {
-            const net = h.deposited - h.withdrawn;
-            depositedUSD = net * priceUSD;
-            gainsUSD = currentValueUSD - depositedUSD;
-            openedAt = h.firstTs;
-            ageDays = openedAt ? Math.max((now - openedAt) / 86400, 1 / 24) : null;
-            apr = (depositedUSD > 0 && ageDays) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
-            timelineSeries = buildLendingTimeline(h.events, gainsUSD, now);
-          }
-        } catch (e) { /* sin histórico: solo valor actual */ }
+      const closed = !open;
+      // Si el histórico vino VACÍO en una ABIERTA (Blockscout degradado), dejamos interés
+      // null → card "—" y el total no se infla (guard de inflación). En CERRADA siempre hay
+      // histórico (lo exige el guard de arriba).
+      if (everDeposited) {
+        if (open) {
+          depositedUSD = (h.deposited - h.withdrawn) * priceUSD;   // depositado neto
+          gainsUSD = currentValueUSD - depositedUSD;               // interés NO realizado
+        } else {
+          depositedUSD = h.deposited * priceUSD;                   // total depositado
+          gainsUSD = (h.withdrawn - h.deposited) * priceUSD;       // interés REALIZADO (retirado − depositado)
+        }
+        openedAt = h.firstTs;
+        ageDays = openedAt ? Math.max((now - openedAt) / 86400, 1 / 24) : null;
+        apr = (depositedUSD > 0 && ageDays) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
+        timelineSeries = buildLendingTimeline(h.events, gainsUSD, now);
       }
       return {
         _lending: true, chainKey, chainName: c.name, vault: c.vault, asset: symbol,
@@ -884,7 +897,7 @@ async function fetchRevertLending(owner) {
         feesUSD: gainsUSD || 0, uncollectedUSD: 0, ilUSD: 0,
         pnlUSD: gainsUSD == null ? 0 : gainsUSD,
         hodlUSD: depositedUSD || currentValueUSD,
-        closed: false, inRange: true,
+        closed, reconstructed: closed, inRange: !closed,
         timelineSeries,
       };
     } catch (e) { return null; }
@@ -2565,9 +2578,13 @@ function lendingCard(p) {
           <span class="text-[11px] uppercase tracking-wide text-slate-400">Revert Lend · ${p.chainName}</span>
         </div>
         <div class="font-semibold mt-0.5 truncate">${p.asset} (lending)</div>
-        <div class="text-[11px] text-slate-400">${p.ageDays ? `abierta ${new Date(p.openedAt * 1000).toISOString().slice(0, 10)} (${Math.round(p.ageDays)}d)` : ""}</div>
+        <div class="text-[11px] text-slate-400">${p.ageDays ? `abierta ${new Date(p.openedAt * 1000).toISOString().slice(0, 10)} (${Math.round(p.ageDays)}d${p.closed ? ", cerrada" : ""})` : ""}</div>
       </div>
-      <span class="chip bg-sky-500/15 text-sky-300 border border-sky-500/30">préstamo</span>
+      <div class="flex flex-col items-end gap-1 shrink-0">
+        ${p.reconstructed ? `<span class="chip bg-violet-500/15 text-violet-300 border border-violet-500/30" title="Lending CERRADO, reconstruido del histórico on-chain (depósitos/retiros). Interés realizado ≈ retirado − depositado.">≈ reconstruida</span>` : ""}
+        ${p.closed ? `<span class="chip bg-slate-700 text-slate-300">cerrada</span>` : ""}
+        <span class="chip bg-sky-500/15 text-sky-300 border border-sky-500/30">préstamo</span>
+      </div>
     </div>
     <div class="grid grid-cols-2 gap-2 text-xs">
       <div class="bg-slate-950/40 rounded-lg p-2">
