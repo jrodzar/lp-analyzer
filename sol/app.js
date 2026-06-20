@@ -3181,7 +3181,7 @@ document.addEventListener("DOMContentLoaded", init);
           ilUSD: null,
           pnlUSD: p.gainsUSD == null ? null : p.gainsUSD,
           apr: typeof p.apr === "number" ? p.apr : null,
-          inRange: true, closed: false,
+          inRange: !p.closed, closed: !!p.closed, reconstructed: !!p.reconstructed,
           id: String(p.mint || ""),
         };
       }
