@@ -130,14 +130,18 @@ async function histPriceUSD(llamaChain, addr, tsSec) {
   if (!llamaChain || !addr || !tsSec) return null;
   const key = `${llamaChain}:${String(addr).toLowerCase()}:${Math.floor(tsSec / 86400)}`;
   if (_histPxCache.has(key)) return _histPxCache.get(key);
+  let px = null;
   try {
-    const r = await fetch(`https://coins.llama.fi/prices/historical/${tsSec}/${llamaChain}:${addr}`);
+    // CON TIMEOUT (6s, 1 intento): si DefiLlama va lento NO debe colgar el análisis.
+    // Al fallar/timeout → null y el coste cae al valor HODL (fallback). fetchWithTimeout
+    // está declarado más abajo pero hoistea (function declaration).
+    const r = await fetchWithTimeout(`https://coins.llama.fi/prices/historical/${tsSec}/${llamaChain}:${addr}`, {}, { timeoutMs: 6000, tries: 1 });
     const j = await r.json();
     const c = j && j.coins && j.coins[`${llamaChain}:${addr}`];
-    const px = c && typeof c.price === "number" ? c.price : null;
-    _histPxCache.set(key, px);
-    return px;
-  } catch (e) { _histPxCache.set(key, null); return null; }
+    if (c && typeof c.price === "number") px = c.price;
+  } catch (e) { /* timeout/red → null */ }
+  _histPxCache.set(key, px);
+  return px;
 }
 const DEFAULTS_VERSION = 8; // bump cuando cambien IDs por defecto para forzar refresh
 
@@ -1347,7 +1351,7 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
         h.deposited1 > 0 ? histPriceUSD(llamaChain, t1.id, h.mintTs) : Promise.resolve(0),
       ]);
       if (px0 != null && px1 != null) costBases[raw.tokenId] = h.deposited0 * px0 + h.deposited1 * px1;
-    }));
+    })).catch(() => {});
   }
 
   // 8. Construir posiciones enriquecidas
