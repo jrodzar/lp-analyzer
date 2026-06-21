@@ -2603,9 +2603,9 @@ function closedPositionsBlock(items, colorOf) {
 }
 
 // Render del bloque "💼 Tokens en wallet (idle)" — colapsable, ordenado por valor
-// USD descendente. Por defecto oculta los tokens con valor < $1 para evitar el
-// spam de airdrops, con un toggle para mostrarlos.
-const IDLE_DUST_THRESHOLD = 0.1;
+// USD descendente. Por defecto oculta SOLO los tokens con valor < $0.01 (1 céntimo)
+// para esconder el polvo sin valor real, con un toggle para mostrarlos.
+const IDLE_DUST_THRESHOLD = 0.01;
 // Stablecoins → no indicador (son el destino del swap, no tiene sentido).
 const IDLE_STABLE_SYMS = new Set(["USDC", "USDT", "DAI", "USDE", "FDUSD", "USDC.E", "USDBC", "TUSD", "USDS", "PYUSD", "USDT0", "USD₮0", "SUSDE", "GUSD", "LUSD", "FRAX", "MIM", "USDD"]);
 function isStableSym(t) {
