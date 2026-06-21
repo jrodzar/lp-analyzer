@@ -1641,7 +1641,7 @@ function positionCard(p) {
         <div class="text-[10px] text-slate-400">${fmtToken(p.feesB, p.token1.symbol)}</div>
       </div>
       ${p.pnlBasis === "birdeye" ? (() => {
-        const src = p.pnlUsedYahoo ? "Birdeye + Yahoo Finance (fallback xStocks)" : "Birdeye";
+        const src = p.pnlUsedYahoo ? "DefiLlama + Yahoo Finance (fallback xStocks)" : "DefiLlama";
         return `
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL <span class="cursor-help" title="Valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Estimación con precios históricos de ${src}; no incluye gas.">ⓘ</span></div>
@@ -1671,8 +1671,8 @@ function positionCard(p) {
         <div>Retirado: ${fmtUSD(p.withdrawnUSD)} · Fees cobradas: ${fmtUSD(p.feesCollectedUSD)}</div>
         <div>Valor HODL hoy: ${fmtUSD(p.hodlUSD)}</div>
         <div class="text-[10px] text-slate-500">PnL/IL con precios históricos de ${p.pnlUsedYahoo
-          ? `Birdeye + <span class="text-amber-300">Yahoo Finance</span> (fallback xStocks: la acción subyacente como proxy del xToken)`
-          : "Birdeye"} (estimación; fees vs retiros por heurística).</div>` : ""}
+          ? `DefiLlama + <span class="text-amber-300">Yahoo Finance</span> (fallback xStocks: la acción subyacente como proxy del xToken)`
+          : "DefiLlama"} (estimación; fees vs retiros por heurística).</div>` : ""}
       </div>
     </details>
     ${solEventLogHTML(p)}
@@ -1790,7 +1790,7 @@ async function analyze() {
     let beWarn = "";
     let beError = null;
     if (all.length && (state.birdeyeKey || PROXY_BASE)) {
-      setStatus("Calculando PnL e IL con históricos de Birdeye…", "info");
+      setStatus("Calculando PnL e IL con históricos (DefiLlama)…", "info");
       try { await enrichSolanaPnL(addr); } catch (e) { console.warn("enrichSolanaPnL:", e); }
       const st = state._beStats || {};
       if (st.ok === 0 && (st.denied > 0)) {
@@ -1803,7 +1803,7 @@ async function analyze() {
         beWarn = " ⚠ No se pudo obtener histórico de Birdeye: PnL/IL no disponible.";
         beError = "error de petición";
       } else if (st.partial > 0) {
-        beWarn = ` ⚠ ${st.partial} posición(es) sin histórico completo (ni en Birdeye ni en Yahoo Finance — típico de tokens nuevos o depósitos pre-IPO): PnL/IL omitido en ellas.`;
+        beWarn = ` ⚠ ${st.partial} posición(es) sin histórico completo (ni en DefiLlama ni en Yahoo Finance — típico de tokens nuevos o depósitos pre-IPO): PnL/IL omitido en ellas.`;
       }
     }
 
@@ -2170,8 +2170,8 @@ function valueRealizableFeesForMint(events, currentPrice) {
   return realized + inv * (currentPrice || 0);
 }
 
-// Rango de precios de los ÚLTIMOS 30 DÍAS (min/max). Cripto/tokens on-chain → Birdeye
-// history_price (1 llamada). xStocks/RWA (TSLAx…) que Birdeye no cubre → serie de la
+// Rango de precios de los ÚLTIMOS 30 DÍAS (min/max). Cripto/tokens on-chain → DefiLlama
+// chart (1 llamada). xStocks/RWA (TSLAx…) que DefiLlama no cubre → serie de la
 // ACCIÓN SUBYACENTE vía proxy → Stooq (muestreada ~cada 3 días; cada día se cachea en
 // memoria + KV del proxy). Cacheado por (mint, día). Devuelve { min, max } | null.
 async function priceRange30d(mint, meta) {
@@ -2181,23 +2181,18 @@ async function priceRange30d(mint, meta) {
   if (state._range30dCache.has(key)) return state._range30dCache.get(key);
   const now = Math.floor(Date.now() / 1000);
   let res = null;
-  // 1) Birdeye history_price (cripto + xStocks que sí cubre, p.ej. CRCLx)
-  if (state.birdeyeKey || PROXY_BASE) {
-    const qs = `address=${mint}&address_type=token&type=1D&time_from=${now - 30 * 86400}&time_to=${now}`;
-    const url = state.birdeyeKey
-      ? `https://public-api.birdeye.so/defi/history_price?${qs}`
-      : `${PROXY_BASE}/birdeye/defi/history_price?${qs}`;
-    const headers = state.birdeyeKey
-      ? { "X-API-KEY": state.birdeyeKey, "x-chain": "solana", accept: "application/json" }
-      : { accept: "application/json", ...proxyAuth(url) };
+  // 1) DefiLlama chart (gratis, sin key ni cuota): ~11 puntos en 30d → min/max.
+  {
+    const start = now - 30 * 86400;
+    const url = `https://coins.llama.fi/chart/solana:${mint}?start=${start}&span=11&period=3d&searchWidth=6h`;
     try {
       await beThrottle();
-      const r = await fetch(url, { headers });
+      const r = await fetch(url, { headers: { accept: "application/json" } });
       if (r.ok) {
         const j = await r.json();
-        const items = j && j.data && j.data.items;
-        if (Array.isArray(items)) {
-          const vals = items.map((it) => it && it.value).filter((v) => typeof v === "number" && isFinite(v) && v > 0);
+        const arr = j && j.coins && j.coins[`solana:${mint}`] && j.coins[`solana:${mint}`].prices;
+        if (Array.isArray(arr)) {
+          const vals = arr.map((it) => it && it.price).filter((v) => typeof v === "number" && isFinite(v) && v > 0);
           if (vals.length >= 2) res = { min: Math.min(...vals), max: Math.max(...vals) };
         }
       }
@@ -2219,13 +2214,28 @@ async function priceRange30d(mint, meta) {
   return res;
 }
 
-// Precio USD histórico de un token en un instante (unix segundos) vía Birdeye.
-// Cachea por (mint, día) para minimizar llamadas. Stables → 1.
+// Precio USD histórico de un token de Solana vía DefiLlama (gratis, sin key ni cuota).
+// Fuente PRIMARIA desde que la key compartida de Birdeye del proxy agota sus Compute
+// Units (HTTP 400 "Compute units usage limit exceeded"). Devuelve null si no lo cubre.
+async function llamaSolPriceAt(mint, unixSec) {
+  const url = `https://coins.llama.fi/prices/historical/${unixSec}/solana:${mint}?searchWidth=6h`;
+  try {
+    const r = await fetch(url, { headers: { accept: "application/json" } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const c = j && j.coins && j.coins[`solana:${mint}`];
+    const v = c && c.price;
+    return (typeof v === "number" && isFinite(v) && v > 0) ? v : null;
+  } catch (e) { return null; }
+}
+
+// Precio USD histórico de un token en un instante (unix segundos). DefiLlama primario;
+// Birdeye como fallback (útil con key propia). Cachea por (mint, día). Stables → 1.
 // Fallback xStocks: si Birdeye no lo cubre y el token es un xStock conocido
 // (símbolo `[A-Z]+x`, name "xStock"/"Backed"), usa Stooq via /stock.
 async function birdeyePriceAt(mint, unixSec) {
   if (SOL_STABLES.has(mint)) return 1;
-  if ((!state.birdeyeKey && !PROXY_BASE) || !mint || !unixSec) return null;
+  if (!mint || !unixSec) return null;
   if (!state._beStats) state._beStats = { ok: 0, denied: 0, rate: 0, error: 0, partial: 0 };
   if (!state._bePriceCache) state._bePriceCache = new Map();
   const dayNum = Math.floor(unixSec / 86400);
@@ -2251,7 +2261,20 @@ async function birdeyePriceAt(mint, unixSec) {
     } catch (_) { /* localStorage lleno/denegado → seguimos con la red */ }
   }
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  // Espaciar respecto a la llamada Birdeye anterior (proactivo anti-429).
+  // Fuente PRIMARIA: DefiLlama (gratis, sin key ni cuota). Si responde, devolvemos ya
+  // (y cacheamos), evitando Birdeye por completo en el caso normal.
+  await beThrottle();
+  {
+    const lp = await llamaSolPriceAt(mint, unixSec);
+    if (lp != null) {
+      state._beStats.ok++;
+      state._bePriceCache.set(dayKey, lp);
+      if (lsKey) { try { localStorage.setItem(lsKey, String(lp)); } catch (_) {} }
+      return lp;
+    }
+  }
+  // Fallback Birdeye (solo útil con key propia; la key compartida del proxy agota sus
+  // Compute Units). Espaciado anti-429.
   await beThrottle();
   const qs = `address=${mint}&unixtime=${unixSec}`;
   const url = state.birdeyeKey
