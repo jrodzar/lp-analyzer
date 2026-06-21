@@ -633,10 +633,10 @@ async function explorerDirect(fullUrl) {
   throw bsErr || new Error("explorer no disponible");
 }
 
-async function fetchLendingHistory(apiBase, vault, owner, dec) {
+async function fetchLendingHistory(apiBase, vault, owner, dec, force = false) {
   const cacheKey = `${apiBase}:lend:${vault}:${owner.toLowerCase()}`;
   const cached = _histCache.get(cacheKey);
-  if (cached && (Date.now() - cached.ts) < HIST_CACHE_TTL) return cached.data;
+  if (!force && cached && (Date.now() - cached.ts) < HIST_CACHE_TTL) return cached.data;
   const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
   const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
   const get = async (qs) => {
@@ -864,7 +864,18 @@ async function fetchRevertLending(owner) {
       // realizado y NO perderlo del total. fetchLendingHistory salta el getLogs de Withdraw
       // si nunca depositó → barato en vaults nunca tocados.
       let h = null;
-      if (c.explorerApi) { try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec); } catch (e) {} }
+      if (c.explorerApi) {
+        try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec); } catch (e) {}
+        // Una posición ABIERTA (shares>0) SIEMPRE tiene un Deposit en su histórico. Si vino
+        // vacío, el getLogs se aplazó/falló (Base: thirdweb tardó >3.5s y el Worker devolvió
+        // vacío "temporal" + caché en background). Reintentamos forzando (saltando la caché
+        // de 10min) para dar tiempo a que el KV del Worker se caliente → así recuperamos
+        // depósito/interés/APR en vez de dejar la card en "—".
+        for (let r = 0; open && !(h && h.deposited > 0) && r < 3; r++) {
+          await new Promise((res) => setTimeout(res, 2500));
+          try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true); } catch (e) {}
+        }
+      }
       const everDeposited = !!(h && h.deposited > 0);
 
       // Cerrada solo si depositó Y retiró (shares=0 sin retiro = shares transferidas a otra
