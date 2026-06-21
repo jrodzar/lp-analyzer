@@ -923,7 +923,7 @@ async function fetchRevertLending(owner) {
         timelineSeries = buildLendingTimeline(h.events, gainsUSD, now);
       }
       return {
-        _lending: true, chainKey, chainName: c.name, vault: c.vault, asset: symbol,
+        _lending: true, chainKey, chainName: c.name, vault: c.vault, asset: symbol, assetAddr, decimals: dec, owner,
         currentValueUSD, depositedUSD, gainsUSD, apr,
         ageDays: ageDays || 0, openedAt: openedAt || now,
         // campos compatibles con aggregate()/orden/portfolio
@@ -2623,6 +2623,16 @@ function lendingCard(p) {
   const el = document.createElement("article");
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
   if (p.color) el.style.borderLeft = `3px solid ${p.color.line}`;
+  // Datos inertes (read-only) para que el active-management de [pro] inyecte los
+  // botones Añadir/Quitar liquidez del lending (vault ERC-4626). [main] no los usa.
+  // Solo en posiciones ABIERTAS (una cerrada/reconstruida no admite depósito/retiro).
+  if (!p.closed && p.owner && p.assetAddr) {
+    el.setAttribute("data-lending-vault", p.vault);
+    el.setAttribute("data-lending-asset", p.assetAddr);
+    el.setAttribute("data-lending-decimals", String(p.decimals));
+    el.setAttribute("data-lending-chain", p.chainKey);
+    el.setAttribute("data-lending-owner", p.owner);
+  }
   const gain = p.gainsUSD;
   el.innerHTML = `
     <div class="flex items-start justify-between gap-2">
