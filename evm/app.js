@@ -121,6 +121,24 @@ function proxyAuth(url) {
 // Cache del histórico (eventos on-chain): apenas cambia → no se re-pide en cada auto-refresco
 const _histCache = new Map(); // clave -> { data, ts }
 const HIST_CACHE_TTL = 10 * 60 * 1000; // 10 min
+
+// Precio histórico USD de un token (DefiLlama coins) al timestamp de un depósito → COSTE
+// real (base) = cantidades depositadas × precio DEL DÍA, en vez del valor HODL de hoy.
+// Cacheado por (chain:addr:día). El prefijo de cadena sale de chain.llamaChain.
+const _histPxCache = new Map();
+async function histPriceUSD(llamaChain, addr, tsSec) {
+  if (!llamaChain || !addr || !tsSec) return null;
+  const key = `${llamaChain}:${String(addr).toLowerCase()}:${Math.floor(tsSec / 86400)}`;
+  if (_histPxCache.has(key)) return _histPxCache.get(key);
+  try {
+    const r = await fetch(`https://coins.llama.fi/prices/historical/${tsSec}/${llamaChain}:${addr}`);
+    const j = await r.json();
+    const c = j && j.coins && j.coins[`${llamaChain}:${addr}`];
+    const px = c && typeof c.price === "number" ? c.price : null;
+    _histPxCache.set(key, px);
+    return px;
+  } catch (e) { _histPxCache.set(key, null); return null; }
+}
 const DEFAULTS_VERSION = 8; // bump cuando cambien IDs por defecto para forzar refresh
 
 // ============================================================================
@@ -1312,6 +1330,26 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
     }));
   }
 
+  // 7.6 Coste real (base): cantidades depositadas valoradas al PRECIO DEL DÍA del depósito
+  // (DefiLlama histórico). Así "coste" = lo que invertiste de verdad (no el valor HODL de hoy)
+  // y el PnL queda ABSOLUTO, consistente con el motor de Solana. Si no hay precio histórico,
+  // cae con gracia al valor HODL (comportamiento anterior, sin Δ-precio en el desglose).
+  const costBases = {};
+  const llamaChain = chain.llamaChain;
+  if (llamaChain) {
+    await Promise.all(rawPositions.map(async (raw) => {
+      const h = histories[raw.tokenId];
+      if (!h || !h.mintTs || !(h.deposited0 > 0 || h.deposited1 > 0)) return;
+      const t0 = tokenInfos[raw.token0], t1 = tokenInfos[raw.token1];
+      if (!t0 || !t1) return;
+      const [px0, px1] = await Promise.all([
+        h.deposited0 > 0 ? histPriceUSD(llamaChain, t0.id, h.mintTs) : Promise.resolve(0),
+        h.deposited1 > 0 ? histPriceUSD(llamaChain, t1.id, h.mintTs) : Promise.resolve(0),
+      ]);
+      if (px0 != null && px1 != null) costBases[raw.tokenId] = h.deposited0 * px0 + h.deposited1 * px1;
+    }));
+  }
+
   // 8. Construir posiciones enriquecidas
   const now = Math.floor(Date.now() / 1000);
   const result = [];
@@ -1339,15 +1377,16 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
     const hist = histories[raw.tokenId];
     let depositedUSD, withdrawnUSD, feesCollectedUSD, openedAt, ageDays, hodlUSD, ilUSD, ilPct, pnlUSD, apr;
     if (hist && hist.mintTs) {
-      depositedUSD = hist.deposited0 * p0 + hist.deposited1 * p1;
+      hodlUSD = hist.deposited0 * p0 + hist.deposited1 * p1;   // valor HODL: lo depositado a precio de HOY
       withdrawnUSD = hist.withdrawn0 * p0 + hist.withdrawn1 * p1;
       feesCollectedUSD = hist.collectedFees0 * p0 + hist.collectedFees1 * p1;
+      const cb = costBases[raw.tokenId];
+      depositedUSD = (cb != null && cb > 0) ? cb : hodlUSD;    // COSTE real (precio del día); fallback a HODL si no hay histórico
       openedAt = hist.mintTs;
       ageDays = Math.max((now - openedAt) / 86400, 1 / 24);
-      hodlUSD = depositedUSD; // valor actual de los tokens depositados (precios actuales)
-      ilUSD = (currentValueUSD + withdrawnUSD) - hodlUSD;
+      ilUSD = (currentValueUSD + withdrawnUSD) - hodlUSD;      // LP vs holdear (precio actual)
       ilPct = hodlUSD > 0 ? (ilUSD / hodlUSD) * 100 : 0;
-      pnlUSD = currentValueUSD + withdrawnUSD + feesCollectedUSD - depositedUSD; // vs HODL
+      pnlUSD = currentValueUSD + withdrawnUSD + feesCollectedUSD - depositedUSD; // vs COSTE (absoluto), igual que Solana
       apr = depositedUSD > 0 ? (feesCollectedUSD / depositedUSD) * (365 / ageDays) * 100 : 0;
     } else {
       depositedUSD = currentValueUSD; withdrawnUSD = 0; feesCollectedUSD = 0;
@@ -2911,10 +2950,10 @@ function positionCard(p) {
         <div class="text-[10px] ${pnlColor(p.ilUSD)} mt-0.5">${fmtPct(p.ilPct)}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto <span class="cursor-help" title="Valor actual + retirado + fees − depositado. Estimación; NO incluye el coste de gas.">ⓘ</span></div>
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto <span class="cursor-help" title="Resultado ABSOLUTO: valor actual + retirado + fees − coste real (lo depositado valorado al precio del día que entraste). Incluye el Δ de precio de los tokens. Estimación; NO incluye gas.">ⓘ</span></div>
         <div class="font-semibold ${pnlColor(p.pnlUSD)}">${fmtUSD(p.pnlUSD)}</div>
         ${pnlInBaseHTML(p.pnlUSD, p.token0.symbol, p.token1.symbol, p.token0.priceUSD, p.token1.priceUSD)}
-        <div class="text-[10px] text-slate-400 mt-0.5">depo ${fmtUSD(p.depositedUSD)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">coste ${fmtUSD(p.depositedUSD)}${p.hodlUSD != null && Math.abs(p.hodlUSD - p.depositedUSD) > 0.01 ? " · HODL " + fmtUSD(p.hodlUSD) : ""}</div>
         ${pnlBreakdownHTML(p.pnlUSD, p.ilUSD, (p.feesUSD || 0) + (p.uncollectedUSD || 0))}
       </div>
     </div>

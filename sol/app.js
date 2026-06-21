@@ -1652,7 +1652,7 @@ function positionCard(p) {
         <div class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto <span class="cursor-help" title="Valor actual + retirado + fees − depositado, con precios históricos de ${src}. Estimación: fees y retiros se separan por heurística y NO incluye gas.">ⓘ</span></div>
         <div class="font-semibold ${pnlColor(p.pnlUSD)}">${fmtUSD(p.pnlUSD)}</div>
         ${pnlInBaseHTML(p.pnlUSD, p.token0.symbol, p.token1.symbol, p.token0.priceUSD, p.token1.priceUSD)}
-        <div class="text-[10px] text-slate-400 mt-0.5">depo ${fmtUSD(p.depositedUSD)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">coste ${fmtUSD(p.depositedUSD)}${p.hodlUSD != null && Math.abs(p.hodlUSD - p.depositedUSD) > 0.01 ? " · HODL " + fmtUSD(p.hodlUSD) : ""}</div>
         ${pnlBreakdownHTML(p.pnlUSD, p.ilUSD, (p.feesCollectedUSD || 0) + (p.feesPendingUSD || 0))}
       </div>`;
       })() : ""}
