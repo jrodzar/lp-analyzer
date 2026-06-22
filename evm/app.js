@@ -1662,14 +1662,26 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       const hist = await fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, t0.decimals, t1.decimals);
       const prices = await priceTokensViaPool(rpc, chain.factoryAddress, { [a0]: { symbol: t0.symbol, decimals: t0.decimals }, [a1]: { symbol: t1.symbol, decimals: t1.decimals } }).catch(() => ({}));
       const p0 = prices[a0] || 0, p1 = prices[a1] || 0;
-      const feesUSD = hist.collectedFees0 * p0 + hist.collectedFees1 * p1;
-      const hodlUSD = hist.deposited0 * p0 + hist.deposited1 * p1;        // depósitos a precio de HOY
-      const withdrawnUSD = hist.withdrawn0 * p0 + hist.withdrawn1 * p1;
-      // COSTE real: depósitos a su precio HISTÓRICO (mintTs) vía DefiLlama; fallback a HODL.
+      // Posición CERRADA → congelar la valoración al DÍA DEL CIERRE (último DecreaseLiquidity),
+      // NO al precio de hoy: el PnL/IL de una cerrada es realizado y no debe moverse con el mercado.
+      const lc = chain.llamaChain;
+      const decTs = (hist.events || []).filter((e) => e.type === "dec").map((e) => e.ts).filter(Boolean);
+      const closeTs = decTs.length ? Math.max(...decTs) : ((hist.events || []).reduce((m, e) => Math.max(m, e.ts || 0), 0) || null);
+      let pc0 = p0, pc1 = p1;   // precios al CIERRE (fallback al actual si no hay histórico)
+      try {
+        if (lc && closeTs) {
+          const [c0, c1] = await Promise.all([histPriceUSD(lc, a0, closeTs), histPriceUSD(lc, a1, closeTs)]);
+          if (c0 != null) pc0 = c0;
+          if (c1 != null) pc1 = c1;
+        }
+      } catch (e) { /* fallback precio actual */ }
+      const feesUSD = hist.collectedFees0 * pc0 + hist.collectedFees1 * pc1;     // fees a precio de CIERRE
+      const hodlUSD = hist.deposited0 * pc0 + hist.deposited1 * pc1;             // HODL: depósitos a precio de CIERRE
+      const withdrawnUSD = hist.withdrawn0 * pc0 + hist.withdrawn1 * pc1;        // retirado a precio de CIERRE
+      // COSTE real: depósitos a su precio del DÍA DEL DEPÓSITO (mintTs) vía DefiLlama; fallback a HODL.
       // Igual que las posiciones abiertas → la ficha de la cerrada muestra coste·HODL·PnL·IL coherentes.
       let depositedUSD = hodlUSD;
       try {
-        const lc = chain.llamaChain;
         if (lc && hist.mintTs && (hist.deposited0 > 0 || hist.deposited1 > 0)) {
           const [hp0, hp1] = await Promise.all([
             hist.deposited0 > 0 ? histPriceUSD(lc, a0, hist.mintTs) : Promise.resolve(0),
@@ -1678,12 +1690,14 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
           if (hp0 != null && hp1 != null) { const cb = hist.deposited0 * hp0 + hist.deposited1 * hp1; if (cb > 0) depositedUSD = cb; }
         }
       } catch (e) { /* fallback HODL */ }
-      const ilUSD = withdrawnUSD - hodlUSD;                                // cerrada: lo retirado vs haber holdeado
+      const ilUSD = withdrawnUSD - hodlUSD;                                // cerrada: lo retirado vs haber holdeado (al cierre)
       const ilPct = hodlUSD > 0 ? (ilUSD / hodlUSD) * 100 : 0;
-      const pnlUSD = withdrawnUSD + feesUSD - depositedUSD;                // realizado, vs COSTE (igual que abiertas)
+      const pnlUSD = withdrawnUSD + feesUSD - depositedUSD;                // realizado, vs COSTE (congelado al cierre)
       out.push({
         id: String(tokenId), chainKey, nftId: String(tokenId), poolId: "",
-        reconstructed: true, closed: true, inRange: false,
+        reconstructed: true, closed: true, inRange: false, _closedFrozen: true, // _closedFrozen: enrichRealizableFeesEVM NO debe re-valorar a hoy
+        // priceUSD = precio ACTUAL (no el de cierre): solo alimenta el cálculo de fees realizables de las
+        // posiciones ABIERTAS del mismo token; las cifras USD de ESTA cerrada ya van congeladas al cierre (pc0/pc1).
         token0: { id: a0, symbol: t0.symbol, decimals: t0.decimals, priceUSD: p0 },
         token1: { id: a1, symbol: t1.symbol, decimals: t1.decimals, priceUSD: p1 },
         tick: null, tickLower: null, tickUpper: null, feeTier: null,
@@ -2088,6 +2102,7 @@ async function enrichRealizableFeesEVM(owner) {
   //    Cobros reales (subgraph con snapshots) o lump en openedAt (resto / HyperEVM).
   const feeCollectsByTok = {}; // k -> [{amount, ts}]
   for (const p of positions) {
+    if (p._closedFrozen) continue; // cerrada congelada al cierre: sus fees no se re-valoran ni entran en el pool de fees-por-token
     if (!p._feeAmtByToken) {
       const m = {};
       if ((p.collectedFees0 || 0) > 0 && p.token0?.id) m[p.token0.id.toLowerCase()] = p.collectedFees0;
@@ -2133,6 +2148,7 @@ async function enrichRealizableFeesEVM(owner) {
   }
   // 5) Re-atribuir por posición + recomputar PnL/APR
   for (const p of positions) {
+    if (p._closedFrozen) continue; // cerrada congelada al cierre: preservar su feesUSD/pnlUSD (no recalcular a hoy)
     if (!p._feeAmtByToken || !Object.keys(p._feeAmtByToken).length) continue;
     let rf = 0, any = false;
     for (const addr in p._feeAmtByToken) {
