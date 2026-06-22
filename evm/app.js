@@ -1340,6 +1340,7 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
   // y el PnL queda ABSOLUTO, consistente con el motor de Solana. Si no hay precio histórico,
   // cae con gracia al valor HODL (comportamiento anterior, sin Δ-precio en el desglose).
   const costBases = {};
+  const closePrices = {}; // tokenId -> {p0,p1} al DÍA DEL CIERRE (solo cerradas): congela HODL/retirado/IL
   const llamaChain = chain.llamaChain;
   if (llamaChain) {
     await Promise.all(rawPositions.map(async (raw) => {
@@ -1352,6 +1353,16 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
         h.deposited1 > 0 ? histPriceUSD(llamaChain, t1.id, h.mintTs) : Promise.resolve(0),
       ]);
       if (px0 != null && px1 != null) costBases[raw.tokenId] = h.deposited0 * px0 + h.deposited1 * px1;
+      // Cerrada → precio del DÍA DEL CIERRE (último DecreaseLiquidity) para congelar HODL/retirado/IL:
+      // el principal de una cerrada es realizado, no debe moverse con el mercado (igual que en HyperEVM).
+      if (raw.liquidity === "0") {
+        const decTs = (h.events || []).filter((e) => e.type === "dec").map((e) => e.ts).filter(Boolean);
+        const closeTs = decTs.length ? Math.max(...decTs) : 0;
+        if (closeTs) {
+          const [c0, c1] = await Promise.all([histPriceUSD(llamaChain, t0.id, closeTs), histPriceUSD(llamaChain, t1.id, closeTs)]);
+          if (c0 != null && c1 != null) closePrices[raw.tokenId] = { p0: c0, p1: c1 };
+        }
+      }
     })).catch(() => {});
   }
 
@@ -1382,14 +1393,17 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
     const hist = histories[raw.tokenId];
     let depositedUSD, withdrawnUSD, feesCollectedUSD, openedAt, ageDays, hodlUSD, ilUSD, ilPct, pnlUSD, apr;
     if (hist && hist.mintTs) {
-      hodlUSD = hist.deposited0 * p0 + hist.deposited1 * p1;   // valor HODL: lo depositado a precio de HOY
-      withdrawnUSD = hist.withdrawn0 * p0 + hist.withdrawn1 * p1;
-      feesCollectedUSD = hist.collectedFees0 * p0 + hist.collectedFees1 * p1;
+      // Cerrada → congelar HODL/retirado al precio del CIERRE (cp); abierta → precio actual (p0/p1).
+      const cp = closed ? closePrices[raw.tokenId] : null;
+      const hp0 = cp ? cp.p0 : p0, hp1 = cp ? cp.p1 : p1;
+      hodlUSD = hist.deposited0 * hp0 + hist.deposited1 * hp1;   // HODL: depositado a precio de hoy (abierta) o del cierre (cerrada)
+      withdrawnUSD = hist.withdrawn0 * hp0 + hist.withdrawn1 * hp1;
+      feesCollectedUSD = hist.collectedFees0 * hp0 + hist.collectedFees1 * hp1; // (lo sobreescribe el valor realizable en enrichRealizableFeesEVM)
       const cb = costBases[raw.tokenId];
-      depositedUSD = (cb != null && cb > 0) ? cb : hodlUSD;    // COSTE real (precio del día); fallback a HODL si no hay histórico
+      depositedUSD = (cb != null && cb > 0) ? cb : hodlUSD;    // COSTE real (precio del día del depósito); fallback a HODL si no hay histórico
       openedAt = hist.mintTs;
       ageDays = Math.max((now - openedAt) / 86400, 1 / 24);
-      ilUSD = (currentValueUSD + withdrawnUSD) - hodlUSD;      // LP vs holdear (precio actual)
+      ilUSD = (currentValueUSD + withdrawnUSD) - hodlUSD;      // LP vs holdear (cerrada: todo congelado al cierre)
       ilPct = hodlUSD > 0 ? (ilUSD / hodlUSD) * 100 : 0;
       pnlUSD = currentValueUSD + withdrawnUSD + feesCollectedUSD - depositedUSD; // vs COSTE (absoluto), igual que Solana
       apr = depositedUSD > 0 ? (feesCollectedUSD / depositedUSD) * (365 / ageDays) * 100 : 0;
