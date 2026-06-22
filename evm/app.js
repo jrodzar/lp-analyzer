@@ -1663,8 +1663,24 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       const prices = await priceTokensViaPool(rpc, chain.factoryAddress, { [a0]: { symbol: t0.symbol, decimals: t0.decimals }, [a1]: { symbol: t1.symbol, decimals: t1.decimals } }).catch(() => ({}));
       const p0 = prices[a0] || 0, p1 = prices[a1] || 0;
       const feesUSD = hist.collectedFees0 * p0 + hist.collectedFees1 * p1;
-      const depositedUSD = hist.deposited0 * p0 + hist.deposited1 * p1;
+      const hodlUSD = hist.deposited0 * p0 + hist.deposited1 * p1;        // depósitos a precio de HOY
       const withdrawnUSD = hist.withdrawn0 * p0 + hist.withdrawn1 * p1;
+      // COSTE real: depósitos a su precio HISTÓRICO (mintTs) vía DefiLlama; fallback a HODL.
+      // Igual que las posiciones abiertas → la ficha de la cerrada muestra coste·HODL·PnL·IL coherentes.
+      let depositedUSD = hodlUSD;
+      try {
+        const lc = chain.llamaChain;
+        if (lc && hist.mintTs && (hist.deposited0 > 0 || hist.deposited1 > 0)) {
+          const [hp0, hp1] = await Promise.all([
+            hist.deposited0 > 0 ? histPriceUSD(lc, a0, hist.mintTs) : Promise.resolve(0),
+            hist.deposited1 > 0 ? histPriceUSD(lc, a1, hist.mintTs) : Promise.resolve(0),
+          ]);
+          if (hp0 != null && hp1 != null) { const cb = hist.deposited0 * hp0 + hist.deposited1 * hp1; if (cb > 0) depositedUSD = cb; }
+        }
+      } catch (e) { /* fallback HODL */ }
+      const ilUSD = withdrawnUSD - hodlUSD;                                // cerrada: lo retirado vs haber holdeado
+      const ilPct = hodlUSD > 0 ? (ilUSD / hodlUSD) * 100 : 0;
+      const pnlUSD = withdrawnUSD + feesUSD - depositedUSD;                // realizado, vs COSTE (igual que abiertas)
       out.push({
         id: String(tokenId), chainKey, nftId: String(tokenId), poolId: "",
         reconstructed: true, closed: true, inRange: false,
@@ -1676,7 +1692,7 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
         feesTotalUSD: feesUSD, depositedUSD, withdrawnUSD,
         // cantidades de fees por token (NETAS) → valor realizable (enrichRealizableFeesEVM)
         collectedFees0: hist.collectedFees0, collectedFees1: hist.collectedFees1,
-        hodlUSD: depositedUSD, pnlUSD: null, ilUSD: null, ilPct: null, apr: null,
+        hodlUSD, ilUSD, ilPct, pnlUSD, apr: null,
         ageDays: hist.mintTs ? Math.max(0, (Date.now() / 1000 - hist.mintTs) / 86400) : 0,
         openedAt: hist.mintTs || 0, _rpcOnly: true,
       });
@@ -2882,11 +2898,17 @@ function reconstructedCardEvm(p) {
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees cobradas (aprox.)</div>
         <div class="font-semibold text-emerald-400">${fmtUSD(p.feesUSD || 0)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">retirado ${fmtUSD(p.withdrawnUSD || 0)}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">Depositado / Retirado</div>
-        <div class="font-semibold">${fmtUSD(p.depositedUSD || 0)} <span class="text-[10px] font-normal text-slate-400">depo</span></div>
-        <div class="text-[10px] text-slate-400">${fmtUSD(p.withdrawnUSD || 0)} retirado</div>
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL</div>
+        <div class="font-semibold ${pnlColor(p.ilUSD)}">${p.ilUSD == null ? "—" : fmtUSD(p.ilUSD)}</div>
+        <div class="text-[10px] ${pnlColor(p.ilUSD)} mt-0.5">${p.ilPct == null ? "" : fmtPct(p.ilPct)}</div>
+      </div>
+      <div class="bg-slate-950/40 rounded-lg p-2 col-span-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto (realizado)</div>
+        <div class="font-semibold ${pnlColor(p.pnlUSD)}">${p.pnlUSD == null ? "—" : fmtUSD(p.pnlUSD)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">coste ${fmtUSD(p.depositedUSD)}${p.hodlUSD != null && Math.abs(p.hodlUSD - p.depositedUSD) > 0.01 ? " · HODL " + fmtUSD(p.hodlUSD) : ""}</div>
       </div>
     </div>
     <div class="text-[10px] text-slate-500">Reconstruida del histórico on-chain (NFT quemado). Par resuelto desde la 1ª tx; importes aproximados.</div>
