@@ -1187,6 +1187,7 @@ async function priceTokensViaPool(rpc, factoryAddr, tokenInfos) {
 const EV_INCREASE = "0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f";
 const EV_DECREASE = "0x26f6a048ee9138f2c0ce266f322cb99228e8d619ae2bff30c67f8dcf9d2377b4";
 const EV_COLLECT  = "0x40d0efd1a53d60ecbf40971b9daf7dc90178c3aadc7aab1765632738fa8b8f01";
+const EV_POOL_MINT = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde"; // Mint(...) de la pool V3 → el emisor del log ES la pool
 
 /**
  * Reconstruye el histórico de una posición leyendo eventos vía API Blockscout
@@ -1637,21 +1638,25 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
         const oh = await rpcEthCall(rpc, nftMgr, "0x6352211e" + BigInt(tokenId).toString(16).padStart(64, "0"));
         if (!/^0x0+$/.test("0x" + (oh || "").slice(-40))) continue; // alguien la posee → no es burn nuestro
       } catch (e) { /* revert → quemada */ }
-      // 1ª tx Increase → resolver el par desde sus Transfer ERC-20 (from=owner)
+      // 1ª tx Increase → de su recibo sacamos la POOL (evento Mint de la pool V3, cuyo
+      // emisor ES la propia pool) y leemos token0()/token1() directos. Robusto: la
+      // resolución previa por "Transfer from owner" fallaba si un token llegaba vía
+      // router/wrap (no directo del owner) → dejaba toks<2 y descartaba la posición.
       const h0 = await fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, 18, 18);
       const incs = (h0.events || []).filter((e) => e.type === "inc").sort((a, b) => a.ts - b.ts);
       if (!incs.length || !incs[0].tx) continue;
       const rcpt = await fetch(rpcOne, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getTransactionReceipt", params: [incs[0].tx] }) }).then((x) => x.json());
-      const toks = [];
+      let pool = null;
       for (const l of (rcpt?.result?.logs || [])) {
-        const tps = l.topics || [];
-        if (tps.length !== 3 || (tps[0] || "").toLowerCase() !== EV_ERC721_TRANSFER) continue; // ERC-20 Transfer (3 topics)
-        if ((tps[1] || "").toLowerCase() !== ownerTopic) continue;                              // from = owner (depósito)
-        const a = (l.address || "").toLowerCase();
-        if (a && !toks.includes(a)) toks.push(a);
+        if (((l.topics || [])[0] || "").toLowerCase() === EV_POOL_MINT) { pool = (l.address || "").toLowerCase(); break; }
       }
-      if (toks.length < 2) continue; // par no resuelto → omitir
-      const [a0, a1] = toks[0] < toks[1] ? [toks[0], toks[1]] : [toks[1], toks[0]]; // token0 = dirección menor (orden del pool)
+      if (!pool) continue; // no se localizó la pool en la tx → omitir
+      let a0, a1;
+      try {
+        a0 = ("0x" + (await rpcEthCall(rpc, pool, SEL_TOKEN0_POOL)).slice(-40)).toLowerCase();
+        a1 = ("0x" + (await rpcEthCall(rpc, pool, SEL_TOKEN1_POOL)).slice(-40)).toLowerCase();
+      } catch (e) { continue; }
+      if (!/^0x[0-9a-f]{40}$/.test(a0) || !/^0x[0-9a-f]{40}$/.test(a1)) continue; // par no resuelto → omitir
       const meta = async (a) => { let sym = a.slice(0, 6), dec = 18; try { sym = decABIString(await rpcEthCall(rpc, a, SEL_SYMBOL)) || sym; } catch (e) {} try { dec = Number(decU(await rpcEthCall(rpc, a, SEL_DECIMALS), 0)); } catch (e) {} return { symbol: sym, decimals: dec }; };
       const t0 = await meta(a0), t1 = await meta(a1);
       const hist = await fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, t0.decimals, t1.decimals);
