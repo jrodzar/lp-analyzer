@@ -1603,6 +1603,53 @@ async function fetchReceivedTokenIds(apiBase, nftMgr, owner) {
   return ids;
 }
 
+// Recalcula una cerrada reconstruida de subgraph a PRECIOS HISTÓRICOS (igual que HyperEVM):
+// enrichPosition la dejó a precio de HOY. Trae el histórico on-chain (getLogs) para sacar la
+// fecha de cierre (último decrease) y la de depósito (mint), y congela el PRINCIPAL:
+//   coste = depósitos al precio del depósito · HODL/retirado = al precio del cierre · IL = retirado − HODL.
+// Las fees las sigue afinando enrichRealizableFeesEVM (valor realizable). Best-effort: si falla, deja lo de enrichPosition.
+async function freezeClosedSubgraphHistorical(p, chain) {
+  const llamaChain = chain.llamaChain;
+  if (!llamaChain || !chain.blockscoutApi || !chain.uniNftManager) return;
+  const t0 = p.token0, t1 = p.token1;
+  let hist;
+  try { hist = await fetchPositionHistory(chain.blockscoutApi, chain.uniNftManager, p.nftId, Number(t0.decimals), Number(t1.decimals)); }
+  catch (e) { return; }
+  if (!hist || !hist.mintTs) return;
+  const decTs = (hist.events || []).filter((e) => e.type === "dec").map((e) => e.ts).filter(Boolean);
+  const closeTs = decTs.length ? Math.max(...decTs) : 0;
+  // Precio al CIERRE (fallback: precio actual de la ficha si no hay histórico).
+  let c0 = t0.priceUSD || 0, c1 = t1.priceUSD || 0;
+  if (closeTs) {
+    try { const [x0, x1] = await Promise.all([histPriceUSD(llamaChain, t0.id, closeTs), histPriceUSD(llamaChain, t1.id, closeTs)]); if (x0 != null) c0 = x0; if (x1 != null) c1 = x1; } catch (e) {}
+  }
+  // COSTE al precio del DEPÓSITO (mintTs).
+  let coste = null;
+  if (hist.deposited0 > 0 || hist.deposited1 > 0) {
+    try {
+      const [m0, m1] = await Promise.all([
+        hist.deposited0 > 0 ? histPriceUSD(llamaChain, t0.id, hist.mintTs) : Promise.resolve(0),
+        hist.deposited1 > 0 ? histPriceUSD(llamaChain, t1.id, hist.mintTs) : Promise.resolve(0),
+      ]);
+      if (m0 != null && m1 != null) coste = hist.deposited0 * m0 + hist.deposited1 * m1;
+    } catch (e) {}
+  }
+  const cv = p.currentValueUSD || 0; // cerrada → 0
+  p.hodlUSD = hist.deposited0 * c0 + hist.deposited1 * c1;
+  p.withdrawnUSD = hist.withdrawn0 * c0 + hist.withdrawn1 * c1;
+  p.feesUSD = hist.collectedFees0 * c0 + hist.collectedFees1 * c1; // baseline "al cobrar"; enrichRealizableFeesEVM lo afina al valor realizable
+  p.depositedUSD = (coste != null && coste > 0) ? coste : p.hodlUSD;
+  p.ilUSD = (cv + p.withdrawnUSD) - p.hodlUSD;
+  p.ilPct = p.hodlUSD > 0 ? (p.ilUSD / p.hodlUSD) * 100 : 0;
+  p.pnlUSD = cv + p.withdrawnUSD + p.feesUSD - p.depositedUSD;
+  p.feesTotalUSD = p.feesUSD + (p.uncollectedUSD || 0);
+  p.openedAt = hist.mintTs;
+  p.ageDays = Math.max((Date.now() / 1000 - hist.mintTs) / 86400, 1 / 24);
+  // Amounts del histórico on-chain (getLogs) → coherente con HyperEVM y con el valor realizable de fees.
+  p.deposited0 = hist.deposited0; p.deposited1 = hist.deposited1;
+  p.collectedFees0 = hist.collectedFees0; p.collectedFees1 = hist.collectedFees1;
+}
+
 // Chains con subgraph + explorer (blockscoutApi): Ethereum/Arbitrum/Polygon/Base.
 async function reconstructBurnedSubgraph(chainKey, owner, openIds) {
   const chain = state.chains[chainKey];
@@ -1622,7 +1669,7 @@ async function reconstructBurnedSubgraph(chainKey, owner, openIds) {
     const ethPriceUSD = Number(data.bundles?.[0]?.ethPriceUSD || 0);
     for (const raw of (data.positions || [])) {
       if (!/^0x0+$/.test(String(raw.owner || "").toLowerCase())) continue; // SOLO quemadas (owner 0x0); las vendidas/transferidas tienen otro owner
-      try { const p = enrichPosition(raw, ethPriceUSD, chainKey); p.reconstructed = true; p.closed = true; out.push(p); } catch (e) {}
+      try { const p = enrichPosition(raw, ethPriceUSD, chainKey); p.reconstructed = true; p.closed = true; await freezeClosedSubgraphHistorical(p, chain); out.push(p); } catch (e) {}
     }
   }
   if (out.length) console.log(`[evm-recon] ${chainKey}: ${out.length} posición(es) quemada(s) reconstruida(s)`);
