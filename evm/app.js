@@ -1695,9 +1695,10 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       const pnlUSD = withdrawnUSD + feesUSD - depositedUSD;                // realizado, vs COSTE (congelado al cierre)
       out.push({
         id: String(tokenId), chainKey, nftId: String(tokenId), poolId: "",
-        reconstructed: true, closed: true, inRange: false, _closedFrozen: true, // _closedFrozen: enrichRealizableFeesEVM NO debe re-valorar a hoy
-        // priceUSD = precio ACTUAL (no el de cierre): solo alimenta el cálculo de fees realizables de las
-        // posiciones ABIERTAS del mismo token; las cifras USD de ESTA cerrada ya van congeladas al cierre (pc0/pc1).
+        reconstructed: true, closed: true, inRange: false,
+        // priceUSD = precio ACTUAL (no el de cierre) a propósito: la cerrada participa en el cálculo de fees
+        // REALIZABLES (enrichRealizableFeesEVM) igual que las abiertas → fees idle a precio de hoy + lo swapeado a
+        // su USDC real. HODL/IL/retirado y coste SÍ quedan congelados al cierre (pc0/pc1 y mintTs); solo fees+PnL realizable.
         token0: { id: a0, symbol: t0.symbol, decimals: t0.decimals, priceUSD: p0 },
         token1: { id: a1, symbol: t1.symbol, decimals: t1.decimals, priceUSD: p1 },
         tick: null, tickLower: null, tickUpper: null, feeTier: null,
@@ -2102,7 +2103,6 @@ async function enrichRealizableFeesEVM(owner) {
   //    Cobros reales (subgraph con snapshots) o lump en openedAt (resto / HyperEVM).
   const feeCollectsByTok = {}; // k -> [{amount, ts}]
   for (const p of positions) {
-    if (p._closedFrozen) continue; // cerrada congelada al cierre: sus fees no se re-valoran ni entran en el pool de fees-por-token
     if (!p._feeAmtByToken) {
       const m = {};
       if ((p.collectedFees0 || 0) > 0 && p.token0?.id) m[p.token0.id.toLowerCase()] = p.collectedFees0;
@@ -2148,7 +2148,6 @@ async function enrichRealizableFeesEVM(owner) {
   }
   // 5) Re-atribuir por posición + recomputar PnL/APR
   for (const p of positions) {
-    if (p._closedFrozen) continue; // cerrada congelada al cierre: preservar su feesUSD/pnlUSD (no recalcular a hoy)
     if (!p._feeAmtByToken || !Object.keys(p._feeAmtByToken).length) continue;
     let rf = 0, any = false;
     for (const addr in p._feeAmtByToken) {
