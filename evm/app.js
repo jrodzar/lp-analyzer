@@ -1196,7 +1196,7 @@ const EV_POOL_MINT = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16
  *   collectedFees = Σ Collect − Σ DecreaseLiquidity  (Collect incluye principal + fees)
  */
 async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
-  const cacheKey = `${apiBase}:${tokenId}`;
+  const cacheKey = `${apiBase}:${tokenId}:${dec0}:${dec1}`; // incluir decimales: reconstructBurnedHyperEVM llama 1º con (18,18) provisional y luego con los reales; sin esto la 2ª colisiona y escala mal el token1 (p.ej. USDC/1e18 → ~0)
   const cached = _histCache.get(cacheKey);
   if (cached && (Date.now() - cached.ts) < HIST_CACHE_TTL) return cached.data;
   const topic1 = "0x" + BigInt(tokenId).toString(16).padStart(64, "0");
