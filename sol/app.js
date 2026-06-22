@@ -1914,13 +1914,17 @@ async function reconstructClosedSol(owner, openVaults) {
   const txs = await fetchEnhancedTxs(owner);
   if (!txs.length) return [];
   const priceOf = (mint) => (state.prices[mint] != null ? state.prices[mint] : (SOL_STABLES.has(mint) ? 1 : 0));
-  const SRC = { RAYDIUM: "raydium", ORCA: "orca", WHIRLPOOL: "orca" };
   const events = [];           // {vault, mint, ts, usd, dir:'dep'|'recv', isWd, proto}
   const adj = new Map();       // vault -> Set(vaults co-ocurrentes) (grafo de pools)
   const ensure = (v) => { if (!adj.has(v)) adj.set(v, new Set()); return adj.get(v); };
   const liqDiscs = await clmmLiqDiscs();
   for (const tx of txs) {
-    const proto = SRC[tx.source] || clmmProtoFromTx(tx, liqDiscs); if (!proto) continue;
+    // Exigir una instrucción REAL de liquidez/fee CLMM (por discriminador). NO fiarse de
+    // SRC[tx.source]: Helius etiqueta los SWAPS rutados por Orca/Raydium con source=ORCA/RAYDIUM,
+    // y se colaban como "depósitos" creando posiciones FANTASMA (p.ej. un swap JLP↔SOL por un
+    // pool Orca aparecía como posición JLP/SOL cerrada). clmmProtoFromTx solo casa increase/
+    // decrease/collect/open/close, nunca swap, y además devuelve el protocolo correcto.
+    const proto = clmmProtoFromTx(tx, liqDiscs); if (!proto) continue;
     const ts = tx.timestamp || 0;
     const isWd = txHasRealWithdraw(tx);
     const txVaults = [];
