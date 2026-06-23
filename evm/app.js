@@ -1030,7 +1030,12 @@ async function backfillUncollectedFromRPC(positions, onProgress) {
       };
       // Lectura ON-CHAIN completa: ticks outside + pool globals + datos del NFT
       // (incluye tokensOwed que el subgraph NO refleja en collectedFeesToken).
-      const nftMgr = chain.uniNftManager;
+      // HyperEVM (RPC-only) usa nftManagerAddress, NO uniNftManager → sin este fallback
+      // nftData=null y NO se sumaban los tokensOwed (fees consolidadas tras un increase/
+      // decrease previo). Bug: tras un "Añadir liquidez", el increaseLiquidity mueve las
+      // fees acumuladas a tokensOwed y resetea el checkpoint; "pendientes" mostraba solo el
+      // delta NUEVO (p.ej. $0.0563) ocultando lo consolidado (~$0.78) que sigue reclamable.
+      const nftMgr = chain.uniNftManager || chain.nftManagerAddress;
       try {
         const [lo, up, globals, nftData] = await Promise.all([
           getTick(p.tickLower),
