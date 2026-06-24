@@ -1083,6 +1083,17 @@ async function fetchCurvePositions(owner) {
           position.timelineSeries = buildLendingTimeline(h.events, position.gainsUSD, now);
         }
       } catch (e) {}
+      // CRV reclamable (solo stakeado) — gauge.claimable_tokens(owner)
+      if (position.staked && position.gaugeAddr) {
+        try {
+          const rpc2 = state.chains[chainKey].rpcUrls || [state.chains[chainKey].rpcUrl];
+          const hex = await rpcEthCall(rpc2, position.gaugeAddr, SEL_CLAIMABLE_TOKENS + encodeAddr32(owner));
+          if (hex && hex !== "0x") {
+            const crv = Number(decU(hex, 0)) / 1e18;
+            if (crv > 0) { const px = await getCrvPriceUSD(); position.crvClaimable = crv; position.crvClaimableUSD = px ? crv * px : null; }
+          }
+        } catch (e) {}
+      }
     }));
     return out;
   }));
@@ -1100,6 +1111,18 @@ const CURVE_EV = {
 const _curveHistCache = {};
 const CURVE_HIST_TTL = 10 * 60 * 1000;
 const CURVE_HIST_TX_CAP = 40; // anti-agregador: más txs que esto → no reconstruir
+const SEL_CLAIMABLE_TOKENS = "0x33134583"; // gauge.claimable_tokens(address) → CRV reclamable (wei)
+let _crvPriceCache = { ts: 0, px: null };
+async function getCrvPriceUSD() {
+  if (_crvPriceCache.px != null && Date.now() - _crvPriceCache.ts < 5 * 60 * 1000) return _crvPriceCache.px;
+  try {
+    const r = await fetchWithTimeout("https://coins.llama.fi/prices/current/coingecko:curve-dao-token", {}, { timeoutMs: 6000, tries: 1 });
+    const j = await r.json();
+    const px = j && j.coins && j.coins["coingecko:curve-dao-token"] && j.coins["coingecko:curve-dao-token"].price;
+    if (px > 0) { _crvPriceCache = { ts: Date.now(), px }; return px; }
+  } catch (e) {}
+  return _crvPriceCache.px;
+}
 
 // Reconstruye coste/retiros de una posición Curve por el flujo NETO de las monedas
 // del pool en las TXs donde el owner tocó el pool o el gauge. Robusto ante
@@ -3048,6 +3071,7 @@ function curveCard(p) {
   const extraTxt = extra.map((r) => `${r.apy.toFixed(2)}% ${r.symbol}`).join(" + ");
   const baseTxt = p.baseApyPct != null ? `${Number(p.baseApyPct).toFixed(2)}%` : null;
   const totalApy = (p.baseApyPct != null ? Number(p.baseApyPct) : 0) + crv0 + extraApy;
+  const dailyProfitUSD = ((p.baseApyPct != null ? Number(p.baseApyPct) : 0) + crv0) / 100 * (p.currentValueUSD || 0) / 365;
   const apyExpl = `APY estimado. Base = fees de swap (semanal, de Curve)${baseTxt ? ` = ${baseTxt}` : " (n/d)"}. CRV = emisiones del gauge${crvTxt ? ` = ${crvTxt} (sin boost → con boost máximo veCRV)` : " (n/d)"}. ${p.staked ? "Estás STAKEADO → cobras el CRV." : "NO estás stakeado → solo cobras las fees base, NO el CRV. Usa Deposit & Stake en Curve."}`;
   el.innerHTML = `
     <div class="flex items-start justify-between gap-2">
@@ -3080,6 +3104,7 @@ function curveCard(p) {
       ${infoToggle(`<span class="text-[10px] text-slate-500">APY pool ~${totalApy.toFixed(1)}%</span>`, `APY actual del pool (no tu rendimiento realizado). Base = fees de swap (semanal). CRV = emisiones del gauge (sin boost → con boost máx. veCRV). ${p.staked ? "Estás stakeado → cobras el CRV." : "NO estás stakeado → solo la base, NO el CRV."}`)}
       ${[baseTxt ? `base ${baseTxt}` : null, crvTxt ? `CRV ${crvTxt}` : null, extraTxt || null].filter(Boolean).join(" · ") ? `<span class="text-slate-500">· ${[baseTxt ? `base ${baseTxt}` : null, crvTxt ? `CRV ${crvTxt}` : null, extraTxt || null].filter(Boolean).join(" · ")}</span>` : ""}
     </div>
+    <div class="text-[10px] text-slate-500">📅 Profit/día ~${fmtUSD(dailyProfitUSD)}${p.crvClaimable ? ` · CRV pendiente ${p.crvClaimable.toFixed(3)}${p.crvClaimableUSD != null && p.crvClaimableUSD >= 0.005 ? ` (${fmtUSD(p.crvClaimableUSD)})` : ""}` : ""}</div>
     ${!p.staked && crv0 > 0 ? `<div class="text-[10px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded p-1.5">⚠️ Sin stakear: te pierdes ~${crv0.toFixed(1)}% de CRV. Haz "Deposit &amp; Stake" en Curve.</div>` : ""}
     <details class="text-xs">
       <summary class="text-slate-400 hover:text-slate-200">▾ detalles</summary>
