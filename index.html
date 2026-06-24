@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "298";</script>
+  <script>window.APP_VERSION = "299";</script>
   <!-- Modo incógnito: difumina SOLO los importes (.lp-blur) cuando el body tiene
        .lp-private. user-select:none evita copiar el valor real. Los gráficos NO
        se difuminan (sus etiquetas $ se enmascaran como texto "$•••"). -->
@@ -60,6 +60,10 @@
     body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
     .seg { transition: all .15s; }
     .chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+    /* Modo incógnito (body.lp-private): difumina los importes envueltos en .lp-blur
+       (por fmtUSD) para compartir pantalla. Estático aquí para no depender de la
+       compilación de Tailwind (que purga clases añadidas dinámicamente por JS). */
+    body.lp-private .lp-blur { filter: blur(7px) !important; -webkit-filter: blur(7px) !important; user-select: none !important; -webkit-user-select: none !important; }
     .scrollbar::-webkit-scrollbar { width: 8px; }
     .scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
     .skeleton { background: linear-gradient(90deg, rgba(255,255,255,.04) 25%, rgba(255,255,255,.09) 50%, rgba(255,255,255,.04) 75%); background-size: 200% 100%; animation: shimmer 1.3s infinite; }
