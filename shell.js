@@ -3335,10 +3335,10 @@ function renderHistorico() {
   }
   const totalLP = items.length;
   const pctOf = (x) => (valSum > 0 ? ` (${x >= 0 ? "+" : ""}${((x / valSum) * 100).toFixed(2)}%)` : "");
-  els.histPnl.textContent = pnlN ? fmtUSD(pnlSum) + pctOf(pnlSum) : "—";
+  els.histPnl.innerHTML = pnlN ? fmtUSD(pnlSum) + pctOf(pnlSum) : "—";
   els.histPnl.className = "text-xl font-bold mt-1 " + (pnlN ? pnlColor(pnlSum) : "");
   els.histPnlSub.textContent = pnlN ? `${pnlN}/${totalLP} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
-  els.histIl.textContent = ilN ? fmtUSD(ilSum) + pctOf(ilSum) : "—";
+  els.histIl.innerHTML = ilN ? fmtUSD(ilSum) + pctOf(ilSum) : "—";
   els.histIl.className = "text-xl font-bold mt-1 " + (ilN ? pnlColor(ilSum) : "");
   els.histIlSub.textContent = ilN ? `${ilN}/${totalLP} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
 
@@ -3359,7 +3359,7 @@ function renderHistorico() {
   const gapTxt = gap >= 0
     ? `(+${fmtUSD(gap).replace("$", "$")} ≈ +${gapPct.toFixed(2)}% por variación de precio)`
     : `(${fmtUSD(gap)} ≈ ${gapPct.toFixed(2)}% por variación de precio)`;
-  els.histNote.textContent = `La curva = aportado + fees (eventos on-chain EVM/HyperEVM/lending y transacciones Solana). La línea ámbar "Valor real hoy" muestra el valor actual de las posiciones a precios de mercado ${gapTxt}. PnL e IL del resumen también incluyen variación de precio, calculados por posición.`;
+  els.histNote.innerHTML = `La curva = aportado + fees (eventos on-chain EVM/HyperEVM/lending y transacciones Solana). La línea ámbar "Valor real hoy" muestra el valor actual de las posiciones a precios de mercado ${gapTxt}. PnL e IL del resumen también incluyen variación de precio, calculados por posición.`;
 
   const datasets = [
     { label: "Capital aportado", data: curves.aportado, borderColor: "#94a3b8", borderDash: [5, 4], pointRadius: 2, borderWidth: 1.5, stepped: "after" },
