@@ -1650,12 +1650,12 @@ function positionCard(p) {
         const src = p.pnlUsedYahoo ? "DefiLlama + Yahoo Finance (fallback xStocks)" : "DefiLlama";
         return `
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL <span class="cursor-help" title="Valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Estimación con precios históricos de ${src}; no incluye gas.">ⓘ</span></div>
+        ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL</span>`, `Valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Estimación con precios históricos de ${src}; no incluye gas.`)}
         <div class="font-semibold ${pnlColor(p.ilUSD)}">${fmtUSD(p.ilUSD)}</div>
         <div class="text-[10px] ${pnlColor(p.ilUSD)} mt-0.5">${fmtPct(p.ilPct)}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto <span class="cursor-help" title="Valor actual + retirado + fees − depositado, con precios históricos de ${src}. Estimación: fees y retiros se separan por heurística y NO incluye gas.">ⓘ</span></div>
+        ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto</span>`, `Valor actual + retirado + fees − depositado, con precios históricos de ${src}. Estimación: fees y retiros se separan por heurística y NO incluye gas.`)}
         <div class="font-semibold ${pnlColor(p.pnlUSD)}">${fmtUSD(p.pnlUSD)}</div>
         ${pnlInBaseHTML(p.pnlUSD, p.token0.symbol, p.token1.symbol, p.token0.priceUSD, p.token1.priceUSD)}
         <div class="text-[10px] text-slate-400 mt-0.5">coste ${fmtUSD(p.depositedUSD)}${p.hodlUSD != null && Math.abs(p.hodlUSD - p.depositedUSD) > 0.01 ? " · HODL " + fmtUSD(p.hodlUSD) : ""}</div>
