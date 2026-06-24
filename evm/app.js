@@ -73,7 +73,7 @@ const DEFAULT_CHAINS = {
     blockscoutApi: "https://base.blockscout.com/api",
     llamaChain: "base",
     dexscreenerChain: "base",
-    uniNftManager: "0x03a520b32C04BF3bE5F46762d11A6c3A4ad0C0a4",
+    uniNftManager: "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1",
     nativeSymbol: "ETH", nativeName: "Ethereum", nativeCoingecko: "ethereum",
   },
   bnb: {
@@ -1508,7 +1508,9 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
   const factory = chain.factoryAddress || UNIV3_FACTORY[chainKey];
 
   // 1. ¿Cuántas posiciones tiene la wallet?
+  if (!nftMgr) return [];
   const balHex = await rpcEthCall(rpc, nftMgr, SEL_BALANCE_OF + encodeAddr32(ownerAddress));
+  if (!balHex || balHex === "0x") return []; // contrato no responde / dirección errónea → sin posiciones
   const balance = Number(decU(balHex, 0));
   if (!balance) return [];
 
