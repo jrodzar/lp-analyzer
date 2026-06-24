@@ -3060,7 +3060,7 @@ function curveCard(p) {
         <div class="text-[11px] text-slate-400 truncate">${comp || p.symbol || ""}</div>
       </div>
       <div class="flex flex-col items-end gap-1 shrink-0">
-        <span class="chip bg-amber-500/15 text-amber-300 border border-amber-500/30">Curve${p.assetType ? " · " + p.assetType : ""}</span>
+        <span class="chip bg-amber-500/15 text-amber-300 border border-amber-500/30">Curve${p.assetType && p.assetType !== "unknown" ? " · " + p.assetType : ""}</span>
         ${p.staked ? `<span class="chip bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">stakeado</span>` : `<span class="chip bg-slate-700 text-slate-300">sin stakear</span>`}
       </div>
     </div>
@@ -3073,7 +3073,7 @@ function curveCard(p) {
       <div class="bg-slate-950/40 rounded-lg p-2">
         ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">Ganancias</span>`, `Ganancias = valor actual − coste neto (depósitos − retiros, reconstruidos on-chain a precio histórico). Refleja fees de swap + variación de precio; NO incluye el CRV sin reclamar (eso es el APY del pool). APR/MPR anualizado desde el primer depósito.`)}
         <div class="font-semibold ${pnlColor(p.gainsUSD)}">${p.gainsUSD == null ? "—" : fmtUSD(p.gainsUSD)}</div>
-        <div class="text-[10px] text-slate-400 mt-0.5">${p.apr == null ? "APR —" : "APR ~ " + p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%"}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">${p.depositedUSD != null && p.ageDays != null && p.ageDays < 2 ? "APR — · recién abierta" : (p.apr == null ? "APR —" : "APR ~ " + p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%")}</div>
       </div>
     </div>
     <div class="text-[10px] text-slate-400 flex items-center gap-1 flex-wrap">
