@@ -1054,6 +1054,7 @@ async function fetchCurvePositions(owner) {
         _curve: true, chainKey, chainName: state.chains[chainKey].name,
         poolId: p.id, poolAddr: p.address, gaugeAddr: (p.gaugeAddress && p.gaugeAddress !== ZERO) ? p.gaugeAddress : null,
         name: p.name, symbol: p.symbol, assetType: p.assetTypeName || "", owner,
+        coinsRaw: (p.coins || []).map((c) => ({ address: c.address, decimals: c.decimals, symbol: c.symbol })),
         staked, unstaked, share, composition, poolUrl,
         baseApyPct: (baseApyPct != null && isFinite(baseApyPct)) ? baseApyPct : null,
         crvApy, extraRewards,
@@ -1064,9 +1065,107 @@ async function fetchCurvePositions(owner) {
         ageDays: 0, openedAt: now, closed: false, reconstructed: false, inRange: true,
       });
     }
+    // Histórico (coste/ganancias/APR) por posición — best-effort, en paralelo.
+    await Promise.all(out.map(async (position) => {
+      try {
+        const h = await fetchCurveHistory(state.chains[chainKey], position);
+        if (h && h.deposited > 0) {
+          const net = h.deposited - h.withdrawn;
+          position.depositedUSD = net;
+          position.gainsUSD = position.currentValueUSD - net;
+          position.openedAt = h.firstTs || position.openedAt;
+          position.ageDays = position.openedAt ? Math.max((now - position.openedAt) / 86400, 1 / 24) : position.ageDays;
+          position.apr = (net > 0 && position.ageDays) ? (position.gainsUSD / net) * (365 / position.ageDays) * 100 : null;
+          position.feesUSD = position.gainsUSD;
+          position.pnlUSD = position.gainsUSD;
+          position.hodlUSD = net;
+          position.timelineSeries = buildLendingTimeline(h.events, position.gainsUSD, now);
+        }
+      } catch (e) {}
+    }));
     return out;
   }));
   return perChain.flat();
+}
+
+// topic0 (keccak256) de eventos de Curve — pool + gauge. Verificados on-chain.
+const CURVE_EV = {
+  add:    "0x189c623b666b1b45b83d7178f39b8c087cb09774317ca2f53c2d3c3726f222a2", // AddLiquidity(address,uint256[],uint256[],uint256,uint256)
+  rem:    "0x347ad828e58cbe534d8f6b67985d791360756b18f0d95fd9f197a66cc46480ea", // RemoveLiquidity(address,uint256[],uint256[],uint256)
+  remImb: "0x3631c28b1f9dd213e0319fb167b554d76b6c283a41143eb400a0d1adb1af1755", // RemoveLiquidityImbalance(address,uint256[],uint256[],uint256,uint256)
+  gDep:   "0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c", // gauge Deposit(address,uint256)
+  gWdr:   "0x884edad9ce6fa2440d8a54cc123490eb96d2768479d49ff9c7366125a9424364", // gauge Withdraw(address,uint256)
+};
+const _curveHistCache = {};
+const CURVE_HIST_TTL = 10 * 60 * 1000;
+const CURVE_HIST_TX_CAP = 40; // anti-agregador: más txs que esto → no reconstruir
+
+// Reconstruye coste/retiros de una posición Curve por el flujo NETO de las monedas
+// del pool en las TXs donde el owner tocó el pool o el gauge. Robusto ante
+// "Deposit & Stake" (zap): el gauge Deposit acredita al owner aunque el AddLiquidity
+// lo emita el zap. net<0 = depósito ; net>0 = retiro. Valora a precio histórico.
+async function fetchCurveHistory(chain, pos) {
+  const apiBase = chain.blockscoutApi, llamaChain = chain.llamaChain;
+  if (!apiBase) return null;
+  const owner = String(pos.owner).toLowerCase();
+  const cacheKey = `${apiBase}:curve:${String(pos.poolAddr).toLowerCase()}:${owner}`;
+  const cached = _curveHistCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CURVE_HIST_TTL) return cached.data;
+  const ownerTopic = "0x" + owner.replace("0x", "").padStart(64, "0");
+  const getTxs = async (addr, topic0) => {
+    if (!addr) return [];
+    try {
+      const r = await explorerFetch(`${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${addr}&topic0=${topic0}&topic1=${ownerTopic}&topic0_1_opr=and`);
+      const j = await r.json();
+      return Array.isArray(j.result) ? j.result : [];
+    } catch (e) { return []; }
+  };
+  const lists = await Promise.all([
+    getTxs(pos.poolAddr, CURVE_EV.add),
+    getTxs(pos.poolAddr, CURVE_EV.rem),
+    getTxs(pos.poolAddr, CURVE_EV.remImb),
+    getTxs(pos.gaugeAddr, CURVE_EV.gDep),
+    getTxs(pos.gaugeAddr, CURVE_EV.gWdr),
+  ]);
+  if (lists.some((l) => l.length >= 100)) return null; // contrato/agregador → abortar
+  const txTs = new Map();
+  for (const l of lists.flat()) {
+    const h = String(l.transactionHash || l.transaction_hash || "").toLowerCase();
+    const ts = parseInt(l.timeStamp, 16);
+    if (h && (!txTs.has(h) || ts < txTs.get(h))) txTs.set(h, ts);
+  }
+  if (!txTs.size || txTs.size > CURVE_HIST_TX_CAP) return null;
+  const coinDec = new Map((pos.coinsRaw || []).map((c) => [String(c.address).toLowerCase(), Number(c.decimals)]));
+  if (!coinDec.size) return null;
+  let deposited = 0, withdrawn = 0, firstTs = null;
+  const events = [];
+  await Promise.all([...txTs.entries()].map(async ([hash, ts]) => {
+    let net = 0; // + recibió (retiro) ; − envió (depósito)
+    try {
+      const r = await explorerFetch(`${apiBase}/v2/transactions/${hash}/token-transfers?type=ERC-20`);
+      if (!r.ok) return;
+      const items = (await r.json()).items || [];
+      for (const it of items) {
+        const t = it.token || {};
+        const addr = String(t.address || t.address_hash || "").toLowerCase();
+        if (!coinDec.has(addr)) continue;
+        const from = String((it.from && (it.from.hash || it.from)) || "").toLowerCase();
+        const to = String((it.to && (it.to.hash || it.to)) || "").toLowerCase();
+        if (from !== owner && to !== owner) continue;
+        const rawV = (it.total && it.total.value != null) ? it.total.value : it.value;
+        let amt = 0; try { amt = Number(BigInt(rawV)) / 10 ** coinDec.get(addr); } catch (e) {}
+        if (!amt) continue;
+        let px = await histPriceUSD(llamaChain, addr, ts); if (px == null) px = 1;
+        const usd = amt * px;
+        if (to === owner) net += usd; else if (from === owner) net -= usd;
+      }
+    } catch (e) { return; }
+    if (net < -0.01) { deposited += -net; events.push({ ts, type: "dep", amt: -net }); if (firstTs === null || ts < firstTs) firstTs = ts; }
+    else if (net > 0.01) { withdrawn += net; events.push({ ts, type: "wth", amt: net }); }
+  }));
+  const data = { deposited, withdrawn, firstTs, events };
+  _curveHistCache[cacheKey] = { ts: Date.now(), data };
+  return data;
 }
 
 /**
@@ -2944,13 +3043,17 @@ function curveCard(p) {
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Valor actual</div>
         <div class="font-semibold">${fmtUSD(p.currentValueUSD)}</div>
-        <div class="text-[10px] text-slate-400 mt-0.5">${(p.share * 100).toFixed(3)}% del pool</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">${p.depositedUSD != null ? "coste " + fmtUSD(p.depositedUSD) : (p.share * 100).toFixed(3) + "% del pool"}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">APY estimado</span>`, apyExpl)}
-        <div class="font-semibold text-emerald-300">~${totalApy.toFixed(1)}%</div>
-        <div class="text-[10px] text-slate-400 mt-0.5 truncate">${[baseTxt ? `base ${baseTxt}` : null, crvTxt ? `CRV ${crvTxt}` : null, extraTxt || null].filter(Boolean).join(" · ") || "—"}</div>
+        ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">Ganancias</span>`, `Ganancias = valor actual − coste neto (depósitos − retiros, reconstruidos on-chain a precio histórico). Refleja fees de swap + variación de precio; NO incluye el CRV sin reclamar (eso es el APY del pool). APR/MPR anualizado desde el primer depósito.`)}
+        <div class="font-semibold ${pnlColor(p.gainsUSD)}">${p.gainsUSD == null ? "—" : fmtUSD(p.gainsUSD)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">${p.apr == null ? "APR —" : "APR ~ " + p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%"}</div>
       </div>
+    </div>
+    <div class="text-[10px] text-slate-400 flex items-center gap-1 flex-wrap">
+      ${infoToggle(`<span class="text-[10px] text-slate-500">APY pool ~${totalApy.toFixed(1)}%</span>`, `APY actual del pool (no tu rendimiento realizado). Base = fees de swap (semanal). CRV = emisiones del gauge (sin boost → con boost máx. veCRV). ${p.staked ? "Estás stakeado → cobras el CRV." : "NO estás stakeado → solo la base, NO el CRV."}`)}
+      ${[baseTxt ? `base ${baseTxt}` : null, crvTxt ? `CRV ${crvTxt}` : null, extraTxt || null].filter(Boolean).join(" · ") ? `<span class="text-slate-500">· ${[baseTxt ? `base ${baseTxt}` : null, crvTxt ? `CRV ${crvTxt}` : null, extraTxt || null].filter(Boolean).join(" · ")}</span>` : ""}
     </div>
     ${!p.staked && crv0 > 0 ? `<div class="text-[10px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded p-1.5">⚠️ Sin stakear: te pierdes ~${crv0.toFixed(1)}% de CRV. Haz "Deposit &amp; Stake" en Curve.</div>` : ""}
     <details class="text-xs">
@@ -2959,7 +3062,8 @@ function curveCard(p) {
         ${(p.composition || []).map((c) => `<div>${c.symbol}: ${fmtUSD(c.valueUSD)} (${c.pct.toFixed(1)}%)</div>`).join("")}
         <div>Pool: <a href="${chain.explorer}/address/${p.poolAddr}" target="_blank" class="font-mono text-slate-300 hover:text-fuchsia-300">${shortAddr(p.poolAddr)}</a></div>
         ${p.gaugeAddr ? `<div>Gauge: <a href="${chain.explorer}/address/${p.gaugeAddr}" target="_blank" class="font-mono text-slate-300 hover:text-fuchsia-300">${shortAddr(p.gaugeAddr)}</a>${p.staked ? " (stakeado)" : ""}</div>` : ""}
-        <div class="text-[10px] text-slate-500 mt-1">Detección por saldo LP/gauge. El valor actual cuenta en el total; el histórico/PnL aún no se reconstruye.</div>
+        ${p.depositedUSD != null ? `<div>Coste neto (depósitos - retiros): ${fmtUSD(p.depositedUSD)}</div>` : `<div class="text-slate-500">Histórico no reconstruido (posición muy activa o vía contrato).</div>`}
+        <div class="text-[10px] text-slate-500 mt-1">Detección por saldo LP/gauge. Coste/ganancias reconstruidos del flujo on-chain de monedas (sin CRV pendiente).</div>
       </div>
     </details>
     ${managementFooterHTML({ url: p.poolUrl, label: "Curve" })}`;
