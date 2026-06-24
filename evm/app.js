@@ -787,7 +787,7 @@ async function fetchIdleTokensEVM(chainKey, address) {
     // Saltar shares de Revert Lend (rlBaseUSDC, rlEthUSDC…) — ya se contabilizan
     // como posición lending. Mostrarlos aquí duplica el valor y con precio
     // incorrecto (DexScreener da el precio de share, no el USDC subyacente).
-    if (tokenAddr && _revertVaultsLower.has(tokenAddr)) continue;
+    if (tokenAddr && (_revertVaultsLower.has(tokenAddr) || _curveTokensLower.has(tokenAddr))) continue;
     const balance = bigIntToDecimal(raw, dec);
     let priceUSD = null;
     if (t.exchange_rate != null && t.exchange_rate !== "") {
@@ -936,6 +936,137 @@ async function fetchRevertLending(owner) {
     } catch (e) { return null; }
   }));
   return results.filter(Boolean);
+}
+
+// ============================================================================
+// Curve Finance — pools (LP ERC-20 + gauge). Autodetección por CRUCE: la API
+// /getPools/all/{red} da TODOS los pools (lpToken+gauge+usdTotal+totalSupply) en
+// 1 llamada; se cruzan sus direcciones con los tokens del wallet (Blockscout v2,
+// el mismo escáner que idle). Los gauges de Curve son ERC-20 → el LP stakeado
+// aparece como token. Capta stakeado (gauge) y sin stakear (LP). Read-only.
+//   valor = (tuLP / totalSupply) × usdTotal del pool.
+// ============================================================================
+const CURVE_NETWORKS = { ethereum: "ethereum", arbitrum: "arbitrum", optimism: "optimism", polygon: "polygon", base: "base" };
+const CURVE_API_TTL = 30 * 60 * 1000; // 30 min
+const _curvePoolsCache = {}; // red → { ts, pools }
+const _curveApyCache = {};   // red → { ts, map }
+// Direcciones (lowercase) LP/gauge de Curve que el wallet posee → para excluirlas
+// del listado idle (ya se cuentan como posición Curve, no como token suelto).
+const _curveTokensLower = new Set();
+
+async function getCurvePools(network) {
+  const c = _curvePoolsCache[network];
+  if (c && Date.now() - c.ts < CURVE_API_TTL) return c.pools;
+  try {
+    const r = await fetchWithTimeout(`https://api.curve.finance/v1/getPools/all/${network}`, {}, { timeoutMs: 9000, tries: 2 });
+    const j = await r.json();
+    const pools = (j && j.success && j.data && j.data.poolData) || [];
+    _curvePoolsCache[network] = { ts: Date.now(), pools };
+    return pools;
+  } catch (e) { return c ? c.pools : []; }
+}
+
+// APY base (fees de swap) por pool, de getSubgraphData. Best-effort: si falla, la
+// card muestra solo CRV. Devuelve Map(addressLower → apy% number | null).
+async function getCurveBaseApy(network) {
+  const c = _curveApyCache[network];
+  if (c && Date.now() - c.ts < CURVE_API_TTL) return c.map;
+  const map = new Map();
+  try {
+    const r = await fetchWithTimeout(`https://api.curve.finance/v1/getSubgraphData/${network}`, {}, { timeoutMs: 9000, tries: 1 });
+    const j = await r.json();
+    const list = (j && j.data && j.data.poolList) || [];
+    for (const p of list) {
+      const a = (p.address || "").toLowerCase();
+      if (a) map.set(a, p.latestWeeklyApy != null ? Number(p.latestWeeklyApy) : (p.latestDailyApy != null ? Number(p.latestDailyApy) : null));
+    }
+  } catch (e) {}
+  _curveApyCache[network] = { ts: Date.now(), map };
+  return map;
+}
+
+// Tokens ERC-20 del wallet en una red (Blockscout v2). Mismo endpoint/shape que
+// fetchIdleTokensEVM. Devuelve [{address, raw}] (raw = balance crudo string).
+async function fetchWalletTokensEVM(chainKey, owner) {
+  const c = state.chains[chainKey];
+  if (!c || !c.blockscoutApi) return [];
+  try {
+    const r = await explorerFetch(`${c.blockscoutApi}/v2/addresses/${owner}/tokens?type=ERC-20`);
+    if (!r.ok) return [];
+    const items = (await r.json()).items || [];
+    return items.map((it) => {
+      const t = it.token || {};
+      return { address: (t.address || t.address_hash || "").toLowerCase(), raw: it.value != null ? String(it.value) : "0" };
+    }).filter((t) => t.address && t.raw !== "0");
+  } catch (e) { return []; }
+}
+
+// Devuelve posiciones de Curve (una por pool con saldo) para un owner, en las
+// redes seleccionadas que tengan Blockscout. Marca _curve:true.
+async function fetchCurvePositions(owner) {
+  _curveTokensLower.clear();
+  const now = Math.floor(Date.now() / 1000);
+  const ZERO = "0x0000000000000000000000000000000000000000";
+  const chains = (state.selectedChains || []).filter((k) => CURVE_NETWORKS[k] && state.chains[k] && state.chains[k].blockscoutApi);
+  const perChain = await Promise.all(chains.map(async (chainKey) => {
+    const network = CURVE_NETWORKS[chainKey];
+    let pools = [], held = [], baseApy = new Map();
+    try { [pools, held, baseApy] = await Promise.all([getCurvePools(network), fetchWalletTokensEVM(chainKey, owner), getCurveBaseApy(network)]); }
+    catch (e) { return []; }
+    if (!pools.length || !held.length) return [];
+    // Mapa direccion(LP o gauge) → {pool, kind}
+    const map = new Map();
+    for (const p of pools) {
+      if (p.isBroken) continue;
+      const lp = (p.lpTokenAddress || p.address || "").toLowerCase();
+      const g = (p.gaugeAddress || "").toLowerCase();
+      if (lp) map.set(lp, { pool: p, kind: "lp" });
+      if (g && g !== ZERO && /^0x[0-9a-f]{40}$/.test(g)) map.set(g, { pool: p, kind: "gauge" });
+    }
+    const byPool = new Map();
+    for (const t of held) {
+      const hit = map.get(t.address);
+      if (!hit) continue;
+      _curveTokensLower.add(t.address);
+      const key = hit.pool.id || hit.pool.address;
+      const prev = byPool.get(key) || { pool: hit.pool, lpRaw: 0n, staked: false, unstaked: false };
+      try { prev.lpRaw += BigInt(t.raw); } catch (e) {}
+      if (hit.kind === "gauge") prev.staked = true; else prev.unstaked = true;
+      byPool.set(key, prev);
+    }
+    const out = [];
+    for (const { pool: p, lpRaw, staked, unstaked } of byPool.values()) {
+      let totalSupply = 0n; try { totalSupply = BigInt(p.totalSupply || "0"); } catch (e) {}
+      if (totalSupply === 0n || lpRaw === 0n) continue;
+      const share = Number(lpRaw) / Number(totalSupply);
+      const valueUSD = share * (Number(p.usdTotal) || 0);
+      const coins = (p.coins || []).map((c) => {
+        const bal = Number(c.poolBalance || 0) / 10 ** Number(c.decimals || 18);
+        return { symbol: c.symbol, usd: bal * Number(c.usdPrice || 0) };
+      });
+      const poolUSD = coins.reduce((s, c) => s + c.usd, 0) || (Number(p.usdTotal) || 0);
+      const composition = coins.map((c) => ({ symbol: c.symbol, pct: poolUSD > 0 ? (c.usd / poolUSD) * 100 : 0, valueUSD: c.usd * share }));
+      const crvApy = (Array.isArray(p.gaugeCrvApy) && p.gaugeCrvApy.length) ? p.gaugeCrvApy.map((x) => (x == null ? 0 : Number(x))) : null;
+      const extraRewards = (p.gaugeRewards || []).map((r) => ({ symbol: r.symbol || "?", apy: Number(r.apy != null ? r.apy : (r.apr || 0)) })).filter((r) => isFinite(r.apy));
+      const baseApyPct = baseApy.get((p.address || "").toLowerCase());
+      const poolUrl = (p.poolUrls && p.poolUrls.deposit && p.poolUrls.deposit[0]) || `https://curve.finance/dex/${network}/pools/${p.id || p.address}/deposit/`;
+      out.push({
+        _curve: true, chainKey, chainName: state.chains[chainKey].name,
+        poolId: p.id, poolAddr: p.address, gaugeAddr: (p.gaugeAddress && p.gaugeAddress !== ZERO) ? p.gaugeAddress : null,
+        name: p.name, symbol: p.symbol, assetType: p.assetTypeName || "", owner,
+        staked, unstaked, share, composition, poolUrl,
+        baseApyPct: (baseApyPct != null && isFinite(baseApyPct)) ? baseApyPct : null,
+        crvApy, extraRewards,
+        currentValueUSD: valueUSD,
+        // compat con aggregate()/orden/portfolio (sin histórico/PnL en v1)
+        depositedUSD: null, gainsUSD: null, feesUSD: 0, uncollectedUSD: 0, ilUSD: 0,
+        pnlUSD: null, hodlUSD: valueUSD, apr: null,
+        ageDays: 0, openedAt: now, closed: false, reconstructed: false, inRange: true,
+      });
+    }
+    return out;
+  }));
+  return perChain.flat();
 }
 
 /**
@@ -1981,7 +2112,7 @@ async function enrichIdleIndicatorsEVM(owner) {
   //    cubre RPC-direct Y subgraph (Arbitrum/Base), sin depender de explorerApi.
   const entryAgg = {}; // `${chainKey}:${addrLower}` -> {usd, amt}
   for (const p of (state.positions || [])) {
-    if (p._lending || p.reconstructed || !p.openedAt) continue;
+    if (p._lending || p._curve || p.reconstructed || !p.openedAt) continue;
     if (!(p.deposited0 > 0) && !(p.deposited1 > 0)) continue;
     const onLlama = !!DEFILLAMA_CHAIN_PREFIX[p.chainKey];
     const px = onLlama ? await fetchDefiLlamaPrices(p.chainKey, [p.token0.id, p.token1.id], [p.openedAt]).catch(() => ({})) : {};
@@ -2153,7 +2284,7 @@ async function fetchOwnerSwapsEVM(chainKey, owner, feeTokenSet) {
 // PnL/APR). Debe ejecutarse DESPUÉS de buildPortfolioTimeline (que fija feesUSD).
 async function enrichRealizableFeesEVM(owner) {
   state._feesRealizableUSD = null;
-  const positions = (state.positions || []).filter((p) => !p._lending);
+  const positions = (state.positions || []).filter((p) => !p._lending && !p._curve);
   if (!positions.length) return;
   // 1) Precio HOY + símbolo por token (clave chainKey:addr)
   const priceByTok = {}, symByTok = {};
@@ -2702,6 +2833,9 @@ function managementLinkEVM(p) {
   if (p._lending) {
     return { url: "https://revert.finance/#/lending", label: "Revert Lend" };
   }
+  if (p._curve) {
+    return { url: p.poolUrl || "https://curve.finance/", label: "Curve" };
+  }
   if (p.chainKey === "hyperevm") {
     return { url: `https://app.hyperswap.exchange/#/pool/${p.nftId}`, label: "Hyperswap" };
   }
@@ -2772,6 +2906,63 @@ function lendingCard(p) {
       </div>
     </details>
     ${managementFooterHTML(managementLinkEVM(p))}`;
+  return el;
+}
+
+// Tarjeta de una posición Curve (LP/gauge). Modelada sobre lendingCard. Read-only.
+function curveCard(p) {
+  const chain = state.chains[p.chainKey] || { name: p.chainName, explorer: "" };
+  const el = document.createElement("article");
+  el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
+  if (p.color) el.style.borderLeft = `3px solid ${p.color.line}`;
+  const comp = (p.composition || []).map((c) => `${c.symbol} ${c.pct.toFixed(0)}%`).join(" · ");
+  const crv0 = p.crvApy ? (Number(p.crvApy[0]) || 0) : 0;
+  const crv1 = p.crvApy ? (Number(p.crvApy[p.crvApy.length - 1]) || 0) : 0;
+  const crvTxt = p.crvApy ? (Math.abs(crv1 - crv0) < 0.005 ? `${crv0.toFixed(2)}%` : `${crv0.toFixed(2)}→${crv1.toFixed(2)}%`) : null;
+  const extra = (p.extraRewards || []).filter((r) => r.apy > 0);
+  const extraApy = extra.reduce((s, r) => s + r.apy, 0);
+  const extraTxt = extra.map((r) => `${r.apy.toFixed(2)}% ${r.symbol}`).join(" + ");
+  const baseTxt = p.baseApyPct != null ? `${Number(p.baseApyPct).toFixed(2)}%` : null;
+  const totalApy = (p.baseApyPct != null ? Number(p.baseApyPct) : 0) + crv0 + extraApy;
+  const apyExpl = `APY estimado. Base = fees de swap (semanal, de Curve)${baseTxt ? ` = ${baseTxt}` : " (n/d)"}. CRV = emisiones del gauge${crvTxt ? ` = ${crvTxt} (sin boost → con boost máximo veCRV)` : " (n/d)"}. ${p.staked ? "Estás STAKEADO → cobras el CRV." : "NO estás stakeado → solo cobras las fees base, NO el CRV. Usa Deposit & Stake en Curve."}`;
+  el.innerHTML = `
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full" style="background:${p.color ? p.color.line : "#f59e0b"}"></span>
+          <span class="text-[11px] uppercase tracking-wide text-slate-400">Curve · ${p.chainName}</span>
+        </div>
+        <div class="font-semibold mt-0.5 truncate">${p.name || p.symbol || "Curve pool"}</div>
+        <div class="text-[11px] text-slate-400 truncate">${comp || p.symbol || ""}</div>
+      </div>
+      <div class="flex flex-col items-end gap-1 shrink-0">
+        <span class="chip bg-amber-500/15 text-amber-300 border border-amber-500/30">Curve${p.assetType ? " · " + p.assetType : ""}</span>
+        ${p.staked ? `<span class="chip bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">stakeado</span>` : `<span class="chip bg-slate-700 text-slate-300">sin stakear</span>`}
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Valor actual</div>
+        <div class="font-semibold">${fmtUSD(p.currentValueUSD)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">${(p.share * 100).toFixed(3)}% del pool</div>
+      </div>
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">APY estimado</span>`, apyExpl)}
+        <div class="font-semibold text-emerald-300">~${totalApy.toFixed(1)}%</div>
+        <div class="text-[10px] text-slate-400 mt-0.5 truncate">${[baseTxt ? `base ${baseTxt}` : null, crvTxt ? `CRV ${crvTxt}` : null, extraTxt || null].filter(Boolean).join(" · ") || "—"}</div>
+      </div>
+    </div>
+    ${!p.staked && crv0 > 0 ? `<div class="text-[10px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded p-1.5">⚠️ Sin stakear: te pierdes ~${crv0.toFixed(1)}% de CRV. Haz "Deposit &amp; Stake" en Curve.</div>` : ""}
+    <details class="text-xs">
+      <summary class="text-slate-400 hover:text-slate-200">▾ detalles</summary>
+      <div class="mt-2 space-y-1 text-slate-400">
+        ${(p.composition || []).map((c) => `<div>${c.symbol}: ${fmtUSD(c.valueUSD)} (${c.pct.toFixed(1)}%)</div>`).join("")}
+        <div>Pool: <a href="${chain.explorer}/address/${p.poolAddr}" target="_blank" class="font-mono text-slate-300 hover:text-fuchsia-300">${shortAddr(p.poolAddr)}</a></div>
+        ${p.gaugeAddr ? `<div>Gauge: <a href="${chain.explorer}/address/${p.gaugeAddr}" target="_blank" class="font-mono text-slate-300 hover:text-fuchsia-300">${shortAddr(p.gaugeAddr)}</a>${p.staked ? " (stakeado)" : ""}</div>` : ""}
+        <div class="text-[10px] text-slate-500 mt-1">Detección por saldo LP/gauge. El valor actual cuenta en el total; el histórico/PnL aún no se reconstruye.</div>
+      </div>
+    </details>
+    ${managementFooterHTML({ url: p.poolUrl, label: "Curve" })}`;
   return el;
 }
 
@@ -3002,6 +3193,7 @@ function reconstructedCardEvm(p) {
 
 function positionCard(p) {
   if (p._lending) return lendingCard(p);
+  if (p._curve) return curveCard(p);
   if (p.reconstructed && p.tick == null) return reconstructedCardEvm(p);
   const chain = state.chains[p.chainKey];
   const el = document.createElement("article");
@@ -3127,7 +3319,7 @@ function renderValueChart() {
   const top = [...state.positions]
     .sort((a, b) => b.currentValueUSD - a.currentValueUSD)
     .slice(0, 8);
-  const labels = top.map((p) => p._lending ? `${p.asset} Lend·${p.chainName}` : `${p.token0.symbol}/${p.token1.symbol} #${p.nftId.slice(-4)}`);
+  const labels = top.map((p) => p._lending ? `${p.asset} Lend·${p.chainName}` : p._curve ? `${p.symbol || p.name}·${p.chainName}` : `${p.token0.symbol}/${p.token1.symbol} #${p.nftId.slice(-4)}`);
   const data = top.map((p) => p.currentValueUSD);
   const bg = top.map((p) => (p.color ? p.color.line : (state.chains[p.chainKey] ? state.chains[p.chainKey].color : "#34d399")));
 
@@ -3333,6 +3525,11 @@ async function analyze() {
       const lending = await fetchRevertLending(addr);
       if (lending.length) state.positions.push(...lending);
     } catch (e) { console.warn("Revert Lend:", e); }
+    // Curve Finance (LP/gauge ERC-20) — autodetectado por cruce con tokens del wallet
+    try {
+      const curve = await fetchCurvePositions(addr);
+      if (curve.length) state.positions.push(...curve);
+    } catch (e) { console.warn("Curve:", e); }
     assignColors(state.positions);
 
     // Tokens "idle" en wallet (no metidos en LPs) — en paralelo por cada red
@@ -3349,6 +3546,7 @@ async function analyze() {
 
     const skippedNote = skipped.length ? ` (saltadas: ${skipped.map((s) => state.chains[s.chainKey].name).join(", ")})` : "";
     const lendN = state.positions.filter((p) => p._lending).length;
+    const curveN = state.positions.filter((p) => p._curve).length;
     const lpN = positions.length;
     // Resumen estructurado del análisis para el shell (banner de resultado)
     state.analysisStatus = {
@@ -3376,7 +3574,8 @@ async function analyze() {
       setStatus(`Sin posiciones para ${shortAddr(addr)} en las redes seleccionadas (todo consultado correctamente).${skippedNote}`, "info");
     } else {
       const lendNote = lendN ? ` + ${lendN} en Revert Lend` : "";
-      setStatus(`${lpN} posiciones de LP${lendNote}.${skippedNote}`, "ok");
+      const curveNote = curveN ? ` + ${curveN} en Curve` : "";
+      setStatus(`${lpN} posiciones de LP${lendNote}${curveNote}.${skippedNote}`, "ok");
     }
 
     renderAll();
@@ -3464,6 +3663,17 @@ document.addEventListener("DOMContentLoaded", init);
           apr: typeof p.apr === "number" ? p.apr : null,
           inRange: !p.closed, closed: !!p.closed, reconstructed: !!p.reconstructed,
           id: p.vault || "",
+        };
+      }
+      if (p._curve) {
+        return {
+          kind: "evm", curve: true, cardHTML,
+          venue: `Curve · ${p.chainName}`,
+          pair: p.symbol || p.name || "Curve",
+          valueUSD: p.currentValueUSD || 0,
+          feesUSD: 0, feesPendingUSD: 0, ilUSD: null, pnlUSD: null, apr: null,
+          inRange: true, closed: false, reconstructed: false,
+          id: p.poolAddr || "",
         };
       }
       return {
