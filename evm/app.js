@@ -2977,7 +2977,10 @@ function reconstructedCardEvm(p) {
     </div>
     <div class="grid grid-cols-2 gap-2 text-xs">
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees cobradas (aprox.)</div>
+        ${infoToggle(
+          `<span class="text-[10px] uppercase tracking-wide text-slate-500">Fees cobradas (aprox.)</span>`,
+          `Valor realizable de las fees cobradas: lo retenido <b>idle</b> a precio de hoy, más lo vendido a USDC al precio del swap. Posición cerrada reconstruida del histórico on-chain → importe aproximado.`
+        )}
         <div class="font-semibold text-emerald-400">${fmtUSD(p.feesUSD || 0)}</div>
         <div class="text-[10px] text-slate-400 mt-0.5">retirado ${fmtUSD(p.withdrawnUSD || 0)}</div>
       </div>
@@ -3053,15 +3056,19 @@ function positionCard(p) {
         })()}
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">Fees <span class="cursor-help" title="${p._feesRealizable
-          ? "Fees cobradas a VALOR REALIZABLE: lo que sigues teniendo idle valorado a precio de HOY + lo que vendiste a USDC valorado al precio del día del swap. 'Pendientes' usa precio actual."
-          : p.histBasis === "full"
-          ? "Fees cobradas valoradas con el precio de cada token EN EL MOMENTO de cada cobro (tokenDayDatas del subgraph). Refleja el dinero real ganado, no afectado por movimientos de precio posteriores."
-          : p.histBasis === "mixed"
-            ? "Fees cobradas valoradas parcialmente con precios históricos del subgraph y parcialmente con el precio actual (algunas fechas concretas no tenían dato histórico). 'Pendientes' siempre usa precio actual."
+        ${infoToggle(
+          `<span class="text-[10px] uppercase tracking-wide text-slate-500">Fees</span>`,
+          (p._feesRealizable
+            ? `Fees cobradas a <b>valor realizable</b>: lo que sigues teniendo <b>idle</b> valorado a precio de HOY, más lo que vendiste a USDC valorado al precio del día del swap. "Pendientes" usa precio actual.${p._feesAtCollectUSD != null ? ` <span style="color:#94a3b8">Al cobrarlas valían ${fmtUSD(p._feesAtCollectUSD)}.</span>` : ""}`
+            : p.histBasis === "full"
+            ? `Fees cobradas valoradas con el precio de cada token <b>en el momento de cada cobro</b> (snapshots del subgraph): el dinero real ganado, sin que le afecten movimientos de precio posteriores.`
+            : p.histBasis === "mixed"
+            ? `Fees cobradas valoradas <b>en parte</b> con precios históricos del subgraph y en parte con el precio actual (algunas fechas no tenían dato histórico). "Pendientes" usa precio actual.`
             : p.histBasis === "none"
-              ? "Fees cobradas valoradas con el precio ACTUAL (tokenDayDatas no devolvió datos — el proxy puede haber saturado por rate limit, o el subgraph no expone precios para esos tokens). 'Pendientes' usa precio actual."
-              : "Fees cobradas valoradas con el precio ACTUAL de los tokens (no se pudo cargar el histórico — posición sin snapshots, HyperEVM RPC-only, o error de red). NO refleja lo que valían cuando se cobraron. 'Pendientes' usa precio actual."}">ⓘ</span>${p._feesRealizable ? " <span title='Valor realizable'>💵</span>" : p.histBasis === "full" ? " <span title='Cálculo histórico'>📜</span>" : ""}</div>
+            ? `Fees cobradas valoradas con el precio <b>ACTUAL</b> (no se obtuvo histórico — rate limit del proxy, o el subgraph no da precios de esos tokens). "Pendientes" usa precio actual.`
+            : `Fees cobradas valoradas con el precio <b>ACTUAL</b> de los tokens (sin histórico: posición sin snapshots, HyperEVM RPC-only o error de red). NO refleja lo que valían al cobrarlas.`),
+          (p._feesRealizable ? ` <span title="Valor realizable">💵</span>` : p.histBasis === "full" ? ` <span title="Cálculo histórico">📜</span>` : "")
+        )}
         <div class="font-semibold text-emerald-400 leading-tight"${p._feesRealizable ? ` title="Valor ACTUAL de las fees cobradas (retenidas a precio de hoy + vendidas a USDC al precio del swap)${p._feesAtCollectUSD != null ? ` · al cobrar: ${fmtUSD(p._feesAtCollectUSD)}` : ""}"` : ""}>${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>
         <div class="text-amber-300 font-semibold leading-tight">${p.uncollectedUSD === null ? "n/d" : fmtUSD(p.uncollectedUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>
         <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${isFinite(p.apr) ? p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%" : "—"}</div>
