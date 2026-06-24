@@ -3489,7 +3489,7 @@ async function updateFeesChart() {
   // 2) HyperEVM (RPC) + lending → series ya reconstruidas de eventos on-chain
   for (const p of (state.positions || [])) {
     if (p.timelineSeries && p.timelineSeries.length) {
-      const label = p._lending ? `Revert Lend ${p.chainName}` : `${p.token0.symbol}/${p.token1.symbol}`;
+      const label = p._lending ? `Revert Lend ${p.chainName}` : p._curve ? `Curve ${(p.symbol || p.name || "").slice(0, 16)} ${p.chainName}` : `${p.token0.symbol}/${p.token1.symbol}`;
       series.push({ label, points: p.timelineSeries });
     }
   }
@@ -3622,7 +3622,15 @@ async function analyze() {
   document.getElementById("charts-section").classList.add("hidden");
 
   try {
-    const { positions, errors, skipped } = await fetchAllPositions(addr);
+    // fetchAllPositions puede LANZAR si una chain (p.ej. subgraph de Base) cae.
+    // Lo aislamos para que lending + Curve se sigan analizando igualmente.
+    let positions = [], errors = [], skipped = [];
+    try {
+      ({ positions, errors, skipped } = await fetchAllPositions(addr));
+    } catch (e) {
+      console.warn("fetchAllPositions:", e);
+      errors = [{ chainKey: "evm", __error: e }];
+    }
     state.positions = positions;
     // Revert Lend (vaults ERC-4626) — se añade como posiciones de tipo "lending"
     try {
@@ -3906,7 +3914,7 @@ document.addEventListener("DOMContentLoaded", init);
           // añadir series propias de HyperEVM (RPC) y lending (reconstruidas de eventos)
           for (const p of (state.positions || [])) {
             if (p.timelineSeries && p.timelineSeries.length) {
-              const label = p._lending ? `Revert Lend ${p.chainName}` : `${p.token0.symbol}/${p.token1.symbol}`;
+              const label = p._lending ? `Revert Lend ${p.chainName}` : p._curve ? `Curve ${(p.symbol || p.name || "").slice(0, 16)} ${p.chainName}` : `${p.token0.symbol}/${p.token1.symbol}`;
               timeline.push({ posId: p.id || p.vault || label, label, points: p.timelineSeries, closed: !!p.closed });
             }
           }
