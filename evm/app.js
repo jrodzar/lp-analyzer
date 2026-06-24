@@ -2985,12 +2985,12 @@ function reconstructedCardEvm(p) {
         <div class="text-[10px] text-slate-400 mt-0.5">retirado ${fmtUSD(p.withdrawnUSD || 0)}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL</div>
+        ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL</span>`, `IL vs HODL de una posición CERRADA: lo retirado frente a haber holdeado los depósitos, valorado al precio del DÍA DEL CIERRE (congelado, no se mueve con el mercado). Importe aproximado (reconstruido del histórico on-chain).`)}
         <div class="font-semibold ${pnlColor(p.ilUSD)}">${p.ilUSD == null ? "—" : fmtUSD(p.ilUSD)}</div>
         <div class="text-[10px] ${pnlColor(p.ilUSD)} mt-0.5">${p.ilPct == null ? "" : fmtPct(p.ilPct)}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2 col-span-2">
-        <div class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto (realizado)</div>
+        ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto (realizado)</span>`, `PnL REALIZADO de la cerrada: retirado + fees − coste (depósitos al precio del día que entraste). El principal queda congelado al precio del cierre. Importe aproximado (reconstruido del histórico on-chain).`)}
         <div class="font-semibold ${pnlColor(p.pnlUSD)}">${p.pnlUSD == null ? "—" : fmtUSD(p.pnlUSD)}</div>
         <div class="text-[10px] text-slate-400 mt-0.5">coste ${fmtUSD(p.depositedUSD)}${p.hodlUSD != null && Math.abs(p.hodlUSD - p.depositedUSD) > 0.01 ? " · HODL " + fmtUSD(p.hodlUSD) : ""}</div>
       </div>
