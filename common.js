@@ -80,18 +80,20 @@ function pnlColor(n) {
   return "text-slate-300";
 }
 
-// ─── ⓘ desplegable (clic/tap, NO solo hover) ──────────────────────────────────
-// Un icono "i" clicable que abre una nota explicativa VISIBLE debajo. Nativo
-// (<details>, sin JS) y con estilos inline para no depender del Tailwind precompilado.
-// Funciona también en móvil (donde no hay hover). labelHtml va antes del icono;
-// badgeHtml (opcional) después.
+// ─── ⓘ desplegable (HOVER muestra el texto + CLIC/tap lo despliega) ────────────
+// Un icono "i": al pasar el cursor sale el texto (tooltip nativo, vía title) Y al
+// clicar/tocar se despliega una nota VISIBLE debajo (nativo <details>, sin JS, con
+// estilos inline). Así funciona tanto en escritorio (hover) como en móvil (tap).
+// labelHtml va antes del icono; badgeHtml (opcional) después.
 function infoToggle(labelHtml, explanationHtml, badgeHtml) {
   badgeHtml = badgeHtml || "";
+  // Texto plano para el tooltip nativo del hover: sin HTML ni comillas dobles.
+  var plain = String(explanationHtml).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").replace(/"/g, "'").trim();
   return (
     '<details class="lp-info">' +
-      '<summary style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;list-style:none;-webkit-tap-highlight-color:transparent">' +
+      '<summary title="' + plain + '" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;list-style:none;-webkit-tap-highlight-color:transparent">' +
         (labelHtml || "") +
-        '<span aria-label="Más info" title="Toca para ver cómo se calcula" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:9999px;background:#334155;color:#e2e8f0;font-size:9px;font-weight:700;line-height:1;flex:none">i</span>' +
+        '<span aria-label="Más info" style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:9999px;background:#334155;color:#e2e8f0;font-size:9px;font-weight:700;line-height:1;flex:none">i</span>' +
         badgeHtml +
       '</summary>' +
       '<div style="text-transform:none;font-weight:400;letter-spacing:normal;font-size:10px;color:#cbd5e1;margin-top:4px;line-height:1.4;background:rgba(2,6,23,.92);border:1px solid #334155;border-radius:6px;padding:6px 8px">' + explanationHtml + '</div>' +
