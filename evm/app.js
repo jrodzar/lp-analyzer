@@ -69,6 +69,7 @@ const DEFAULT_CHAINS = {
     schemaVariant: "native", // usa derivedNative / nativePriceUSD
     tickField: "scalar", // tickLower/Upper son Int directo
     rpcUrl: "https://mainnet.base.org",
+    rpcUrls: ["https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://1rpc.io/base"],
     blockscoutApi: "https://base.blockscout.com/api",
     llamaChain: "base",
     dexscreenerChain: "base",
@@ -1490,11 +1491,21 @@ function buildTimelineFromEvents(events, dec0, dec1, p0, p1) {
   return [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
 }
 
+// Factory de Uniswap V3 por chain (para el fallback RPC-directo cuando el subgraph
+// cae). Igual en eth/arb/op/poly; Base usa el suyo. HyperEVM trae su factoryAddress.
+const UNIV3_FACTORY = {
+  ethereum: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+  arbitrum: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+  optimism: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+  polygon:  "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+  base:     "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+};
+
 async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
   const chain  = state.chains[chainKey];
   const rpc    = chain.rpcUrls || [chain.rpcUrl]; // lista para rotar entre endpoints
-  const nftMgr = chain.nftManagerAddress;
-  const factory = chain.factoryAddress;
+  const nftMgr = chain.nftManagerAddress || chain.uniNftManager;
+  const factory = chain.factoryAddress || UNIV3_FACTORY[chainKey];
 
   // 1. ¿Cuántas posiciones tiene la wallet?
   const balHex = await rpcEthCall(rpc, nftMgr, SEL_BALANCE_OF + encodeAddr32(ownerAddress));
@@ -1561,11 +1572,12 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
 
   // 7.5 Histórico (depósitos/retiros/fees cobradas + fecha de minteo) vía Blockscout
   const histories = {};
-  if (chain.explorerApi) {
+  const histApi = chain.explorerApi || chain.blockscoutApi;
+  if (histApi) {
     await Promise.all(rawPositions.map(async (raw) => {
       const d0 = tokenInfos[raw.token0]?.decimals ?? 18;
       const d1 = tokenInfos[raw.token1]?.decimals ?? 18;
-      try { histories[raw.tokenId] = await fetchPositionHistory(chain.explorerApi, nftMgr, raw.tokenId, d0, d1); }
+      try { histories[raw.tokenId] = await fetchPositionHistory(histApi, nftMgr, raw.tokenId, d0, d1); }
       catch (e) { /* sin histórico para esta posición */ }
     }));
   }
@@ -2046,6 +2058,17 @@ async function fetchAllPositions(address) {
       return open.concat(recon);
     } catch (e) {
       console.error(`[${chainKey}]`, e);
+      // Fallback RPC-directo si el subgraph cae (p.ej. Base: "bad indexers" de The Graph):
+      // descubre las posiciones V3 leyendo el NFT manager por RPC, sin depender de The Graph.
+      if (chain.uniNftManager && chain.rpcUrl && UNIV3_FACTORY[chainKey]) {
+        try {
+          const open = await fetchPositionsFromRPCDirect(address, chainKey);
+          if (Array.isArray(open)) {
+            console.warn(`[${chainKey}] subgraph caído → fallback RPC-directo: ${open.length} posiciones`);
+            return open;
+          }
+        } catch (e2) { console.error(`[${chainKey}] fallback RPC-directo:`, e2); }
+      }
       return { __error: e.message, chainKey };
     }
   });
