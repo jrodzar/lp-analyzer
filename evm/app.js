@@ -1554,26 +1554,47 @@ const UNIV3_FACTORY = {
   base:     "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
 };
 
-async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
+// Aerodrome Slipstream (CL, fork de Uniswap V3) en Base: NFT manager + CLFactory +
+// Voter (para hallar el gauge de cada pool) + token AERO. Selectores propios verificados
+// on-chain (getPool usa int24 tickSpacing, no uint24 fee → selector distinto al de Uni V3).
+const AERODROME = {
+  base: { nftMgr: "0x827922686190790b37229fd06084350e74485b72", factory: "0x5e7bb104d84c7cb9b682aac2f3d509f5f406809a", voter: "0x16613524e02ad97eDfeF371bC883F2F5d6C480A5", aero: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", blockscout: "https://base.blockscout.com/api" },
+};
+const SEL_GET_POOL_CL     = "0x28af8d0b"; // getPool(address,address,int24) (Slipstream)
+const SEL_GAUGES          = "0xb9a09fd5"; // Voter.gauges(address)
+const SEL_STAKED_CONTAINS = "0xc69deec5"; // CLGauge.stakedContains(address,uint256)
+const SEL_EARNED          = "0x3e491d47"; // CLGauge.earned(address,uint256)
+const SEL_OWNER_OF        = "0x6352211e"; // ownerOf(uint256)
+
+// opts: para reusar este detector con forks de Uni V3 (Aerodrome). tokenIds = lista
+// explícita (salta balanceOf; imprescindible para stakeadas, cuyo NFT lo tiene el gauge);
+// nftMgr/factory/getPoolSel = overrides del DEX; tag = marca por posición ("_aerodrome");
+// stakedSet = ids stakeados.
+async function fetchPositionsFromRPCDirect(ownerAddress, chainKey, opts = {}) {
   const chain  = state.chains[chainKey];
   const rpc    = chain.rpcUrls || [chain.rpcUrl]; // lista para rotar entre endpoints
-  const nftMgr = chain.nftManagerAddress || chain.uniNftManager;
-  const factory = chain.factoryAddress || UNIV3_FACTORY[chainKey];
+  const nftMgr = opts.nftMgr || chain.nftManagerAddress || chain.uniNftManager;
+  const factory = opts.factory || chain.factoryAddress || UNIV3_FACTORY[chainKey];
+  const getPoolSel = opts.getPoolSel || SEL_GET_POOL;
 
-  // 1. ¿Cuántas posiciones tiene la wallet?
+  // 1. IDs de cada posición NFT. Normal: balanceOf + tokenOfOwnerByIndex. Si opts.tokenIds
+  // viene dado (Aerodrome: las stakeadas NO salen por balanceOf), se usan esos.
   if (!nftMgr) return [];
-  const balHex = await rpcEthCall(rpc, nftMgr, SEL_BALANCE_OF + encodeAddr32(ownerAddress));
-  if (!balHex || balHex === "0x") return []; // contrato no responde / dirección errónea → sin posiciones
-  const balance = Number(decU(balHex, 0));
-  if (!balance) return [];
-
-  // 2. IDs de cada posición NFT
-  const tokenIds = (await Promise.all(
-    Array.from({length: balance}, (_, i) =>
-      rpcEthCall(rpc, nftMgr, SEL_TOKEN_BY_INDEX + encodeAddr32(ownerAddress) + encodeU32(i))
-        .then(h => decU(h, 0)).catch(() => null)
-    )
-  )).filter(Boolean);
+  let tokenIds;
+  if (opts.tokenIds) {
+    tokenIds = opts.tokenIds.map((x) => BigInt(x));
+  } else {
+    const balHex = await rpcEthCall(rpc, nftMgr, SEL_BALANCE_OF + encodeAddr32(ownerAddress));
+    if (!balHex || balHex === "0x") return []; // contrato no responde / dirección errónea → sin posiciones
+    const balance = Number(decU(balHex, 0));
+    if (!balance) return [];
+    tokenIds = (await Promise.all(
+      Array.from({length: balance}, (_, i) =>
+        rpcEthCall(rpc, nftMgr, SEL_TOKEN_BY_INDEX + encodeAddr32(ownerAddress) + encodeU32(i))
+          .then(h => decU(h, 0)).catch(() => null)
+      )
+    )).filter(Boolean);
+  }
 
   // 3. Datos de cada posición
   const rawPositions = (await Promise.all(
@@ -1589,7 +1610,7 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
   const poolKeyMap = {};
   await Promise.all([...new Set(rawPositions.map(p => `${p.token0}-${p.token1}-${p.fee}`))].map(async key => {
     const [t0, t1, fee] = key.split("-");
-    const h = await rpcEthCall(rpc, factory, SEL_GET_POOL + encodeAddr32(t0) + encodeAddr32(t1) + encodeU32(fee)).catch(() => null);
+    const h = await rpcEthCall(rpc, factory, getPoolSel + encodeAddr32(t0) + encodeAddr32(t1) + encodeU32(fee)).catch(() => null);
     if (h) poolKeyMap[key] = ("0x" + h.slice(-40)).toLowerCase();
   }));
 
@@ -1628,7 +1649,7 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
   // 7.5 Histórico (depósitos/retiros/fees cobradas + fecha de minteo) vía Blockscout
   const histories = {};
   const histApi = chain.explorerApi || chain.blockscoutApi;
-  if (histApi) {
+  if (histApi && !opts.skipHistory) {
     await Promise.all(rawPositions.map(async (raw) => {
       const d0 = tokenInfos[raw.token0]?.decimals ?? 18;
       const d1 = tokenInfos[raw.token1]?.decimals ?? 18;
@@ -1644,7 +1665,7 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
   const costBases = {};
   const closePrices = {}; // tokenId -> {p0,p1} al DÍA DEL CIERRE (solo cerradas): congela HODL/retirado/IL
   const llamaChain = chain.llamaChain;
-  if (llamaChain) {
+  if (llamaChain && !opts.skipHistory) {
     await Promise.all(rawPositions.map(async (raw) => {
       const h = histories[raw.tokenId];
       if (!h || !h.mintTs || !(h.deposited0 > 0 || h.deposited1 > 0)) return;
@@ -1782,7 +1803,77 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey) {
       _rpcEvents: hist && hist.events ? hist.events : null,
     });
   }
+  if (opts.tag) for (const r of result) { r[opts.tag] = true; if (opts.stakedSet) r.staked = opts.stakedSet.has(r.id); }
   return result;
+}
+
+// Detecta posiciones Aerodrome Slipstream (CL) en Base, INCLUIDAS las stakeadas en el
+// gauge (el NFT lo tiene el gauge → no salen por balanceOf). Descubre los tokenIds que el
+// owner recibió (logs Transfer to=owner, igual que las quemadas) y se queda con: las que
+// siguen en su wallet (ownerOf==owner) o las stakeadas por él (ownerOf==gauge del pool &&
+// stakedContains). Reutiliza el enriquecimiento V3 vía fetchPositionsFromRPCDirect.
+async function fetchAerodromePositions(owner) {
+  const chainKey = "base";
+  const A = AERODROME[chainKey];
+  const chain = state.chains[chainKey];
+  if (!A || !chain || !(state.selectedChains || []).includes(chainKey)) return [];
+  const rpc = chain.rpcUrls || [chain.rpcUrl];
+  const apiBase = chain.explorerApi || chain.blockscoutApi;
+  const ownerLc = owner.toLowerCase();
+  const ownerTopic = encodeAddr32(owner);
+  // 1) Descubrir tokenIds. (a) getLogs Transfer(to=owner) → capta STAKEADAS (el NFT lo
+  // tiene el gauge). Robusto: explorerFetch (proxy/thirdweb) y si falla/vacío → Blockscout
+  // DIRECTO (CORS abierto; verificado que sí indexa el mint, aunque getLogs de Base por el
+  // proxy no tenga failover). (b) balanceOf+enum → las que siguen en wallet (RPC fiable).
+  const ids = new Set();
+  const qs = `module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${A.nftMgr}&topic0=${EV_ERC721_TRANSFER}&topic2=0x${ownerTopic}&topic0_2_opr=and`;
+  const parseLogs = (j) => { if (j && Array.isArray(j.result)) for (const l of j.result) { const t3 = (l.topics && l.topics[3]) || ""; if (/^0x[0-9a-fA-F]+$/.test(t3)) { try { ids.add(BigInt(t3).toString()); } catch (e) {} } } };
+  // getLogs Transfer(to=owner) → capta STAKEADAS. DIRECTO a Blockscout (CORS abierto, rápido;
+  // el getLogs de Base por el proxy no tiene failover y reventaba el análisis). Probamos el
+  // blockscoutApi de la config Y la URL canónica de Base de respaldo (por si difieren).
+  for (const apiUrl of [chain.blockscoutApi, A.blockscout]) {
+    if (!apiUrl || ids.size) continue;
+    try { const r = await fetchWithTimeout(`${apiUrl}?${qs}`, {}, { timeoutMs: 6000, tries: 1 }); parseLogs(await r.json()); } catch (e) {}
+  }
+  try {
+    const balHex = await rpcEthCall(rpc, A.nftMgr, SEL_BALANCE_OF + ownerTopic);
+    const bal = (balHex && balHex !== "0x") ? Number(decU(balHex, 0)) : 0;
+    if (bal) (await Promise.all(Array.from({ length: bal }, (_, i) => rpcEthCall(rpc, A.nftMgr, SEL_TOKEN_BY_INDEX + ownerTopic + encodeU32(i)).then((h) => decU(h, 0).toString()).catch(() => null)))).filter(Boolean).forEach((x) => ids.add(x));
+  } catch (e) {}
+  if (!ids.size) return [];
+  const keep = [], stakedSet = new Set(), earnedById = {};
+  await Promise.all([...ids].map(async (id) => {
+    try {
+      const oh = await rpcEthCall(rpc, A.nftMgr, SEL_OWNER_OF + encodeU32(id));
+      const curOwner = ("0x" + (oh || "").slice(-40)).toLowerCase();
+      if (!/^0x[0-9a-f]{40}$/.test(curOwner) || /^0x0+$/.test(curOwner)) return;
+      if (curOwner === ownerLc) { keep.push(id); return; } // en wallet (sin stakear)
+      // Posible stakeada: pool del NFT → gauge del pool → ¿lo stakeó este owner?
+      const ph = await rpcEthCall(rpc, A.nftMgr, SEL_POSITIONS_NFT + encodeU32(id));
+      const raw = decodeRawPos(ph, BigInt(id));
+      if (!raw || raw.liquidity === "0") return;
+      const poolH = await rpcEthCall(rpc, A.factory, SEL_GET_POOL_CL + encodeAddr32(raw.token0) + encodeAddr32(raw.token1) + encodeU32(raw.fee));
+      const pool = "0x" + (poolH || "").slice(-40);
+      if (/^0x0+$/.test(pool)) return;
+      const gh = await rpcEthCall(rpc, A.voter, SEL_GAUGES + encodeAddr32(pool));
+      const gauge = ("0x" + (gh || "").slice(-40)).toLowerCase();
+      if (/^0x0+$/.test(gauge) || gauge !== curOwner) return; // el NFT no está en el gauge de su pool
+      const sc = await rpcEthCall(rpc, gauge, SEL_STAKED_CONTAINS + ownerTopic + encodeU32(id));
+      if (!sc || sc === "0x" || decU(sc, 0) !== 1n) return; // no lo stakeó este owner
+      keep.push(id); stakedSet.add(String(id));
+      try { const eh = await rpcEthCall(rpc, gauge, SEL_EARNED + ownerTopic + encodeU32(id)); earnedById[String(id)] = (eh && eh !== "0x") ? Number(decU(eh, 0)) / 1e18 : 0; } catch (e) {}
+    } catch (e) {}
+  }));
+  if (!keep.length) return [];
+  let positions = [];
+  try {
+    positions = await fetchPositionsFromRPCDirect(owner, chainKey, {
+      tokenIds: keep, nftMgr: A.nftMgr, factory: A.factory, getPoolSel: SEL_GET_POOL_CL,
+      tag: "_aerodrome", stakedSet, skipHistory: true,
+    });
+  } catch (e) { return []; }
+  for (const p of positions) p.aeroClaimable = earnedById[p.id] || 0;
+  return positions;
 }
 
 // ============================================================================
@@ -3403,9 +3494,10 @@ function positionCard(p) {
           <span class="w-2 h-2 rounded-full" style="background:${p.color ? p.color.line : chain.color}"></span>
           <span class="text-[11px] uppercase tracking-wide text-slate-400">${chain.name}</span>
           <span class="text-[11px] text-slate-500">· #${p.nftId}</span>
+          ${p._aerodrome ? `<span class="chip bg-sky-500/15 text-sky-300 border border-sky-500/30" title="Posición de Aerodrome Slipstream (liquidez concentrada)">Aerodrome${p.staked ? " · 🔒 staked" : ""}</span>` : ""}
         </div>
         <div class="font-semibold mt-0.5 flex items-center gap-1.5 min-w-0"><span class="truncate">${p.token0.symbol} / ${p.token1.symbol}</span>${poolPairChartHTML(p)}</div>
-        <div class="text-[11px] text-slate-400">fee ${feeTierLabel(p.feeTier)} · abierta ${date} (${Math.round(p.ageDays)}d)</div>
+        <div class="text-[11px] text-slate-400">fee ${feeTierLabel(p.feeTier)} · abierta ${date} (${Math.round(p.ageDays)}d)${p._aerodrome && p.aeroClaimable ? ` · <span class="text-fuchsia-300" title="AERO reclamable del gauge">AERO ${p.aeroClaimable.toFixed(4)}</span>` : ""}</div>
       </div>
       ${rangeChip}
     </div>
@@ -3722,6 +3814,12 @@ async function analyze() {
       const curve = await fetchCurvePositions(addr);
       if (curve.length) state.positions.push(...curve);
     } catch (e) { console.warn("Curve:", e); }
+    // Aerodrome Slipstream (CL, fork Uni V3) en Base — incl. stakeadas en gauge.
+    // Acotado a 10s: si Base getLogs va lento, devuelve [] y NO tumba el análisis del wallet.
+    try {
+      const aero = await Promise.race([fetchAerodromePositions(addr), new Promise((res) => setTimeout(() => res([]), 12000))]);
+      if (aero && aero.length) state.positions.push(...aero);
+    } catch (e) { console.warn("Aerodrome:", e); }
     assignColors(state.positions);
 
     // Tokens "idle" en wallet (no metidos en LPs) — en paralelo por cada red
