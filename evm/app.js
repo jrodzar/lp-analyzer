@@ -1831,9 +1831,21 @@ async function fetchAerodromePositions(owner) {
   // getLogs Transfer(to=owner) → capta STAKEADAS. DIRECTO a Blockscout (CORS abierto, rápido;
   // el getLogs de Base por el proxy no tiene failover y reventaba el análisis). Probamos el
   // blockscoutApi de la config Y la URL canónica de Base de respaldo (por si difieren).
-  for (const apiUrl of [chain.blockscoutApi, A.blockscout]) {
-    if (!apiUrl || ids.size) continue;
-    try { const r = await fetchWithTimeout(`${apiUrl}?${qs}`, {}, { timeoutMs: 6000, tries: 1 }); parseLogs(await r.json()); } catch (e) {}
+  // Blockscout de Base falla de forma intermitente ("Something went wrong", status 0).
+  // Reintentamos hasta 3 veces, pero SOLO mientras no haya respuesta VÁLIDA: una respuesta
+  // ok (status 1 con logs, o "no records" = sin posiciones) NO se reintenta → no ralentiza
+  // las wallets sin Aerodrome. El fallo real (status 0 + "went wrong" / HTTP error) sí.
+  let gotLogs = false;
+  for (let attempt = 0; attempt < 3 && !gotLogs; attempt++) {
+    for (const apiUrl of [chain.blockscoutApi, A.blockscout]) {
+      if (!apiUrl || gotLogs) continue;
+      try {
+        const r = await fetchWithTimeout(`${apiUrl}?${qs}`, {}, { timeoutMs: 6000, tries: 1 });
+        const j = await r.json();
+        const noRecords = j && j.status === "0" && /no (records|logs)/i.test(j.message || "");
+        if (r.ok && j && (j.status === "1" || noRecords)) { parseLogs(j); gotLogs = true; }
+      } catch (e) {}
+    }
   }
   try {
     const balHex = await rpcEthCall(rpc, A.nftMgr, SEL_BALANCE_OF + ownerTopic);
