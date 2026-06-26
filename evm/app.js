@@ -717,6 +717,17 @@ const _revertVaultsLower = new Set(
   Object.values(REVERT_LEND).map((v) => (v.vault || "").toLowerCase()).filter(Boolean)
 );
 
+// Stables "clave" para el fallback RPC del idle: Blockscout a veces NO indexa el
+// saldo de un token aunque esté en cadena (visto: USDC recién puenteado a Base, su
+// índice de tokens se lo salta indefinidamente — no es retraso). USDC nativa (Circle)
+// por red + USDT0 de Arbitrum. El precio lo resuelve DefiLlama después.
+const IDLE_RPC_FALLBACK = {
+  ethereum: [{ address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", symbol: "USDC", decimals: 6 }],
+  arbitrum: [{ address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831", symbol: "USDC", decimals: 6 }, { address: "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", symbol: "USD₮0", decimals: 6 }],
+  optimism: [{ address: "0x0b2c639c533813f4aa9d7837caf62653d097ff85", symbol: "USDC", decimals: 6 }],
+  polygon:  [{ address: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", symbol: "USDC", decimals: 6 }],
+  base:     [{ address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", symbol: "USDC", decimals: 6 }],
+};
 async function fetchIdleTokensEVM(chainKey, address) {
   const c = state.chains[chainKey];
   if (!c || !c.blockscoutApi) return []; // chain sin soporte (p. ej. BNB / Optimism)
@@ -804,6 +815,25 @@ async function fetchIdleTokensEVM(chainKey, address) {
     tokens.push(obj);
     if (priceUSD == null && obj.address) missingPrice.push(obj);
   }
+
+  // Fallback RPC para stables clave: Blockscout a veces NO indexa el saldo de un token
+  // aunque esté en cadena (USDC recién puenteado a Base → su índice se lo salta, no es
+  // retraso). Leemos balanceOf por RPC de la lista corta y añadimos lo que falte.
+  try {
+    const keyToks = IDLE_RPC_FALLBACK[chainKey] || [];
+    if (keyToks.length) {
+      const have = new Set(tokens.map((t) => t.address));
+      await Promise.all(keyToks.map(async (kt) => {
+        const a = kt.address.toLowerCase();
+        if (have.has(a) || _revertVaultsLower.has(a) || _curveTokensLower.has(a)) return;
+        let raw = 0n;
+        try { const hex = await rpcEthCall(c.rpcUrls || c.rpcUrl, a, SEL_BALANCE_OF + encodeAddr32(address)); if (hex && hex !== "0x") raw = BigInt(hex); } catch (e) { return; }
+        if (raw <= 0n) return;
+        const obj = { chain: chainKey, symbol: kt.symbol, name: kt.symbol, address: a, decimals: kt.decimals, balance: bigIntToDecimal(raw, kt.decimals), priceUSD: null, valueUSD: null, logo: null };
+        tokens.push(obj); missingPrice.push(obj);
+      }));
+    }
+  } catch (e) { /* best-effort */ }
 
   // Fallback de precios via DefiLlama (1 petición batch para todos los faltantes).
   // Acepta tanto `chain:address` (ERC-20) como `coingecko:slug` (nativo).
