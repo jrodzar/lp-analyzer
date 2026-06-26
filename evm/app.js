@@ -1835,17 +1835,23 @@ async function fetchAerodromePositions(owner) {
   // Reintentamos hasta 3 veces, pero SOLO mientras no haya respuesta VÁLIDA: una respuesta
   // ok (status 1 con logs, o "no records" = sin posiciones) NO se reintenta → no ralentiza
   // las wallets sin Aerodrome. El fallo real (status 0 + "went wrong" / HTTP error) sí.
-  let gotLogs = false;
-  for (let attempt = 0; attempt < 3 && !gotLogs; attempt++) {
-    for (const apiUrl of [chain.blockscoutApi, A.blockscout]) {
-      if (!apiUrl || gotLogs) continue;
+  // Probamos AMBAS instancias cada intento (canónica base.blockscout.com primero — verificada
+  // que sí indexa; chain.blockscoutApi a veces devuelve válido-vacío y NO debe cortar la otra).
+  // Reintentamos hasta 3x SOLO si alguna FALLA (status 0 "went wrong" / HTTP error); si TODAS
+  // responden válido (con o sin logs) cortamos → no ralentiza wallets sin Aerodrome.
+  for (let attempt = 0; attempt < 3 && !ids.size; attempt++) {
+    let allValid = true;
+    for (const apiUrl of [A.blockscout, chain.blockscoutApi]) {
+      if (!apiUrl || ids.size) continue;
       try {
         const r = await fetchWithTimeout(`${apiUrl}?${qs}`, {}, { timeoutMs: 6000, tries: 1 });
         const j = await r.json();
         const noRecords = j && j.status === "0" && /no (records|logs)/i.test(j.message || "");
-        if (r.ok && j && (j.status === "1" || noRecords)) { parseLogs(j); gotLogs = true; }
-      } catch (e) {}
+        if (r.ok && j && (j.status === "1" || noRecords)) parseLogs(j);
+        else allValid = false;
+      } catch (e) { allValid = false; }
     }
+    if (allValid) break;
   }
   try {
     const balHex = await rpcEthCall(rpc, A.nftMgr, SEL_BALANCE_OF + ownerTopic);
