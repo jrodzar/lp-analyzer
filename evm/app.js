@@ -1484,13 +1484,39 @@ const EV_POOL_MINT = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16
  *   deposited = Σ IncreaseLiquidity; withdrawn(principal) = Σ DecreaseLiquidity
  *   collectedFees = Σ Collect − Σ DecreaseLiquidity  (Collect incluye principal + fees)
  */
+// thirdweb Insight: getLogs FIABLE para Base (el Blockscout de Base devuelve vacío/timeout en días
+// malos → la reconstrucción fallaba). Client ID PÚBLICO (se embebe en apps cliente, se protege por
+// allowlist de dominio en thirdweb.com). CORS abierto → vale client-side. Filtra por topic indexado:
+// topic_1=tokenId va fino (el topic_2 full-chain peta 500 en thirdweb, así que solo lo usamos para
+// histórico por tokenId). Normaliza a shape Blockscout. Verificado en vivo 2026-06-27.
+const THIRDWEB_CLIENT_ID = "08b4d4d754fe9642fe57cf2be6f3b138";
+async function thirdwebGetLogsByTopic1(chainId, contract, topic0, topic1) {
+  const url = `https://${chainId}.insight.thirdweb.com/v1/events/${contract}?filter_topic_0=${topic0}&filter_topic_1=${topic1}&limit=500`;
+  const r = await fetchWithTimeout(url, { headers: { "x-client-id": THIRDWEB_CLIENT_ID } }, { timeoutMs: 9000, tries: 1 });
+  if (!r.ok) throw new Error("thirdweb HTTP " + r.status);
+  const j = await r.json();
+  return (j.data || []).map((e) => ({
+    topics: e.topics || [],
+    data: e.data || "0x",
+    timeStamp: "0x" + Number(e.block_timestamp || 0).toString(16),
+    transactionHash: e.transaction_hash,
+    blockNumber: "0x" + Number(e.block_number || 0).toString(16),
+  }));
+}
+
 async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
   const cacheKey = `${apiBase}:${tokenId}:${dec0}:${dec1}`; // incluir decimales: reconstructBurnedHyperEVM llama 1º con (18,18) provisional y luego con los reales; sin esto la 2ª colisiona y escala mal el token1 (p.ej. USDC/1e18 → ~0)
   const cached = _histCache.get(cacheKey);
   if (cached && (Date.now() - cached.ts) < HIST_CACHE_TTL) return cached.data;
   const topic1 = "0x" + BigInt(tokenId).toString(16).padStart(64, "0");
   const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
+  const isBaseMgr = /base\.blockscout\.com/i.test(apiBase || "");
   const getLogs = async (topic0) => {
+    if (isBaseMgr) {
+      // Base: thirdweb Insight (fiable) por tokenId; si falla → Blockscout (el de abajo).
+      try { return await thirdwebGetLogsByTopic1(8453, nftMgr, topic0, topic1); }
+      catch (e) { /* thirdweb caído → fallback Blockscout */ }
+    }
     const url = `${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${nftMgr}&topic0=${topic0}&topic1=${topic1}&topic0_1_opr=and`;
     const r = await explorerFetch(url);
     const j = await r.json();
