@@ -1894,7 +1894,7 @@ async function fetchAerodromePositions(owner) {
   try {
     positions = await fetchPositionsFromRPCDirect(owner, chainKey, {
       tokenIds: keep, nftMgr: A.nftMgr, factory: A.factory, getPoolSel: SEL_GET_POOL_CL,
-      tag: "_aerodrome", stakedSet, skipHistory: true,
+      tag: "_aerodrome", stakedSet, // histórico ON: reconstruye coste/IL/PnL/fees/logs de los eventos del NPM (en pro el getLogs de Base va por proxy+thirdweb, fiable; en main público depende de Blockscout, mejor-esfuerzo con degradado elegante)
     });
   } catch (e) { return []; }
   for (const p of positions) p.aeroClaimable = earnedById[p.id] || 0;
