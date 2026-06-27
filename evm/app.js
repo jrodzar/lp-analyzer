@@ -1558,7 +1558,7 @@ const UNIV3_FACTORY = {
 // Voter (para hallar el gauge de cada pool) + token AERO. Selectores propios verificados
 // on-chain (getPool usa int24 tickSpacing, no uint24 fee → selector distinto al de Uni V3).
 const AERODROME = {
-  base: { nftMgr: "0x827922686190790b37229fd06084350e74485b72", factory: "0x5e7bb104d84c7cb9b682aac2f3d509f5f406809a", voter: "0x16613524e02ad97eDfeF371bC883F2F5d6C480A5", aero: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", blockscout: "https://base.blockscout.com/api" },
+  base: { nftMgr: "0x827922686190790b37229fd06084350e74485b72", factory: "0x5e7bb104d84c7cb9b682aac2f3d509f5f406809a", voter: "0x16613524e02ad97eDfeF371bC883F2F5d6C480A5", aero: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", blockscout: "https://base.blockscout.com/api", revertVault: "0x1ef7c181188687e20a9750714f1b9de6f70f17c0" },
 };
 const SEL_GET_POOL_CL     = "0x28af8d0b"; // getPool(address,address,int24) (Slipstream)
 const SEL_GAUGES          = "0xb9a09fd5"; // Voter.gauges(address)
@@ -1877,7 +1877,14 @@ async function fetchAerodromePositions(owner) {
       const gauge = ("0x" + (gh || "").slice(-40)).toLowerCase();
       if (/^0x0+$/.test(gauge) || gauge !== curOwner) return; // el NFT no está en el gauge de su pool
       const sc = await rpcEthCall(rpc, gauge, SEL_STAKED_CONTAINS + ownerTopic + encodeU32(id));
-      if (!sc || sc === "0x" || decU(sc, 0) !== 1n) return; // no lo stakeó este owner
+      let mine = sc && sc !== "0x" && decU(sc, 0) === 1n; // lo stakeó el owner directamente
+      if (!mine && A.revertVault) {
+        // Stakeada vía la bóveda de Revert: el gauge registra como staker al proxy de Revert
+        // (no al owner) → stakedContains(owner)=0. Confirmamos propiedad con V3Vault.ownerOf(id)==owner.
+        const vh = await rpcEthCall(rpc, A.revertVault, SEL_OWNER_OF + encodeU32(id)).catch(() => null);
+        mine = vh && vh !== "0x" && ("0x" + vh.slice(-40)).toLowerCase() === ownerLc;
+      }
+      if (!mine) return; // ni lo stakeó el owner ni es suyo vía la bóveda de Revert
       keep.push(id); stakedSet.add(String(id));
       try { const eh = await rpcEthCall(rpc, gauge, SEL_EARNED + ownerTopic + encodeU32(id)); earnedById[String(id)] = (eh && eh !== "0x") ? Number(decU(eh, 0)) / 1e18 : 0; } catch (e) {}
     } catch (e) {}
