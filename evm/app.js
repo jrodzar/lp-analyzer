@@ -3897,9 +3897,11 @@ async function analyze() {
       if (curve.length) state.positions.push(...curve);
     } catch (e) { console.warn("Curve:", e); }
     // Aerodrome Slipstream (CL, fork Uni V3) en Base — incl. stakeadas en gauge.
-    // Acotado a 10s: si Base getLogs va lento, devuelve [] y NO tumba el análisis del wallet.
+    // Acotado a 30s (el race devuelve en cuanto termina, no espera el tope): el enriquecimiento EN
+    // FRÍO (histórico de varias posiciones por thirdweb, 1ª vez sin caché) puede tardar ~20-25s; con
+    // 12s se cortaba y la ficha desaparecía. Si Base va MUY lento, devuelve [] y NO tumba el análisis.
     try {
-      const aero = await Promise.race([fetchAerodromePositions(addr), new Promise((res) => setTimeout(() => res([]), 12000))]);
+      const aero = await Promise.race([fetchAerodromePositions(addr), new Promise((res) => setTimeout(() => res([]), 30000))]);
       if (aero && aero.length) state.positions.push(...aero);
     } catch (e) { console.warn("Aerodrome:", e); }
     assignColors(state.positions);
