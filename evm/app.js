@@ -3661,6 +3661,9 @@ function positionCard(p) {
   if (p.reconstructed && p.tick == null) return reconstructedCardEvm(p);
   const chain = state.chains[p.chainKey];
   const el = document.createElement("article");
+  // AERO: exponer gauge+tokenId para que el AM (active/collect-fees.js) inyecte "Cobrar AERO"
+  // (getReward) y SALTE los botones Uni-V3, que no aplican a una posición Aerodrome stakeada.
+  if (p._aerodrome && p.staked && p.gaugeAddr) { el.setAttribute("data-aero-gauge", p.gaugeAddr); el.setAttribute("data-aero-tokenid", String(p.nftId)); }
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
   if (p.color) el.style.borderLeft = `3px solid ${p.color.line}`;
 
