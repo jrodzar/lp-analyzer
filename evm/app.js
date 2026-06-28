@@ -1885,16 +1885,6 @@ async function fetchAerodromePositions(owner) {
   // que sí indexa; chain.blockscoutApi a veces devuelve válido-vacío y NO debe cortar la otra).
   // Reintentamos hasta 3x SOLO si alguna FALLA (status 0 "went wrong" / HTTP error); si TODAS
   // responden válido (con o sin logs) cortamos → no ralentiza wallets sin Aerodrome.
-  // thirdweb (FIABLE) acotado a los últimos ~8M bloques: capta las posiciones recientes aunque el
-  // Blockscout de Base devuelva vacío en sus días malos (lo que hacía DESAPARECER la ficha). Si no
-  // llena ids, abajo corre Blockscout (full-chain, capta también las viejas cuando responde).
-  try {
-    const latestBlk = await rpcBlockNumber(rpc);
-    const gteBlk = latestBlk ? Math.max(0, latestBlk - 8000000) : 40000000;
-    for (const t3 of await thirdwebTransfersTo(8453, A.nftMgr, EV_ERC721_TRANSFER, `0x${ownerTopic}`, gteBlk)) {
-      if (/^0x[0-9a-fA-F]+$/.test(t3)) { try { ids.add(BigInt(t3).toString()); } catch (e) {} }
-    }
-  } catch (e) { /* thirdweb caído/acotado → Blockscout abajo */ }
   for (let attempt = 0; attempt < 3 && !ids.size; attempt++) {
     let allValid = true;
     for (const apiUrl of [A.blockscout, chain.blockscoutApi]) {
@@ -1908,6 +1898,19 @@ async function fetchAerodromePositions(owner) {
       } catch (e) { allValid = false; }
     }
     if (allValid) break;
+  }
+  // Si Blockscout no encontró nada (genuino, o "día malo" mintiendo vacío → era lo que hacía
+  // DESAPARECER la ficha), segunda opinión por thirdweb acotado a los últimos ~2M bloques (rangos
+  // mayores petan 500 en thirdweb; 2M va fino, ~5s). Capta posiciones recientes que Blockscout se
+  // haya comido. Solo se ejecuta si Blockscout vino vacío → no ralentiza el caso normal.
+  if (!ids.size) {
+    try {
+      const latestBlk = await rpcBlockNumber(rpc);
+      const gteBlk = latestBlk ? Math.max(0, latestBlk - 2000000) : 46000000;
+      for (const t3 of await thirdwebTransfersTo(8453, A.nftMgr, EV_ERC721_TRANSFER, `0x${ownerTopic}`, gteBlk)) {
+        if (/^0x[0-9a-fA-F]+$/.test(t3)) { try { ids.add(BigInt(t3).toString()); } catch (e) {} }
+      }
+    } catch (e) {}
   }
   try {
     const balHex = await rpcEthCall(rpc, A.nftMgr, SEL_BALANCE_OF + ownerTopic);
