@@ -1167,6 +1167,21 @@ async function getCrvPriceUSD() {
   return _crvPriceCache.px;
 }
 
+// Precio de AERO (Aerodrome) en USD vía DefiLlama, cacheado 5 min. Para valorar las recompensas
+// del gauge (lo que rinde una posición de Aerodrome STAKEADA, en vez de trading fees).
+let _aeroPriceCache = { ts: 0, px: null };
+async function getAeroPriceUSD() {
+  if (_aeroPriceCache.px != null && Date.now() - _aeroPriceCache.ts < 5 * 60 * 1000) return _aeroPriceCache.px;
+  const key = "base:0x940181a94a35a4569e4529a3cdfb74e38fd98631"; // AERO en Base
+  try {
+    const r = await fetchWithTimeout("https://coins.llama.fi/prices/current/" + key, {}, { timeoutMs: 6000, tries: 1 });
+    const j = await r.json();
+    const px = j && j.coins && j.coins[key] && j.coins[key].price;
+    if (px > 0) { _aeroPriceCache = { ts: Date.now(), px }; return px; }
+  } catch (e) {}
+  return _aeroPriceCache.px;
+}
+
 // Reconstruye coste/retiros de una posición Curve por el flujo NETO de las monedas
 // del pool en las TXs donde el owner tocó el pool o el gauge. Robusto ante
 // "Deposit & Stake" (zap): el gauge Deposit acredita al owner aunque el AddLiquidity
@@ -1972,7 +1987,7 @@ async function fetchAerodromePositions(owner) {
     if (bal) (await Promise.all(Array.from({ length: bal }, (_, i) => rpcEthCall(rpc, A.nftMgr, SEL_TOKEN_BY_INDEX + ownerTopic + encodeU32(i)).then((h) => decU(h, 0).toString()).catch(() => null)))).filter(Boolean).forEach((x) => ids.add(x));
   } catch (e) {}
   if (!ids.size) return [];
-  const keep = [], stakedSet = new Set(), earnedById = {};
+  const keep = [], stakedSet = new Set(), earnedById = {}, gaugeById = {};
   await Promise.all([...ids].map(async (id) => {
     try {
       const oh = await rpcEthCall(rpc, A.nftMgr, SEL_OWNER_OF + encodeU32(id));
@@ -1998,7 +2013,7 @@ async function fetchAerodromePositions(owner) {
         mine = vh && vh !== "0x" && ("0x" + vh.slice(-40)).toLowerCase() === ownerLc;
       }
       if (!mine) return; // ni lo stakeó el owner ni es suyo vía la bóveda de Revert
-      keep.push(id); stakedSet.add(String(id));
+      keep.push(id); stakedSet.add(String(id)); gaugeById[String(id)] = gauge;
       try { const eh = await rpcEthCall(rpc, gauge, SEL_EARNED + ownerTopic + encodeU32(id)); earnedById[String(id)] = (eh && eh !== "0x") ? Number(decU(eh, 0)) / 1e18 : 0; } catch (e) {}
     } catch (e) {}
   }));
@@ -2010,7 +2025,23 @@ async function fetchAerodromePositions(owner) {
       tag: "_aerodrome", stakedSet, // histórico ON: reconstruye coste/IL/PnL/fees/logs de los eventos del NPM (en pro el getLogs de Base va por proxy+thirdweb, fiable; en main público depende de Blockscout, mejor-esfuerzo con degradado elegante)
     });
   } catch (e) { return []; }
-  for (const p of positions) p.aeroClaimable = earnedById[p.id] || 0;
+  // AERO: reclamable (gauge.earned) + ya reclamado (transfers AERO del gauge → owner, Alchemy) + precio.
+  // Stakeada, el AERO es el rendimiento real (las trading fees van a los votantes), así que lo metemos
+  // en fees/APR/PnL en applyAerodromeAeroAsFees() tras el cálculo estándar (que si no lo pisaría).
+  const aeroPx = await getAeroPriceUSD().catch(() => null);
+  for (const p of positions) {
+    p.aeroClaimable = earnedById[p.id] || 0;
+    p.gaugeAddr = gaugeById[p.id] || null;
+    p._aeroPx = aeroPx;
+    p.aeroClaimableUSD = aeroPx != null ? p.aeroClaimable * aeroPx : null;
+    p._aeroClaimedRaw = [];
+    if (p.staked && p.gaugeAddr && A.aero) {
+      try {
+        const tr = await alchemyTransfers("base", { fromAddress: p.gaugeAddr, toAddress: owner, contractAddresses: [A.aero], category: ["erc20"] });
+        p._aeroClaimedRaw = (tr || []).map((t) => ({ v: t.value || 0, ts: Math.floor(new Date((t.metadata && t.metadata.blockTimestamp) || 0).getTime() / 1000) || 0 }));
+      } catch (e) {}
+    }
+  }
   return positions;
 }
 
@@ -2688,6 +2719,26 @@ async function fetchOwnerSwapsEVM(chainKey, owner, feeTokenSet) {
 
 // Parte A (total wallet) + parte B (por posición: reescribe feesUSD y recalcula
 // PnL/APR). Debe ejecutarse DESPUÉS de buildPortfolioTimeline (que fija feesUSD).
+// Aerodrome STAKEADA: el rendimiento son emisiones de AERO, no trading fees (esas van a los votantes
+// veAERO → la app no las puede leer, salían n/d). Metemos el AERO reclamable (pendientes) y el ya
+// reclamado DESDE que se abrió la posición (cobradas) en las métricas de fees → APR/MPR/PnL reflejan
+// el rendimiento real. Corre DESPUÉS de enrichRealizableFeesEVM (que reescribe feesUSD) para no ser pisado.
+function applyAerodromeAeroAsFees(positions) {
+  for (const p of positions || []) {
+    if (!p._aerodrome || !p.staked || p._aeroPx == null) continue;
+    const pend = p.aeroClaimableUSD || 0;
+    const claimed = (p._aeroClaimedRaw || []).filter((x) => !p.openedAt || x.ts >= p.openedAt).reduce((s, x) => s + x.v, 0) * p._aeroPx;
+    p.feesUSD = claimed;                          // cobradas = AERO ya reclamado (desde openedAt)
+    p.uncollected = { amount0: 0, amount1: 0 };   // no null → la ficha muestra "pendientes"
+    p.uncollectedUSD = pend;                      // pendientes = AERO reclamable
+    p.feesTotalUSD = claimed + pend;
+    p.pnlUSD = (p.currentValueUSD || 0) + (p.withdrawnUSD || 0) + claimed + pend - (p.depositedUSD || 0);
+    const base = (p.currentValueUSD || 0) > 0 ? p.currentValueUSD : (p.depositedUSD || 0);
+    p.apr = base > 0 && p.ageDays > 0 ? (p.feesTotalUSD / base) * (365 / p.ageDays) * 100 : 0;
+    p.rewardKind = "AERO";                        // la ficha etiqueta las fees como AERO
+  }
+}
+
 async function enrichRealizableFeesEVM(owner) {
   state._feesRealizableUSD = null;
   const positions = (state.positions || []).filter((p) => !p._lending && !p._curve);
@@ -3663,8 +3714,10 @@ function positionCard(p) {
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
         ${infoToggle(
-          `<span class="text-[10px] uppercase tracking-wide text-slate-500">Fees</span>`,
-          (p._feesRealizable
+          `<span class="text-[10px] uppercase tracking-wide text-slate-500">Fees${p.rewardKind === "AERO" ? " (AERO)" : ""}</span>`,
+          (p.rewardKind === "AERO"
+            ? `Stakeada en el gauge de Aerodrome: el rendimiento son <b>emisiones de AERO</b>, no trading fees (esas van a los votantes veAERO). "Cobradas" = AERO ya reclamado en esta posición; "Pendientes" = AERO reclamable. Valorado al precio actual de AERO.`
+            : p._feesRealizable
             ? `Fees cobradas a <b>valor realizable</b>: lo que sigues teniendo <b>idle</b> valorado a precio de HOY, más lo que vendiste a USDC valorado al precio del día del swap. "Pendientes" usa precio actual.${p._feesAtCollectUSD != null ? ` <span style="color:#94a3b8">Al cobrarlas valían ${fmtUSD(p._feesAtCollectUSD)}.</span>` : ""}`
             : p.histBasis === "full"
             ? `Fees cobradas valoradas con el precio de cada token <b>en el momento de cada cobro</b> (snapshots del subgraph): el dinero real ganado, sin que le afecten movimientos de precio posteriores.`
@@ -3673,11 +3726,11 @@ function positionCard(p) {
             : p.histBasis === "none"
             ? `Fees cobradas valoradas con el precio <b>ACTUAL</b> (no se obtuvo histórico — rate limit del proxy, o el subgraph no da precios de esos tokens). "Pendientes" usa precio actual.`
             : `Fees cobradas valoradas con el precio <b>ACTUAL</b> de los tokens (sin histórico: posición sin snapshots, HyperEVM RPC-only o error de red). NO refleja lo que valían al cobrarlas.`),
-          (p._feesRealizable ? ` <span title="Valor realizable">💵</span>` : p.histBasis === "full" ? ` <span title="Cálculo histórico">📜</span>` : "")
+          (p.rewardKind === "AERO" ? ` <span title="Recompensa en AERO">🟣</span>` : p._feesRealizable ? ` <span title="Valor realizable">💵</span>` : p.histBasis === "full" ? ` <span title="Cálculo histórico">📜</span>` : "")
         )}
-        <div class="font-semibold text-emerald-400 leading-tight"${p._feesRealizable ? ` title="Valor ACTUAL de las fees cobradas (retenidas a precio de hoy + vendidas a USDC al precio del swap)${p._feesAtCollectUSD != null ? ` · al cobrar: ${fmtUSD(p._feesAtCollectUSD)}` : ""}"` : ""}>${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400">cobradas</span></div>
-        <div class="text-amber-300 font-semibold leading-tight">${p.uncollectedUSD === null ? "n/d" : fmtUSD(p.uncollectedUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes</span></div>
-        <div class="text-[10px] text-slate-400 mt-0.5">APR fees ~ ${isFinite(p.apr) ? p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%" : "—"}</div>
+        <div class="font-semibold text-emerald-400 leading-tight"${p._feesRealizable ? ` title="Valor ACTUAL de las fees cobradas (retenidas a precio de hoy + vendidas a USDC al precio del swap)${p._feesAtCollectUSD != null ? ` · al cobrar: ${fmtUSD(p._feesAtCollectUSD)}` : ""}"` : ""}>${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400">cobradas${p.rewardKind === "AERO" ? " AERO" : ""}</span></div>
+        <div class="text-amber-300 font-semibold leading-tight">${p.uncollectedUSD === null ? "n/d" : fmtUSD(p.uncollectedUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes${p.rewardKind === "AERO" ? " AERO" : ""}</span></div>
+        <div class="text-[10px] text-slate-400 mt-0.5">APR ${p.rewardKind === "AERO" ? "AERO" : "fees"} ~ ${isFinite(p.apr) ? p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%" : "—"}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
         ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL</span>`, `Valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Estimación; no incluye gas.`)}
@@ -4239,6 +4292,7 @@ document.addEventListener("DOMContentLoaded", init);
           // Fees cobradas a valor REALIZABLE (parte A+B). Después del timeline,
           // que es quien fija feesUSD por posición. best-effort: nunca rompe.
           try { await enrichRealizableFeesEVM(d.address); } catch (e) { console.warn("[realizable-evm]", e); }
+          try { applyAerodromeAeroAsFees(state.positions); } catch (e) {}
           const status = (document.getElementById("status-msg") || {}).textContent || "";
           const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
           const idleTokens = state.idleTokens || [];
