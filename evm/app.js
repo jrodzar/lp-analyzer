@@ -660,23 +660,36 @@ async function fetchLendingHistory(apiBase, vault, owner, dec, force = false) {
   const cacheKey = `${apiBase}:lend:${vault}:${owner.toLowerCase()}`;
   const cached = _histCache.get(cacheKey);
   if (!force && cached && (Date.now() - cached.ts) < HIST_CACHE_TTL) return cached.data;
-  const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
-  const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
-  const get = async (qs) => {
-    const r = await explorerFetch(`${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${vault}&${qs}`);
-    const j = await r.json();
-    return Array.isArray(j.result) ? j.result : [];
-  };
-  // Deposit: owner = topic2 ; Withdraw: owner = topic3
-  const dep = await get(`topic0=${EV_4626_DEPOSIT}&topic2=${ownerTopic}&topic0_2_opr=and`);
-  // Si nunca depositó aquí no hay posición (ni abierta ni cerrada) → evitamos el getLogs
-  // de Withdraw. Ahorra una llamada en los vaults que el wallet nunca tocó (la mayoría).
-  const wth = dep.length ? await get(`topic0=${EV_4626_WITHDRAW}&topic3=${ownerTopic}&topic0_3_opr=and`) : [];
-  let d = 0n, w = 0n, firstTs = null;
+  const isBaseLend = /base\.blockscout\.com/i.test(apiBase || "");
+  let depList = [], wthList = []; // {amt, ts}
+  if (isBaseLend) {
+    // Alchemy getAssetTransfers (FIABLE, full-chain ~500ms): el USDC que el owner mandó al vault =
+    // depósitos; vault→owner = retiros. (Antes: getLogs Deposit topic2 / Withdraw topic3 por
+    // Blockscout → vacío en días malos. El filtro por owner full-chain es justo lo que Alchemy hace bien.)
+    const toTs = (t) => Math.floor(new Date((t.metadata && t.metadata.blockTimestamp) || 0).getTime() / 1000) || 0;
+    const dep = await alchemyTransfers("base", { fromAddress: owner, toAddress: vault, category: ["erc20"] });
+    const wth = (dep && dep.length) ? await alchemyTransfers("base", { fromAddress: vault, toAddress: owner, category: ["erc20"] }) : [];
+    depList = (dep || []).map((t) => ({ amt: t.value || 0, ts: toTs(t) }));
+    wthList = (wth || []).map((t) => ({ amt: t.value || 0, ts: toTs(t) }));
+  } else {
+    // Otras chains: getLogs por Blockscout (Deposit owner=topic2 / Withdraw owner=topic3).
+    const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
+    const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
+    const get = async (qs) => {
+      const r = await explorerFetch(`${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${vault}&${qs}`);
+      const j = await r.json();
+      return Array.isArray(j.result) ? j.result : [];
+    };
+    const dep = await get(`topic0=${EV_4626_DEPOSIT}&topic2=${ownerTopic}&topic0_2_opr=and`);
+    const wth = dep.length ? await get(`topic0=${EV_4626_WITHDRAW}&topic3=${ownerTopic}&topic0_3_opr=and`) : [];
+    depList = dep.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16) }));
+    wthList = wth.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16) }));
+  }
+  let d = 0, w = 0, firstTs = null;
   const events = [];
-  for (const l of dep) { d += word(l.data, 0); const ts = parseInt(l.timeStamp, 16); if (firstTs === null || ts < firstTs) firstTs = ts; events.push({ ts, type: "dep", amt: Number(word(l.data, 0)) / 10 ** dec }); }
-  for (const l of wth) { w += word(l.data, 0); events.push({ ts: parseInt(l.timeStamp, 16), type: "wth", amt: Number(word(l.data, 0)) / 10 ** dec }); }
-  const data = { deposited: Number(d) / 10 ** dec, withdrawn: Number(w) / 10 ** dec, firstTs, events };
+  for (const e of depList) { d += e.amt; if (firstTs === null || e.ts < firstTs) firstTs = e.ts; events.push({ ts: e.ts, type: "dep", amt: e.amt }); }
+  for (const e of wthList) { w += e.amt; events.push({ ts: e.ts, type: "wth", amt: e.amt }); }
+  const data = { deposited: d, withdrawn: w, firstTs, events };
   _histCache.set(cacheKey, { data, ts: Date.now() });
   return data;
 }
@@ -1524,6 +1537,31 @@ async function rpcBlockNumber(rpcOrList) {
   return null;
 }
 
+// Alchemy getAssetTransfers: la vía FIABLE para queries por OWNER en Base (full-chain, ~400-500ms,
+// indexado). Blockscout miente/timeout y el topic_2/3 de thirdweb full-chain peta → Alchemy es la
+// herramienta para "todo lo de una address" (NFTs recibidos = detección; USDC owner↔vault = lending).
+// Key PÚBLICA (allowlist de dominio en alchemy.com). Pagina por pageKey. Verificado en vivo 2026-06-28.
+const ALCHEMY_KEY = "BdP2kXDexCf9CnXs5UL2f";
+const ALCHEMY_URL = { base: "https://base-mainnet.g.alchemy.com/v2/" + ALCHEMY_KEY };
+async function alchemyTransfers(chainKey, params) {
+  const url = ALCHEMY_URL[chainKey];
+  if (!url) return null;
+  const out = [];
+  let pageKey = null;
+  for (let i = 0; i < 8; i++) {
+    const p = Object.assign({ fromBlock: "0x0", toBlock: "latest", withMetadata: true, maxCount: "0x3e8" }, params);
+    if (pageKey) p.pageKey = pageKey;
+    const r = await fetchWithTimeout(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "alchemy_getAssetTransfers", params: [p] }) }, { timeoutMs: 12000, tries: 1 });
+    if (!r.ok) return out.length ? out : null;
+    const j = await r.json();
+    if (!j || !j.result) return out.length ? out : null;
+    out.push(...(j.result.transfers || []));
+    pageKey = j.result.pageKey;
+    if (!pageKey) break;
+  }
+  return out;
+}
+
 async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
   const cacheKey = `${apiBase}:${tokenId}:${dec0}:${dec1}`; // incluir decimales: reconstructBurnedHyperEVM llama 1º con (18,18) provisional y luego con los reales; sin esto la 2ª colisiona y escala mal el token1 (p.ej. USDC/1e18 → ~0)
   const cached = _histCache.get(cacheKey);
@@ -1885,16 +1923,13 @@ async function fetchAerodromePositions(owner) {
   // que sí indexa; chain.blockscoutApi a veces devuelve válido-vacío y NO debe cortar la otra).
   // Reintentamos hasta 3x SOLO si alguna FALLA (status 0 "went wrong" / HTTP error); si TODAS
   // responden válido (con o sin logs) cortamos → no ralentiza wallets sin Aerodrome.
-  // thirdweb PRIMERO (rápido, ~600ms con ventana 2M): capta las posiciones recientes de forma fiable
-  // y veloz, SIN esperar al Blockscout de Base (que en días malos tarda/timeout y se comía el
-  // presupuesto de 12s del análisis → la ficha DESAPARECÍA). Si llena ids, el bucle Blockscout de
-  // abajo se salta (!ids.size). Si thirdweb no halla (posiciones viejas >2M bloques), va Blockscout.
+  // Alchemy getAssetTransfers PRIMERO (FIABLE, full-chain, ~400ms): los ERC721 del NPM que RECIBIÓ
+  // el owner → tokenIds (capta TODAS, incl. stakeadas, que el NFT lo tiene el gauge). Es la
+  // herramienta correcta para queries por owner; sin la limitación de ventana del parche anterior y
+  // sin esperar al Blockscout lento. Si llena ids, el bucle Blockscout de abajo se salta (!ids.size).
   try {
-    const latestBlk = await rpcBlockNumber(rpc);
-    const gteBlk = latestBlk ? Math.max(0, latestBlk - 2000000) : 46000000;
-    for (const t3 of await thirdwebTransfersTo(8453, A.nftMgr, EV_ERC721_TRANSFER, `0x${ownerTopic}`, gteBlk)) {
-      if (/^0x[0-9a-fA-F]+$/.test(t3)) { try { ids.add(BigInt(t3).toString()); } catch (e) {} }
-    }
+    const tr = await alchemyTransfers("base", { toAddress: owner, contractAddresses: [A.nftMgr], category: ["erc721"] });
+    if (tr) for (const t of tr) { const id = t.erc721TokenId; if (id) { try { ids.add(BigInt(id).toString()); } catch (e) {} } }
   } catch (e) {}
   for (let attempt = 0; attempt < 3 && !ids.size; attempt++) {
     let allValid = true;
