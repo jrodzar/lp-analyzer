@@ -1504,6 +1504,26 @@ async function thirdwebGetLogsByTopic1(chainId, contract, topic0, topic1) {
   }));
 }
 
+// thirdweb: tokenIds que el owner RECIBIÓ (Transfer to=owner) desde gteBlock. El topic_2 full-chain
+// peta 500 en thirdweb, pero ACOTADO por bloques va fino → capta posiciones recientes aunque el
+// Blockscout de Base esté mintiendo vacío. Devuelve los topics[3] (tokenId) hallados.
+async function thirdwebTransfersTo(chainId, contract, topic0, ownerTopic0x, gteBlock) {
+  const url = `https://${chainId}.insight.thirdweb.com/v1/events/${contract}?filter_topic_0=${topic0}&filter_topic_2=${ownerTopic0x}&filter_block_number_gte=${gteBlock}&limit=500`;
+  const r = await fetchWithTimeout(url, { headers: { "x-client-id": THIRDWEB_CLIENT_ID } }, { timeoutMs: 9000, tries: 1 });
+  if (!r.ok) throw new Error("thirdweb HTTP " + r.status);
+  const j = await r.json();
+  return (j.data || []).map((e) => (e.topics && e.topics[3]) || null).filter(Boolean);
+}
+// Último bloque de la chain vía RPC (para acotar la ventana de getLogs de thirdweb).
+async function rpcBlockNumber(rpcOrList) {
+  const rpcs = Array.isArray(rpcOrList) ? rpcOrList.filter(Boolean) : [rpcOrList];
+  const body = JSON.stringify({ jsonrpc: "2.0", method: "eth_blockNumber", params: [], id: 1 });
+  for (const rpc of rpcs) {
+    try { const res = await fetch(rpc, { method: "POST", headers: { "Content-Type": "application/json" }, body }); if (res.ok) { const j = await res.json(); if (j.result) return parseInt(j.result, 16); } } catch (e) {}
+  }
+  return null;
+}
+
 async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
   const cacheKey = `${apiBase}:${tokenId}:${dec0}:${dec1}`; // incluir decimales: reconstructBurnedHyperEVM llama 1º con (18,18) provisional y luego con los reales; sin esto la 2ª colisiona y escala mal el token1 (p.ej. USDC/1e18 → ~0)
   const cached = _histCache.get(cacheKey);
@@ -1865,6 +1885,16 @@ async function fetchAerodromePositions(owner) {
   // que sí indexa; chain.blockscoutApi a veces devuelve válido-vacío y NO debe cortar la otra).
   // Reintentamos hasta 3x SOLO si alguna FALLA (status 0 "went wrong" / HTTP error); si TODAS
   // responden válido (con o sin logs) cortamos → no ralentiza wallets sin Aerodrome.
+  // thirdweb (FIABLE) acotado a los últimos ~8M bloques: capta las posiciones recientes aunque el
+  // Blockscout de Base devuelva vacío en sus días malos (lo que hacía DESAPARECER la ficha). Si no
+  // llena ids, abajo corre Blockscout (full-chain, capta también las viejas cuando responde).
+  try {
+    const latestBlk = await rpcBlockNumber(rpc);
+    const gteBlk = latestBlk ? Math.max(0, latestBlk - 8000000) : 40000000;
+    for (const t3 of await thirdwebTransfersTo(8453, A.nftMgr, EV_ERC721_TRANSFER, `0x${ownerTopic}`, gteBlk)) {
+      if (/^0x[0-9a-fA-F]+$/.test(t3)) { try { ids.add(BigInt(t3).toString()); } catch (e) {} }
+    }
+  } catch (e) { /* thirdweb caído/acotado → Blockscout abajo */ }
   for (let attempt = 0; attempt < 3 && !ids.size; attempt++) {
     let allValid = true;
     for (const apiUrl of [A.blockscout, chain.blockscoutApi]) {
