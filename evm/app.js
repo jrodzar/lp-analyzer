@@ -2628,11 +2628,24 @@ async function enrichIdleIndicatorsEVM(owner) {
 
 // Valora el inventario de fees de un token combinando cobros y swaps a stable.
 function valueRealizableFeesForToken(events, currentPrice) {
-  const evs = events.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  // Orden temporal; a igualdad de ts, prioridad collect(0) → swap(1) → deposit(2) para que
+  // un cobro + recompound en la MISMA tx primero LLENE el inventario y luego lo consuma.
+  const _rank = { collect: 0, swap: 1, deposit: 2 };
+  const rk = (e) => (_rank[e.type] != null ? _rank[e.type] : 9);
+  const evs = events.slice().sort((a, b) => ((a.ts || 0) - (b.ts || 0)) || (rk(a) - rk(b)));
   let inv = 0, realized = 0;
   for (const e of evs) {
     if (e.type === "collect") inv += e.amount;
-    else if (e.amount > 0) { // swap token→stable
+    else if (e.type === "deposit") {
+      // COMPOUND: re-depositar la fee al pool es una REALIZACIÓN al precio de ESE día. A
+      // partir de ahí el token vive DENTRO de la posición → su recorrido lo capta
+      // currentValue−depositado, NO la línea de fees (evita el doble cómputo de la
+      // revalorización). Sin precio histórico del día: no consumir (queda a spot, sin regresión).
+      if (e.priceAtTs == null) continue;
+      const part = Math.min(e.amount, inv);
+      if (part > 0) realized += part * e.priceAtTs;
+      inv -= part;
+    } else if (e.type === "swap" && e.amount > 0) { // venta token→stable
       const feePart = Math.min(e.amount, inv);
       if (feePart > 0) realized += feePart * (e.usdcOut / e.amount);
       inv -= feePart;
@@ -2691,16 +2704,18 @@ async function fetchOwnerSwapsEVM(chainKey, owner, feeTokenSet) {
   } catch (e) { console.warn(`[realizable-evm] transfers ${chainKey}:`, e?.message || e); }
   if (truncated) console.warn(`[realizable-evm] ${chainKey}: histórico de transfers truncado a ${MAX_PAGES} págs; algún swap antiguo de fees podría no detectarse.`);
   // ── LIMITACIONES CONOCIDAS del modelo realizable (documentadas para el futuro) ──
-  // Una "venta" SOLO se detecta cuando el owner RECIBE un stable neto en la tx. NO se
-  // reconocen como realización a precio de venta (quedan "retenidas" a precio de HOY):
-  //   1) COMPOUND (re-depositar la fee al pool/posición): no recibes stable.
-  //   2) MOVER la fee a OTRA WALLET: tampoco recibes stable → no es swap. Sigue
-  //      valorada a precio de hoy en ESTA wallet (sobreestima si fue a un tercero; no
-  //      se distingue "mi otra wallet" de un pago externo). Si la vendes desde la otra
-  //      wallet, este análisis no lo ve.
-  //   3) Swaps cuyo leg sea el NATIVO (ETH→…) no son transfers ERC-20 → no se ven.
+  // El COMPOUND a la MISMA posición (re-depositar la fee vía IncreaseLiquidity top-up) SÍ se
+  // capta: esos depósitos CONSUMEN el inventario de fees al precio del día del depósito
+  // (realización), así su revalorización posterior la cuenta currentValue−depositado y NO se
+  // duplica en la línea de fees (ver valueRealizableFeesForToken + depositsByTok). Lo que AÚN
+  // queda "retenido a precio de HOY" (sin realización porque el owner no RECIBE stable neto):
+  //   1) ABRIR una posición NUEVA con la fee, o MOVERLA a OTRA WALLET: no recibes stable y el
+  //      depósito de APERTURA se excluye del compound (no se distingue de capital fresco) → la
+  //      fee sigue valorada a precio de hoy en ESTA wallet. Si la vendes desde la otra wallet,
+  //      este análisis no lo ve.
+  //   2) Swaps cuyo leg sea el NATIVO (ETH→…) no son transfers ERC-20 → no se ven.
   // MEJORA FUTURA: (a) lista de "direcciones propias" → transfers a ellas = movimiento
-  // interno; (b) compound como evento explícito de fee.
+  // interno; (b) detección de compound a posición NUEVA (hoy solo top-ups a la existente).
   const swaps = {};
   for (const [, e] of byTx) {
     let stableIn = 0;
@@ -2756,6 +2771,7 @@ async function enrichRealizableFeesEVM(owner) {
   // 2) Fees cobradas por token (wallet) + asegurar _feeAmtByToken por posición.
   //    Cobros reales (subgraph con snapshots) o lump en openedAt (resto / HyperEVM).
   const feeCollectsByTok = {}; // k -> [{amount, ts}]
+  const depositsByTok = {};    // k -> [{amount, ts, priceAtTs}]  top-ups al pool = candidatos a COMPOUND
   for (const p of positions) {
     if (!p._feeAmtByToken) {
       const m = {};
@@ -2770,6 +2786,23 @@ async function enrichRealizableFeesEVM(owner) {
       for (const addr in p._feeAmtByToken) collects.push({ addr, amount: p._feeAmtByToken[addr], ts });
     }
     for (const c of collects) (feeCollectsByTok[`${p.chainKey}:${c.addr}`] = feeCollectsByTok[`${p.chainKey}:${c.addr}`] || []).push({ amount: c.amount, ts: c.ts });
+    // Depósitos al pool (top-ups) por token → candidatos a COMPOUND. Se EXCLUYE el de
+    // apertura (i=0, mint): no puede ser compound (aún no había fees que reinvertir).
+    let _deps = [];
+    if (p._rpcEvents && p._rpcEvents.length) {
+      const _d0 = Number(p.token0?.decimals || 0), _d1 = Number(p.token1?.decimals || 0);
+      const incs = p._rpcEvents.filter((e) => e.type === "inc").sort((a, b) => a.ts - b.ts);
+      for (let i = 1; i < incs.length; i++) {
+        const e = incs[i];
+        const a0 = Number(e.a0) / 10 ** _d0, a1 = Number(e.a1) / 10 ** _d1;
+        if (a0 > 0 && p.token0?.id) _deps.push({ addr: p.token0.id.toLowerCase(), amount: a0, ts: e.ts });
+        if (a1 > 0 && p.token1?.id) _deps.push({ addr: p.token1.id.toLowerCase(), amount: a1, ts: e.ts });
+      }
+    } else if (p._depEvents && p._depEvents.length) {
+      const ds = [...p._depEvents].sort((a, b) => a.ts - b.ts);
+      for (let i = 1; i < ds.length; i++) _deps.push(ds[i]);
+    }
+    for (const d of _deps) (depositsByTok[`${p.chainKey}:${d.addr}`] = depositsByTok[`${p.chainKey}:${d.addr}`] || []).push({ amount: d.amount, ts: d.ts });
   }
   // 3) Swaps token→stable por chain (solo con blockscoutApi)
   const chains = [...new Set(positions.map((p) => p.chainKey))];
@@ -2786,6 +2819,34 @@ async function enrichRealizableFeesEVM(owner) {
     const sw = await fetchOwnerSwapsEVM(chainKey, owner, feeSet).catch(() => ({}));
     for (const addr in sw) swapsByTok[`${chainKey}:${addr}`] = sw[addr];
   }));
+  // 3.5) Precio histórico del DÍA de cada depósito (para valorar el COMPOUND al precio de
+  //      ENTONCES, no a spot). Solo tokens NO estables. Subgraph tokenDayDatas + fallback DefiLlama.
+  await Promise.all(chains.map(async (chainKey) => {
+    const need = {}; // token -> Set(días)
+    for (const k in depositsByTok) {
+      if (!k.startsWith(chainKey + ":")) continue;
+      if (_isStableEVMSym(symByTok[k])) continue; // estables a $1: el compound no las distorsiona
+      const addr = k.slice(chainKey.length + 1);
+      for (const d of depositsByTok[k]) (need[addr] = need[addr] || new Set()).add(Math.floor(d.ts / 86400) * 86400);
+    }
+    const toks = Object.keys(need);
+    if (!toks.length) return;
+    const days = [...new Set(toks.flatMap((t) => [...need[t]]))];
+    let prices = await fetchTokenDayPrices(chainKey, toks, days).catch(() => ({}));
+    const complete = toks.every((t) => [...need[t]].every((day) => `${t}:${day}` in prices));
+    if (!complete) {
+      const llama = await fetchDefiLlamaPrices(chainKey, toks, days).catch(() => ({}));
+      for (const kk in llama) if (!(kk in prices)) prices[kk] = llama[kk];
+    }
+    for (const k in depositsByTok) {
+      if (!k.startsWith(chainKey + ":")) continue;
+      const addr = k.slice(chainKey.length + 1);
+      for (const d of depositsByTok[k]) {
+        const v = prices[`${addr}:${Math.floor(d.ts / 86400) * 86400}`];
+        if (v != null && isFinite(v)) d.priceAtTs = v;
+      }
+    }
+  }));
   // 4) Valor realizable por token
   const realizableByTok = {}, collectedTotalByTok = {};
   for (const k in feeCollectsByTok) {
@@ -2795,6 +2856,7 @@ async function enrichRealizableFeesEVM(owner) {
     else {
       const events = [];
       for (const c of feeCollectsByTok[k]) events.push({ type: "collect", amount: c.amount, ts: c.ts });
+      for (const d of (depositsByTok[k] || [])) events.push({ type: "deposit", amount: d.amount, ts: d.ts, priceAtTs: d.priceAtTs });
       for (const s of (swapsByTok[k] || [])) events.push({ type: "swap", amount: s.amountIn, usdcOut: s.usdcOut, ts: s.ts });
       v = valueRealizableFeesForToken(events, priceByTok[k] || 0);
     }
@@ -2911,6 +2973,7 @@ async function buildPortfolioTimeline(bundles) {
     let costBasis = 0, withdrawn = 0, fees = 0, anyHist = false, anyCur = false;
     const byDay = new Map();
     const feeCollects = []; // cobros reales por token+ts (para el valor realizable)
+    const depEvents = [];   // depósitos por token+ts (top-ups = candidatos a compound, para el valor realizable)
     for (const s of sorted) {
       const ts = Number(s.timestamp);
       const h0 = priceAt(t0, ts), h1 = priceAt(t1, ts);
@@ -2926,6 +2989,9 @@ async function buildPortfolioTimeline(bundles) {
       const dC0 = Math.max(0, c0 - pC0), dC1 = Math.max(0, c1 - pC1);
       if (dC0 > 0 && t0) feeCollects.push({ addr: t0, amount: dC0, ts });
       if (dC1 > 0 && t1) feeCollects.push({ addr: t1, amount: dC1, ts });
+      const dD0 = Math.max(0, d0 - pD0), dD1 = Math.max(0, d1 - pD1);
+      if (dD0 > 0 && t0) depEvents.push({ addr: t0, amount: dD0, ts });
+      if (dD1 > 0 && t1) depEvents.push({ addr: t1, amount: dD1, ts });
       pD0 = d0; pD1 = d1; pW0 = w0; pW1 = w1; pC0 = c0; pC1 = c1;
       const day = Math.floor(ts * 1000 / 86400000) * 86400000;
       byDay.set(day, { depositedUSD: Math.max(0, costBasis - withdrawn), withdrawnUSD: withdrawn, feesUSD: fees });
@@ -2963,6 +3029,7 @@ async function buildPortfolioTimeline(bundles) {
       if (pC1 > 0 && t1) m[t1] = pC1;
       p._feeAmtByToken = m;
     }
+    if (depEvents.length) p._depEvents = depEvents;
     const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, c) => a.ts - c.ts);
     if (points.length) result.push({ posId: p.id, label: `${p.token0.symbol}/${p.token1.symbol}`, points, closed: !!p.closed });
   }
@@ -3718,7 +3785,7 @@ function positionCard(p) {
           (p.rewardKind === "AERO"
             ? `Stakeada en el gauge de Aerodrome: el rendimiento son <b>emisiones de AERO</b>, no trading fees (esas van a los votantes veAERO). "Cobradas" = AERO ya reclamado en esta posición; "Pendientes" = AERO reclamable. Valorado al precio actual de AERO.`
             : p._feesRealizable
-            ? `Fees cobradas a <b>valor realizable</b>: lo que sigues teniendo <b>idle</b> valorado a precio de HOY, más lo que vendiste a USDC valorado al precio del día del swap. "Pendientes" usa precio actual.${p._feesAtCollectUSD != null ? ` <span style="color:#94a3b8">Al cobrarlas valían ${fmtUSD(p._feesAtCollectUSD)}.</span>` : ""}`
+            ? `Fees cobradas a <b>valor realizable</b>: lo que sigues teniendo <b>idle</b> a precio de HOY; lo vendido a USDC y lo <b>recompoundeado</b> al pool, al precio del día (en el compound ya no flota como fee — su recorrido posterior lo cuenta el PnL de la posición). "Pendientes" usa precio actual.${p._feesAtCollectUSD != null ? ` <span style="color:#94a3b8">Al cobrarlas valían ${fmtUSD(p._feesAtCollectUSD)}.</span>` : ""}`
             : p.histBasis === "full"
             ? `Fees cobradas valoradas con el precio de cada token <b>en el momento de cada cobro</b> (snapshots del subgraph): el dinero real ganado, sin que le afecten movimientos de precio posteriores.`
             : p.histBasis === "mixed"
