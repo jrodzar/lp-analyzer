@@ -1503,18 +1503,39 @@ const EV_POOL_MINT = "0x7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16
 // topic_1=tokenId va fino (el topic_2 full-chain peta 500 en thirdweb, así que solo lo usamos para
 // histórico por tokenId). Normaliza a shape Blockscout. Verificado en vivo 2026-06-27.
 const THIRDWEB_CLIENT_ID = "08b4d4d754fe9642fe57cf2be6f3b138";
+// Limitador de concurrencia para thirdweb: su free tier penaliza ráfagas. El histórico en frío
+// dispara posiciones×3 (inc/dec/col) a la vez → MEDIDO en prod: a 6 concurrentes 3/6 hacían TIMEOUT
+// (AbortError a 9s) → histórico INCOMPLETO. El techo sostenible es ~3, así que cap 2 (gate FIFO) es
+// seguro y rápido (~2-4s en frío, sin timeouts) en vez de los ~24s/incompletos de antes.
+const TW_MAX_CONCURRENT = 2;
+let _twActive = 0;
+const _twWaiters = [];
+async function _twAcquire() {
+  if (_twActive >= TW_MAX_CONCURRENT) await new Promise((res) => _twWaiters.push(res));
+  _twActive++;
+}
+function _twRelease() {
+  _twActive--;
+  const next = _twWaiters.shift();
+  if (next) next();
+}
 async function thirdwebGetLogsByTopic1(chainId, contract, topic0, topic1) {
-  const url = `https://${chainId}.insight.thirdweb.com/v1/events/${contract}?filter_topic_0=${topic0}&filter_topic_1=${topic1}&limit=500`;
-  const r = await fetchWithTimeout(url, { headers: { "x-client-id": THIRDWEB_CLIENT_ID } }, { timeoutMs: 9000, tries: 1 });
-  if (!r.ok) throw new Error("thirdweb HTTP " + r.status);
-  const j = await r.json();
-  return (j.data || []).map((e) => ({
-    topics: e.topics || [],
-    data: e.data || "0x",
-    timeStamp: "0x" + Number(e.block_timestamp || 0).toString(16),
-    transactionHash: e.transaction_hash,
-    blockNumber: "0x" + Number(e.block_number || 0).toString(16),
-  }));
+  await _twAcquire();
+  try {
+    const url = `https://${chainId}.insight.thirdweb.com/v1/events/${contract}?filter_topic_0=${topic0}&filter_topic_1=${topic1}&limit=500`;
+    const r = await fetchWithTimeout(url, { headers: { "x-client-id": THIRDWEB_CLIENT_ID } }, { timeoutMs: 9000, tries: 1 });
+    if (!r.ok) throw new Error("thirdweb HTTP " + r.status);
+    const j = await r.json();
+    return (j.data || []).map((e) => ({
+      topics: e.topics || [],
+      data: e.data || "0x",
+      timeStamp: "0x" + Number(e.block_timestamp || 0).toString(16),
+      transactionHash: e.transaction_hash,
+      blockNumber: "0x" + Number(e.block_number || 0).toString(16),
+    }));
+  } finally {
+    _twRelease();
+  }
 }
 
 // thirdweb: tokenIds que el owner RECIBIÓ (Transfer to=owner) desde gteBlock. El topic_2 full-chain
