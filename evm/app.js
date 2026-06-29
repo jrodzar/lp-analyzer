@@ -2018,13 +2018,23 @@ async function fetchAerodromePositions(owner) {
     } catch (e) {}
   }));
   if (!keep.length) return [];
-  let positions = [];
-  try {
-    positions = await fetchPositionsFromRPCDirect(owner, chainKey, {
-      tokenIds: keep, nftMgr: A.nftMgr, factory: A.factory, getPoolSel: SEL_GET_POOL_CL,
-      tag: "_aerodrome", stakedSet, // histórico ON: reconstruye coste/IL/PnL/fees/logs de los eventos del NPM (en pro el getLogs de Base va por proxy+thirdweb, fiable; en main público depende de Blockscout, mejor-esfuerzo con degradado elegante)
-    });
-  } catch (e) { return []; }
+  // El enriquecimiento histórico (getLogs de Base, reconstruye coste/IL/PnL/fees/logs del NPM)
+  // EN FRÍO tarda ~20-30s. Antes esto iba en una sola llamada con histórico ON y, si el race de
+  // 30s del llamador la cortaba, se perdía la CARD ENTERA — síntoma: "Aerodrome no sale en el 1er
+  // análisis, solo en el 2º" (cuando el histórico ya está en _histCache). Para que la card
+  // APAREZCA SIEMPRE en frío: intentamos con histórico (timeout 15s); si no llega, reintentamos
+  // SIN histórico (rápido, solo RPC: valor/rango/AERO). La card sale sin coste/IL/PnL esa vez, y
+  // el histórico —que sigue corriendo y cacheándose en background— sale completo en el siguiente
+  // análisis / auto-refresh. En caliente la 1ª gana el race y la card sale completa de una.
+  const rpcOpts = { tokenIds: keep, nftMgr: A.nftMgr, factory: A.factory, getPoolSel: SEL_GET_POOL_CL, tag: "_aerodrome", stakedSet };
+  let positions = await Promise.race([
+    fetchPositionsFromRPCDirect(owner, chainKey, rpcOpts).catch(() => null),
+    new Promise((res) => setTimeout(() => res(null), 15000)),
+  ]);
+  if (!positions || !positions.length) {
+    positions = await fetchPositionsFromRPCDirect(owner, chainKey, { ...rpcOpts, skipHistory: true }).catch(() => []);
+  }
+  if (!positions.length) return [];
   // AERO: reclamable (gauge.earned) + ya reclamado (transfers AERO del gauge → owner, Alchemy) + precio.
   // Stakeada, el AERO es el rendimiento real (las trading fees van a los votantes), así que lo metemos
   // en fees/APR/PnL en applyAerodromeAeroAsFees() tras el cálculo estándar (que si no lo pisaría).
@@ -4073,11 +4083,12 @@ async function analyze() {
       if (curve.length) state.positions.push(...curve);
     } catch (e) { console.warn("Curve:", e); }
     // Aerodrome Slipstream (CL, fork Uni V3) en Base — incl. stakeadas en gauge.
-    // Acotado a 30s (el race devuelve en cuanto termina, no espera el tope): el enriquecimiento EN
-    // FRÍO (histórico de varias posiciones por thirdweb, 1ª vez sin caché) puede tardar ~20-25s; con
-    // 12s se cortaba y la ficha desaparecía. Si Base va MUY lento, devuelve [] y NO tumba el análisis.
+    // Acotado a 40s (el race devuelve en cuanto termina, no espera el tope) como RED DE SEGURIDAD
+    // por si el descubrimiento se cuelga. El timing fino vive DENTRO de fetchAerodromePositions:
+    // intenta con histórico (15s) y, si no llega, reintenta sin histórico (rápido) para que la card
+    // SIEMPRE aparezca en frío. Peor caso interno ~26s (descubrimiento + 15s + reintento) < 40s.
     try {
-      const aero = await Promise.race([fetchAerodromePositions(addr), new Promise((res) => setTimeout(() => res([]), 30000))]);
+      const aero = await Promise.race([fetchAerodromePositions(addr), new Promise((res) => setTimeout(() => res([]), 40000))]);
       if (aero && aero.length) state.positions.push(...aero);
     } catch (e) { console.warn("Aerodrome:", e); }
     assignColors(state.positions);
