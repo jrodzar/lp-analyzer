@@ -1644,6 +1644,48 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
   return data;
 }
 
+// Subgraph de Aerodrome (Base Full, The Graph) — histórico FIABLE de las posiciones CL/Slipstream,
+// reemplaza el getLogs de Base (Blockscout intermitente / thirdweb free con cap-2) como fuente
+// PRIMARIA del histórico; getLogs queda de fallback. Esquema = Uni V3, importes en DECIMAL
+// (verificado vivo: lag ~4s, trae #72521047 con deposited/withdrawn/collectedFees/mintTs). Es de
+// terceros y sin mantener → SIEMPRE con fallback, nunca dependencia dura. Ver memoria base-getlogs.
+const AERO_SUBGRAPH_ID = "GENunSHWLBXm59mBSgPzQ8metBEp9YDfdqwFr91Av1UM";
+
+// Devuelve {tokenId: <misma forma que fetchPositionHistory>} consultando el subgraph por id_in
+// (SIN filtro de owner: las stakeadas tienen de owner el gauge). Usa la misma ruta que gql():
+// key propia del usuario o el proxy compartido. mintTs = transaction.timestamp del mint. events:[]
+// (Aerodrome no usa la serie: las cobradas/PnL las reescribe applyAerodromeAeroAsFees con el AERO).
+// Lanza si falla → el llamador cae a getLogs por posición.
+async function fetchAeroHistoryFromSubgraph(tokenIds) {
+  if (!AERO_SUBGRAPH_ID || !tokenIds || !tokenIds.length) return {};
+  const ids = [...new Set(tokenIds.map(String))];
+  let url;
+  if (state.apiKey) url = `${GATEWAY}/${state.apiKey}/subgraphs/id/${AERO_SUBGRAPH_ID}`;
+  else if (PROXY_BASE) url = `${PROXY_BASE}/graph/${AERO_SUBGRAPH_ID}`;
+  else return {};
+  const query = `{ positions(first:1000, where:{ id_in:${JSON.stringify(ids)} }){ id depositedToken0 depositedToken1 withdrawnToken0 withdrawnToken1 collectedFeesToken0 collectedFeesToken1 transaction{ timestamp } token0{ decimals } token1{ decimals } } }`;
+  const res = await fetchWithTimeout(url, { method: "POST", headers: { "Content-Type": "application/json", ...proxyAuth(url) }, body: JSON.stringify({ query }) }, { timeoutMs: 8000, tries: 1 });
+  if (!res.ok) throw new Error(`aero-subgraph HTTP ${res.status}`);
+  const j = await res.json();
+  if (j.errors) throw new Error("aero-subgraph: " + j.errors.map((e) => e.message).join("; "));
+  const out = {};
+  for (const p of (j.data && j.data.positions) || []) {
+    out[String(p.id)] = {
+      deposited0: Number(p.depositedToken0) || 0,
+      deposited1: Number(p.depositedToken1) || 0,
+      withdrawn0: Number(p.withdrawnToken0) || 0,
+      withdrawn1: Number(p.withdrawnToken1) || 0,
+      collectedFees0: Number(p.collectedFeesToken0) || 0,
+      collectedFees1: Number(p.collectedFeesToken1) || 0,
+      mintTs: p.transaction && p.transaction.timestamp != null ? Number(p.transaction.timestamp) : null,
+      events: [],
+      dec0: p.token0 && p.token0.decimals != null ? Number(p.token0.decimals) : 18,
+      dec1: p.token1 && p.token1.decimals != null ? Number(p.token1.decimals) : 18,
+    };
+  }
+  return out;
+}
+
 // Construye serie diaria [{ts(ms), depositedUSD, withdrawnUSD, feesUSD}] desde eventos del PositionManager
 function buildTimelineFromEvents(events, dec0, dec1, p0, p1) {
   if (!events || !events.length) return [];
@@ -1770,7 +1812,15 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey, opts = {}) {
   const histories = {};
   const histApi = chain.explorerApi || chain.blockscoutApi;
   if (histApi && !opts.skipHistory) {
+    // Aerodrome (Base): el SUBGRAPH es la fuente PRIMARIA del histórico (fiable/instantáneo,
+    // reemplaza el getLogs de Base flaky que hacía que la card no saliera en frío). getLogs queda
+    // de fallback PER-POSICIÓN: si el subgraph cae o le falta alguna, esa posición usa getLogs.
+    let aeroSub = {};
+    if (opts.tag === "_aerodrome") {
+      aeroSub = await fetchAeroHistoryFromSubgraph(rawPositions.map((r) => r.tokenId)).catch((e) => { console.warn("[aero-subgraph]", e?.message || e); return {}; });
+    }
     await Promise.all(rawPositions.map(async (raw) => {
+      if (aeroSub[String(raw.tokenId)]) { histories[raw.tokenId] = aeroSub[String(raw.tokenId)]; return; }
       const d0 = tokenInfos[raw.token0]?.decimals ?? 18;
       const d1 = tokenInfos[raw.token1]?.decimals ?? 18;
       try { histories[raw.tokenId] = await fetchPositionHistory(histApi, nftMgr, raw.tokenId, d0, d1); }
