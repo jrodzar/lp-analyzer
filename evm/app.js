@@ -2642,7 +2642,7 @@ async function enrichIdleIndicatorsEVM(owner) {
   // 2) Adjuntar entryPx + range30d a los idle no-stable con valor. Nativos
   //    (ETH/HYPE/…) usan clave coingecko: para el rango (no tienen entrada).
   for (const t of idle) {
-    if (_isStableEVMSym(t.symbol) || (t.valueUSD || 0) < 0.25) continue;
+    if (_isStableEVMSym(t.symbol) || (t.valueUSD || 0) < 0.05) continue;
     const addr = (t.address || "").toLowerCase();
     const isNative = !addr || /^0x0+$/.test(addr) || t.native;
     let coinKey = null;
