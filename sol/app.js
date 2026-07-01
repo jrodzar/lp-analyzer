@@ -1924,6 +1924,22 @@ async function reconstructClosedSol(owner, openVaults) {
   const adj = new Map();       // vault -> Set(vaults co-ocurrentes) (grafo de pools)
   const ensure = (v) => { if (!adj.has(v)) adj.set(v, new Set()); return adj.get(v); };
   const liqDiscs = await clmmLiqDiscs();
+  // Atribución por POSICIÓN también aquí: en vez de filtrar por vault compartido (que
+  // borraba la pierna VIEJA de un rebalance mismo-pool → salía a $0 fees), saltamos las
+  // txs que casan una posición ABIERTA (clmmPosMatch) y reconstruimos el resto. Guarda
+  // `trustMatch`: solo si el emparejamiento cubre TODAS las abiertas; si no, fallback al
+  // filtro por vault (sin regresión). `openOrder`: para que el par cerrado herede el
+  // orden de tokens de su abierta hermana (SOL/USDC, no USDC/SOL).
+  const posIdToMint = new Map();
+  const openOrder = new Map();
+  for (const p of (state.positions || [])) {
+    if (p.id) posIdToMint.set(String(p.id), p.mint);
+    if (p.token0 && p.token1 && p.token0.mint && p.token1.mint) openOrder.set([p.token0.mint, p.token1.mint].slice().sort().join("|"), [p.token0.mint, p.token1.mint]);
+  }
+  const _openIdMints = (state.positions || []).filter((p) => p.id).map((p) => p.mint);
+  const _matchedEver = new Set();
+  for (const tx of txs) for (const m of clmmPosMatch(tx, posIdToMint)) _matchedEver.add(m);
+  const trustMatch = _openIdMints.length > 0 && _openIdMints.every((m) => _matchedEver.has(m));
   for (const tx of txs) {
     // Exigir una instrucción REAL de liquidez/fee CLMM (por discriminador). NO fiarse de
     // SRC[tx.source]: Helius etiqueta los SWAPS rutados por Orca/Raydium con source=ORCA/RAYDIUM,
@@ -1931,6 +1947,8 @@ async function reconstructClosedSol(owner, openVaults) {
     // pool Orca aparecía como posición JLP/SOL cerrada). clmmProtoFromTx solo casa increase/
     // decrease/collect/open/close, nunca swap, y además devuelve el protocolo correcto.
     const proto = clmmProtoFromTx(tx, liqDiscs); if (!proto) continue;
+    // Op de una posición ABIERTA → se muestra como abierta, no la reconstruimos.
+    if (trustMatch && clmmPosMatch(tx, posIdToMint).size >= 1) continue;
     const ts = tx.timestamp || 0;
     const isWd = txHasRealWithdraw(tx);
     const txVaults = [];
@@ -1939,7 +1957,7 @@ async function reconstructClosedSol(owner, openVaults) {
       if (t.fromUserAccount === owner) { cp = t.toTokenAccount; dir = "dep"; }
       else if (t.toUserAccount === owner) { cp = t.fromTokenAccount; dir = "recv"; }
       else continue;
-      if (!cp || openVaults.has(cp)) continue;           // de una posición abierta o sin vault
+      if (!cp || (!trustMatch && openVaults.has(cp))) continue; // con trustMatch ya excluimos por tx (arriba)
       let pr = await birdeyePriceAt(t.mint, ts); if (pr == null) pr = priceOf(t.mint);
       events.push({ vault: cp, mint: t.mint, ts, amount: t.tokenAmount || 0, usd: (t.tokenAmount || 0) * (pr || 0), dir, isWd, proto });
       txVaults.push(cp);
@@ -1981,7 +1999,12 @@ async function reconstructClosedSol(owner, openVaults) {
     }
     if (cumFees <= 0.01 && cumDep <= 0.01) continue;     // nada útil que mostrar
     // par = los 2 mints con más volumen
-    const mints = [...rec.mintVol.entries()].sort((a, b) => b[1] - a[1]).map((x) => x[0]).slice(0, 2);
+    let mints = [...rec.mintVol.entries()].sort((a, b) => b[1] - a[1]).map((x) => x[0]).slice(0, 2);
+    // Orden consistente: si el par coincide con una posición ABIERTA, hereda SU orden
+    // (evita "USDC/SOL" cuando la abierta es "SOL/USDC"); si no, stable al final.
+    const _sibOrder = mints.length === 2 ? openOrder.get(mints.slice().sort().join("|")) : null;
+    if (_sibOrder) mints = _sibOrder.filter((m) => mints.includes(m));
+    else mints.sort((a, b) => (SOL_STABLES.has(a) ? 1 : 0) - (SOL_STABLES.has(b) ? 1 : 0));
     const metas = await Promise.all(mints.map((m) => Promise.resolve(getTokenMeta(m)).catch(() => null)));
     const mk = (i) => mints[i] ? { mint: mints[i], symbol: (metas[i] && metas[i].symbol) || shortAddr(mints[i]), decimals: (metas[i] && metas[i].decimals) || 0, priceUSD: null } : { mint: "", symbol: "—", decimals: 0, priceUSD: null };
     out.push({
