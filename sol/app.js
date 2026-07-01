@@ -2356,6 +2356,21 @@ async function birdeyePriceAt(mint, unixSec) {
 
 // Calcula PnL real + IL vs HODL por posición usando precios históricos (Birdeye).
 // Reconstruye el coste base a partir de las transferencias depósito/retiro/fee.
+// Posiciones ABIERTAS (por mint) que una tx referencia por su CUENTA on-chain: la
+// Position PDA (`p.id`) aparece en las `accounts` de las instrucciones CLMM de ESA
+// posición. Base de la atribución por-posición — distingue posiciones del MISMO pool
+// (que comparten vault), imprescindible en rebalances. `posIdToMint`: Map(String(id)→mint).
+function clmmPosMatch(tx, posIdToMint) {
+  const out = new Set();
+  if (!posIdToMint || !posIdToMint.size) return out;
+  const scan = (ix) => {
+    if (!ix || (ix.programId !== ORCA_WHIRLPOOL_PROGRAM && ix.programId !== RAYDIUM_CLMM_PROGRAM)) return;
+    for (const a of (ix.accounts || [])) { const m = posIdToMint.get(String(a)); if (m) out.add(m); }
+  };
+  for (const ix of (tx.instructions || [])) { scan(ix); for (const inner of (ix.innerInstructions || [])) scan(inner); }
+  return out;
+}
+
 async function enrichSolanaPnL(owner) {
   state._beStats = { ok: 0, denied: 0, rate: 0, error: 0, partial: 0 };
   state._yahooFallbackMints = new Set(); // reset por análisis
@@ -2379,16 +2394,7 @@ async function enrichSolanaPnL(owner) {
   const posIdToMint = new Map();
   for (const p of state.positions) if (p.id) posIdToMint.set(String(p.id), p.mint);
   const posFirstTs = new Map(); // mint → ts de apertura real (1ª tx que referencia su cuenta)
-  const txMatchedMints = (tx) => {
-    const out = new Set();
-    if (!posIdToMint.size) return out;
-    const scan = (ix) => {
-      if (!ix || (ix.programId !== ORCA_WHIRLPOOL_PROGRAM && ix.programId !== RAYDIUM_CLMM_PROGRAM)) return;
-      for (const a of (ix.accounts || [])) { const m = posIdToMint.get(String(a)); if (m) out.add(m); }
-    };
-    for (const ix of (tx.instructions || [])) { scan(ix); for (const inner of (ix.innerInstructions || [])) scan(inner); }
-    return out;
-  };
+  const txMatchedMints = (tx) => clmmPosMatch(tx, posIdToMint);
 
   const SRC = new Set(["RAYDIUM", "ORCA", "WHIRLPOOL"]);
   // eventos por posición: { ts, sig, mint, amount(ui), dir: 'in'|'out', mixed }
@@ -3139,6 +3145,14 @@ async function fetchSolanaHistory(owner) {
     for (const v of (p.vaults || [])) if (v) vaultToPos.set(v, { posId: p.mint, label });
   }
   const hasVaultMap = vaultToPos.size > 0;
+  // Atribución POR POSICIÓN (mismo fix que enrichSolanaPnL): la cuenta de posición
+  // (`p.id`) distingue posiciones del MISMO pool (el vault es compartido) → la serie de
+  // una posición rebalanceada arranca en su reopen, no en la fecha vieja.
+  const posIdToMint = new Map(), mintToLabel = new Map();
+  for (const p of (state.positions || [])) {
+    if (p.id) posIdToMint.set(String(p.id), p.mint);
+    mintToLabel.set(p.mint, `${p.token0.symbol}/${p.token1.symbol}`);
+  }
 
   const SRC = new Set(["RAYDIUM", "ORCA", "WHIRLPOOL"]);
   // acumular eventos por posición (o agregado si no hay mapa de vaults)
@@ -3148,12 +3162,21 @@ async function fetchSolanaHistory(owner) {
     perPos.get(posId).events.push({ ts, net, isWd });
   };
   const liqDiscs = await clmmLiqDiscs();
+  // Pre-pass de confianza (igual que enrichSolanaPnL): solo excluimos txs sin match si el
+  // emparejamiento por cuenta cubre TODAS las abiertas; si no, fallback a vault (sin regresión).
+  const matchedEver = new Set();
+  for (const tx of txs) for (const m of clmmPosMatch(tx, posIdToMint)) matchedEver.add(m);
+  const _openIdMints = (state.positions || []).filter((p) => p.id).map((p) => p.mint);
+  const trustExclusion = _openIdMints.length > 0 && _openIdMints.every((m) => matchedEver.has(m));
   for (const tx of txs) {
     // Igual que en enrichSolanaPnL: rescatar txs de liquidez/fee que Helius
     // etiqueta mal (source != RAYDIUM/ORCA) para no perder cobros por la UI nativa.
     if (!SRC.has(tx.source) && !txHasClmmLiqOp(tx, liqDiscs)) continue;
     const ts = tx.timestamp || 0;
     const isWd = txHasRealWithdraw(tx); // retiro real → no tratar como fee aunque sea pequeño
+    const matchedPos = clmmPosMatch(tx, posIdToMint);
+    if (trustExclusion && matchedPos.size === 0 && txHasClmmLiqOp(tx, liqDiscs)) continue; // op de cerrada/otra
+    const forcedPos = matchedPos.size === 1 ? [...matchedPos][0] : null;
     // agregado por tx para el fallback
     let aggSent = 0, aggRecv = 0;
     for (const t of (tx.tokenTransfers || [])) {
@@ -3165,7 +3188,9 @@ async function fetchSolanaHistory(owner) {
       if (t.fromUserAccount === owner) { counterparty = t.toTokenAccount; net = usd; aggSent += usd; }       // depósito
       else if (t.toUserAccount === owner) { counterparty = t.fromTokenAccount; net = -usd; aggRecv += usd; } // recibido (fees/retiro)
       else continue;
-      if (hasVaultMap && counterparty && vaultToPos.has(counterparty)) {
+      if (forcedPos) {
+        pushEvent(forcedPos, mintToLabel.get(forcedPos) || "", ts, net, isWd);
+      } else if (hasVaultMap && counterparty && vaultToPos.has(counterparty)) {
         const pos = vaultToPos.get(counterparty);
         pushEvent(pos.posId, pos.label, ts, net, isWd);
       }
