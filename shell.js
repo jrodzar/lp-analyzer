@@ -680,8 +680,8 @@ function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
     const pools = (poolsByMonthKey.get(r.monthKey) || []).slice().sort((a, b) => b.feesUSD - a.feesUSD);
     const ongoingBadge = r.isOngoing ? ` <span class="text-amber-300 text-[9px]">·en curso</span>` : "";
     const countLbl = pools.length ? `<span class="text-slate-500 text-[9px]">${pools.length} ${pools.length === 1 ? "pool" : "pools"}</span>` : "";
-    const poolRowsHTML = pools.map((p) => `
-      <tr class="${pools.length > 1 ? "border-b border-slate-800/40 last:border-0" : ""}">
+    const poolRowsHTML = pools.map((p, i) => `
+      <tr class="${pools.length > 1 ? "border-b border-slate-800/40 last:border-0" : ""}"${i % 2 ? ' style="background:rgba(255,255,255,0.04)"' : ""}>
         <td class="py-1"><span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full shrink-0" style="background:${p.color || "#64748b"}"></span><span class="text-slate-300">${p.label}</span>${p.venue ? `<span class="text-slate-500 text-[9px]">${p.venue}</span>` : ""}</span></td>
         <td class="py-1 pr-3 text-right font-mono">${heatPill(fmtUSD(p.feesUSD), heatBg(p.feesUSD, refFeesPool, false))}</td>
         <td class="py-1 pr-3 text-right text-slate-400 font-mono">${fmtUSD(p.capitalAvg)}</td>
