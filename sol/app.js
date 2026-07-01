@@ -2036,16 +2036,18 @@ async function reconstructClosedSol(owner, openVaults) {
     rec.events.sort((a, b) => a.ts - b.ts);
     let cumDep = 0, cumWd = 0, cumFees = 0, firstTs = null, lastTs = null;
     const feeAmtByMint = {}, feeCollects = []; // cantidades de fee por token (para el valor realizable)
-    const netAmt = new Map();  // mint → cantidad neta depositada (dep − retiro), para HODL/IL
+    const depAmt = new Map();  // mint → cantidad DEPOSITADA BRUTA (solo depósitos). Para el HODL:
+                               // "si hubieras holdeado lo que metiste". NO el neto (dep−retiro),
+                               // que en una cerrada ≈ 0 → daba HODL ridículo e IL absurdo (+300%).
     const evLog = [];          // eventos clasificados → logs (paridad con las abiertas)
     for (const e of rec.events) {
       if (firstTs == null) firstTs = e.ts;
       lastTs = e.ts; // eventos ordenados asc → el último es el CIERRE
       let cls;
-      if (e.dir === "dep") { cumDep += e.usd; netAmt.set(e.mint, (netAmt.get(e.mint) || 0) + e.amount); cls = "deposit"; }
+      if (e.dir === "dep") { cumDep += e.usd; depAmt.set(e.mint, (depAmt.get(e.mint) || 0) + e.amount); cls = "deposit"; }
       else {
         const r = e.usd;
-        if (e.isWd || r > 0.05 * Math.max(cumDep - cumWd, 1)) { cumWd += r; netAmt.set(e.mint, (netAmt.get(e.mint) || 0) - e.amount); cls = "withdraw"; }
+        if (e.isWd || r > 0.05 * Math.max(cumDep - cumWd, 1)) { cumWd += r; cls = "withdraw"; }
         else {
           cumFees += r; cls = "fee";
           if (e.amount > 0) { feeAmtByMint[e.mint] = (feeAmtByMint[e.mint] || 0) + e.amount; feeCollects.push({ mint: e.mint, amount: e.amount, ts: e.ts }); }
@@ -2058,7 +2060,7 @@ async function reconstructClosedSol(owner, openVaults) {
     // netos, ambos valorados al precio del día que CERRÓ (no el de hoy: la posición ya
     // no existe, así que un movimiento posterior no le afecta). PnL = retirado+fees−dep.
     let hodlUSD = 0;
-    for (const [m, a] of netAmt) { if (a <= 0) continue; let pc = await birdeyePriceAt(m, lastTs); if (pc == null) pc = priceOf(m); hodlUSD += a * pc; }
+    for (const [m, a] of depAmt) { if (a <= 0) continue; let pc = await birdeyePriceAt(m, lastTs); if (pc == null) pc = priceOf(m); hodlUSD += a * pc; }
     const pnlUSD = cumWd + cumFees - cumDep;
     const ilUSD = cumWd - hodlUSD;
     const ilPct = hodlUSD > 0 ? (ilUSD / hodlUSD) * 100 : null;
