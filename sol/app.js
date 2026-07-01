@@ -2369,26 +2369,25 @@ async function enrichSolanaPnL(owner) {
   for (const p of state.positions) for (const v of (p.vaults || [])) if (v) vaultToPos.set(v, p.mint);
   if (!vaultToPos.size) return; // sin atribución por pool no podemos calcular fiable
 
-  // Fecha de apertura POR POSICIÓN. El vault es del POOL (compartido por todas las
-  // posiciones), así que en un REBALANCE dentro del mismo pool el `firstDep` de más
-  // abajo cogía el primer depósito de la posición VIEJA → la ficha marcaba la fecha
-  // original en vez de la del cambio de rango. La CUENTA de posición (`p.id`) sí
-  // aparece SIEMPRE en las instrucciones CLMM de ESA posición; su tx más antigua = su
-  // apertura real. Acumulamos mint→ts_apertura y lo preferimos al firstDep (con
-  // fallback al viejo comportamiento si no casa → sin riesgo de regresión).
+  // Atribución POR POSICIÓN (no por vault). El vault es del POOL (compartido por TODAS
+  // las posiciones del wallet en ese pool), así que un REBALANCE dentro del mismo pool
+  // (close + reopen) mezclaba los flujos de la pierna vieja con la nueva → fecha de
+  // apertura, coste base, PnL, IL y APR todos sesgados. La CUENTA de posición (`p.id`)
+  // sí aparece SIEMPRE en las instrucciones CLMM de ESA posición, así que la usamos para
+  // atribuir cada tx a su posición real. Con fallback a la atribución por vault cuando
+  // no hay ids o la tx no casa exactamente 1 posición → sin regresión.
   const posIdToMint = new Map();
   for (const p of state.positions) if (p.id) posIdToMint.set(String(p.id), p.mint);
-  const posFirstTs = new Map();
-  const scanPosOpen = (tx, ts) => {
-    if (!posIdToMint.size || !ts) return;
+  const posFirstTs = new Map(); // mint → ts de apertura real (1ª tx que referencia su cuenta)
+  const txMatchedMints = (tx) => {
+    const out = new Set();
+    if (!posIdToMint.size) return out;
     const scan = (ix) => {
       if (!ix || (ix.programId !== ORCA_WHIRLPOOL_PROGRAM && ix.programId !== RAYDIUM_CLMM_PROGRAM)) return;
-      for (const a of (ix.accounts || [])) {
-        const m = posIdToMint.get(String(a));
-        if (m && (!posFirstTs.has(m) || ts < posFirstTs.get(m))) posFirstTs.set(m, ts);
-      }
+      for (const a of (ix.accounts || [])) { const m = posIdToMint.get(String(a)); if (m) out.add(m); }
     };
     for (const ix of (tx.instructions || [])) { scan(ix); for (const inner of (ix.innerInstructions || [])) scan(inner); }
+    return out;
   };
 
   const SRC = new Set(["RAYDIUM", "ORCA", "WHIRLPOOL"]);
@@ -2409,6 +2408,15 @@ async function enrichSolanaPnL(owner) {
   // residuo "in" tras netting no es una fee — es la asimetría del rebalance.
   const perPos = new Map();
   const liqDiscs = await clmmLiqDiscs();
+  // Pre-pass de confianza: ¿el emparejamiento por CUENTA cubre TODAS las posiciones
+  // abiertas (con id)? Solo entonces excluimos las txs CLMM que no casan ninguna abierta
+  // (serían de posiciones cerradas/otras). Si alguna abierta no casa NINGUNA tx, el
+  // emparejamiento no es fiable en este wallet (p.ej. apertura fuera de la ventana de
+  // 1000 txs) → NO excluimos, para no perder eventos legítimos (fallback sin regresión).
+  const matchedEver = new Set();
+  for (const tx of txs) for (const m of txMatchedMints(tx)) matchedEver.add(m);
+  const _openIdMints = state.positions.filter((p) => p.id).map((p) => p.mint);
+  const trustExclusion = _openIdMints.length > 0 && _openIdMints.every((m) => matchedEver.has(m));
   for (const tx of txs) {
     // Aceptamos la tx si Helius la etiqueta como Raydium/Orca O si lleva una
     // op de liquidez/fee CLMM (rescata cobros/retiros por la UI nativa que
@@ -2417,7 +2425,16 @@ async function enrichSolanaPnL(owner) {
     const ts = tx.timestamp || 0;
     const sig = tx.signature || "";
     const isWd = txHasRealWithdraw(tx); // retiro real → no tratar como fee aunque sea pequeño
-    scanPosOpen(tx, ts); // registrar la apertura real por CUENTA de posición (fix rebalance mismo-pool)
+    // Atribución POR POSICIÓN: qué posición ABIERTA referencia esta tx por su cuenta.
+    const matchedPos = txMatchedMints(tx);
+    for (const m of matchedPos) if (ts && (!posFirstTs.has(m) || ts < posFirstTs.get(m))) posFirstTs.set(m, ts);
+    // Op CLMM que NO casa ninguna abierta → es de una posición CERRADA/otra (p.ej. la
+    // pierna VIEJA de un rebalance) → no la atribuimos a ninguna abierta (si no, sus
+    // depósitos/fees inflarían la nueva). Sin ids conocidos no filtramos (fallback vault).
+    if (trustExclusion && matchedPos.size === 0 && txHasClmmLiqOp(tx, liqDiscs)) continue;
+    // Si la tx casa EXACTAMENTE 1 posición abierta, la forzamos (override del vault, que
+    // no distingue posiciones del mismo pool). Si casa >1 o ninguna → cae al vault.
+    const forcedPos = matchedPos.size === 1 ? [...matchedPos][0] : null;
     // clave (posId+mint) → { mint, posId, net }; net>0 = depósito, net<0 = retiro
     const perTxMint = new Map();
     // por posición, ¿esta tx tuvo flujos in y/o out?
@@ -2427,7 +2444,7 @@ async function enrichSolanaPnL(owner) {
       if (t.fromUserAccount === owner) { counterparty = t.toTokenAccount; signFlow = +1; }    // wallet→pool
       else if (t.toUserAccount === owner) { counterparty = t.fromTokenAccount; signFlow = -1; } // pool→wallet
       else continue;
-      const posId = counterparty && vaultToPos.get(counterparty);
+      const posId = forcedPos || (counterparty && vaultToPos.get(counterparty));
       if (!posId) continue;
       const key = posId + ":" + t.mint;
       const cur = perTxMint.get(key) || { mint: t.mint, posId, net: 0 };
