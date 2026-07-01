@@ -3433,7 +3433,10 @@ function renderHistorico() {
         const venue = venueByPosId.get(String(s.posId)) || venueByLabel.get(s.label) || "";
         const color = venueColor(venue) || venueColor(s.label) || "#64748b";
         for (const m of computeMonthlyAPRs(s.points)) {
-          if (!(m.feesUSD > 0)) continue;
+          // Requiere capital > 0 ese mes: una posición ya CERRADA arrastra ruido
+          // mínimo de fees con capital ~0 → se mostraba con "$0 / APR —". Así cada
+          // pool aparece solo hasta el mes en que se cerró, sin meses fantasma.
+          if (!(m.feesUSD > 0) || !(m.capitalAvg > 1)) continue;
           if (!poolsByMonth.has(m.monthKey)) poolsByMonth.set(m.monthKey, []);
           poolsByMonth.get(m.monthKey).push({ label: s.label, venue, color, feesUSD: m.feesUSD, capitalAvg: m.capitalAvg, apr: m.apr });
         }

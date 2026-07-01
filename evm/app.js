@@ -471,10 +471,10 @@ function encodeInt24Padded(n) {
 
 // eth_call resiliente: acepta un RPC (string) o una lista (rota entre ellos) y
 // reintenta con backoff ante fallos transitorios (429 / 5xx / red).
-async function rpcEthCall(rpcOrList, to, data) {
+async function rpcEthCall(rpcOrList, to, data, blockTag) {
   const rpcs = Array.isArray(rpcOrList) ? rpcOrList.filter(Boolean) : [rpcOrList];
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const body = JSON.stringify({ jsonrpc: "2.0", method: "eth_call", params: [{ to, data }, "latest"], id: 1 });
+  const body = JSON.stringify({ jsonrpc: "2.0", method: "eth_call", params: [{ to, data }, blockTag || "latest"], id: 1 });
   let lastErr;
   for (const rpc of rpcs) {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -539,10 +539,10 @@ const SEL_CONVERT_TO_ASSETS = "0x07a2d13a"; // convertToAssets(uint256)
 const SEL_ASSET             = "0x38d52e0f"; // asset()
 
 // eth_call probando varios RPC hasta que uno responda (resiliencia ante rate limit)
-async function rpcCallFallback(rpcs, to, data) {
+async function rpcCallFallback(rpcs, to, data, blockTag) {
   let lastErr;
   for (const rpc of rpcs) {
-    try { return await rpcEthCall(rpc, to, data); }
+    try { return await rpcEthCall(rpc, to, data, blockTag); }
     catch (e) { lastErr = e; }
   }
   throw lastErr || new Error("todos los RPC fallaron");
@@ -694,25 +694,97 @@ async function fetchLendingHistory(apiBase, vault, owner, dec, force = false) {
   return data;
 }
 
-// Serie diaria del lending: capital aportado por eventos + interés repartido linealmente
-function buildLendingTimeline(events, gainsUSD, nowSec) {
+// Serie del lending/curve por meses. Dos reconstrucciones:
+//  · buildLendingTimelineSpread — reparte el interés TOTAL actual PROPORCIONAL al tiempo en cada
+//    mes activo (puntos en cada evento + fin de mes + hoy). Estimación lineal, instantánea; la usa
+//    Curve y es el fallback del lending. Arregla el bug de "amontonar el interés en el último
+//    evento" (que hacía que un mes saliera y el siguiente desapareciera).
+//  · buildLendingTimelineExact — para vaults ERC-4626 (Revert Lend): lee el valor REAL de la
+//    posición en cada frontera de mes vía archive eth_call (convertToAssets(balanceOf@block)) →
+//    interés real por mes. Cae a Spread si no hay archive (solo Base es gratis; arb/eth podan).
+function _lendCums(sorted, tsSec) {
+  let dep = 0, wth = 0;
+  for (const e of sorted) if (e.ts <= tsSec) { if (e.type === "dep") dep += e.amt; else wth += e.amt; }
+  return { dep, wth };
+}
+function _lendMonthEnds(firstTsSec, nowSec) {
+  const res = [];
+  const d = new Date(firstTsSec * 1000);
+  let y = d.getUTCFullYear(), mo = d.getUTCMonth();
+  const now = new Date(nowSec * 1000), ny = now.getUTCFullYear(), nmo = now.getUTCMonth();
+  let guard = 0;
+  while ((y < ny || (y === ny && mo < nmo)) && guard++ < 72) {
+    res.push(Math.floor(Date.UTC(y, mo + 1, 1) / 1000) - 1); // último segundo del mes (y, mo)
+    if (++mo > 11) { mo = 0; y++; }
+  }
+  return res;
+}
+const _lendBlockCache = new Map();
+async function _lendBlockAt(chain, tsSec) {
+  const key = chain + ":" + tsSec;
+  if (_lendBlockCache.has(key)) return _lendBlockCache.get(key);
+  let hex = null;
+  try {
+    const r = await fetch(`https://coins.llama.fi/block/${chain}/${tsSec}`);
+    if (r.ok) { const j = await r.json(); if (j && typeof j.height === "number") hex = "0x" + j.height.toString(16); }
+  } catch (e) { /* sin bloque → el caller cae a Spread */ }
+  _lendBlockCache.set(key, hex);
+  return hex;
+}
+function buildLendingTimelineSpread(events, gainsUSD, nowSec) {
   if (!events || !events.length) return [];
   const sorted = [...events].sort((a, b) => a.ts - b.ts);
   const firstTs = sorted[0].ts;
   const span = Math.max(1, nowSec - firstTs);
-  let net = 0;
-  const byDay = new Map();
-  for (const e of sorted) {
-    net += e.type === "dep" ? e.amt : -e.amt;
-    const frac = (e.ts - firstTs) / span;
-    const day = Math.floor((e.ts * 1000) / 86400000) * 86400000;
-    byDay.set(day, { depositedUSD: net, withdrawnUSD: 0, feesUSD: (gainsUSD || 0) * frac });
+  const byTs = new Map();
+  const add = (tsSec, tsMs) => {
+    const c = _lendCums(sorted, tsSec);
+    const frac = Math.min(1, Math.max(0, (tsSec - firstTs) / span));
+    byTs.set(tsMs, { ts: tsMs, depositedUSD: Math.max(0, c.dep - c.wth), withdrawnUSD: 0, feesUSD: (gainsUSD || 0) * frac });
+  };
+  for (const e of sorted) add(e.ts, Math.floor((e.ts * 1000) / 86400000) * 86400000);
+  for (const endSec of _lendMonthEnds(firstTs, nowSec)) add(endSec, endSec * 1000);
+  const todayMs = Math.floor((nowSec * 1000) / 86400000) * 86400000;
+  const cNow = _lendCums(sorted, nowSec);
+  byTs.set(todayMs, { ts: todayMs, depositedUSD: Math.max(0, cNow.dep - cNow.wth), withdrawnUSD: 0, feesUSD: gainsUSD || 0 });
+  return [...byTs.values()].sort((a, b) => a.ts - b.ts);
+}
+async function buildLendingTimelineExact(chain, rpcs, vault, owner, dec, events, priceUSD, gainsUSD, nowSec) {
+  if (!events || !events.length) return [];
+  const sorted = [...events].sort((a, b) => a.ts - b.ts);
+  const firstTs = sorted[0].ts;
+  try {
+    const ownerArg = encodeAddr32(owner);
+    const ends = _lendMonthEnds(firstTs, nowSec);
+    const isEnd = new Set(ends);
+    const tsSet = new Set(ends);
+    for (const e of sorted) if (e.ts < nowSec) tsSet.add(e.ts);
+    const tsList = [...tsSet].sort((a, b) => a - b);
+    if (tsList.length > 48) throw new Error("demasiadas fronteras"); // seguridad → Spread
+    const parts = await Promise.all(tsList.map(async (tsSec) => {
+      const blk = await _lendBlockAt(chain, tsSec);
+      if (!blk) throw new Error("sin bloque");
+      const shares = decU(await rpcCallFallback(rpcs, vault, "0x70a08231" + ownerArg, blk), 0);
+      let valueUSD = 0;
+      if (shares > 0n) {
+        const vHex = await rpcCallFallback(rpcs, vault, SEL_CONVERT_TO_ASSETS + shares.toString(16).padStart(64, "0"), blk);
+        valueUSD = (Number(decU(vHex, 0)) / 10 ** dec) * priceUSD;
+      }
+      const c = _lendCums(sorted, tsSec);
+      const tsMs = isEnd.has(tsSec) ? tsSec * 1000 : Math.floor((tsSec * 1000) / 86400000) * 86400000;
+      return { ts: tsMs, depositedUSD: Math.max(0, (c.dep - c.wth) * priceUSD), withdrawnUSD: 0, feesUSD: Math.max(0, valueUSD + (c.wth - c.dep) * priceUSD) };
+    }));
+    const byTs = new Map();
+    for (const p of parts) byTs.set(p.ts, p);
+    const todayMs = Math.floor((nowSec * 1000) / 86400000) * 86400000;
+    const cNow = _lendCums(sorted, nowSec);
+    byTs.set(todayMs, { ts: todayMs, depositedUSD: Math.max(0, (cNow.dep - cNow.wth) * priceUSD), withdrawnUSD: 0, feesUSD: Math.max(0, gainsUSD || 0) });
+    const outArr = [...byTs.values()].sort((a, b) => a.ts - b.ts);
+    if (outArr.length < 2) throw new Error("insuficiente");
+    return outArr;
+  } catch (e) {
+    return buildLendingTimelineSpread(events, gainsUSD, nowSec);
   }
-  // punto final "hoy" con el interés total actual
-  const today = Math.floor((nowSec * 1000) / 86400000) * 86400000;
-  const lastNet = byDay.size ? [...byDay.values()].pop().depositedUSD : net;
-  byDay.set(today, { depositedUSD: lastNet, withdrawnUSD: 0, feesUSD: gainsUSD || 0 });
-  return [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
 }
 
 // Devuelve posiciones de lending (una por red con saldo) para un owner
@@ -964,7 +1036,7 @@ async function fetchRevertLending(owner) {
         openedAt = h.firstTs;
         ageDays = openedAt ? Math.max((now - openedAt) / 86400, 1 / 24) : null;
         apr = (depositedUSD > 0 && ageDays) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
-        timelineSeries = buildLendingTimeline(h.events, gainsUSD, now);
+        timelineSeries = await buildLendingTimelineExact(chainKey, c.rpcs, c.vault, owner, dec, h.events, priceUSD, gainsUSD, now);
       }
       return {
         _lending: true, chainKey, chainName: c.name, vault: c.vault, asset: symbol, assetAddr, decimals: dec, owner,
@@ -1123,7 +1195,7 @@ async function fetchCurvePositions(owner) {
           position.feesUSD = position.gainsUSD;
           position.pnlUSD = position.gainsUSD;
           position.hodlUSD = net;
-          position.timelineSeries = buildLendingTimeline(h.events, position.gainsUSD, now);
+          position.timelineSeries = buildLendingTimelineSpread(h.events, position.gainsUSD, now);
         }
       } catch (e) {}
       // CRV reclamable (solo stakeado) — gauge.claimable_tokens(owner)
