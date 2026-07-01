@@ -3282,7 +3282,12 @@ async function fetchSolanaHistory(owner) {
       else continue;
       if (forcedPos) {
         pushEvent(forcedPos, mintToLabel.get(forcedPos) || "", ts, net, isWd);
-      } else if (hasVaultMap && counterparty && vaultToPos.has(counterparty)) {
+      } else if (!trustExclusion && hasVaultMap && counterparty && vaultToPos.has(counterparty)) {
+        // Fallback por vault SOLO sin trustExclusion (comportamiento anterior). CON
+        // trustExclusion las txs sin match son de posiciones CERRADAS: no se fusionan
+        // aquí (el vault del pool es compartido con la abierta hermana → inflaba sus
+        // fees al colar el retiro de principal troceado como fee). Se reconstruyen por
+        // separado desde su _eventLog al final (aislado, misma base que las fichas).
         const pos = vaultToPos.get(counterparty);
         pushEvent(pos.posId, pos.label, ts, net, isWd);
       }
@@ -3314,6 +3319,29 @@ async function fetchSolanaHistory(owner) {
     }
     const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
     if (points.length) series.push({ posId, label: rec.label, points });
+  }
+  // Series de las posiciones CERRADAS reconstruidas: derivadas de su _eventLog ya
+  // clasificado por reconstructClosedSol (cada pierna aislada en su componente, con su
+  // propio cumDep → el retiro de principal se clasifica bien como retiro, no como fee).
+  // Reutilizar esa clasificación garantiza que el Histórico cuadre con las fichas por
+  // construcción (mismas fees "al cobrar"). Solo con trustExclusion; si no, las cerradas
+  // ya se capturaron por vault en el bucle de arriba (comportamiento anterior, sin regresión).
+  if (trustExclusion) {
+    for (const p of (state.positions || [])) {
+      if (!p.closed || !Array.isArray(p._eventLog) || !p._eventLog.length) continue;
+      const label = `${p.token0.symbol}/${p.token1.symbol}`;
+      let cD = 0, cW = 0, cF = 0;
+      const byDay = new Map();
+      for (const e of p._eventLog) { // ya en orden ascendente por ts
+        if (e.cls === "deposit") cD += e.usd;
+        else if (e.cls === "withdraw") cW += e.usd;
+        else if (e.cls === "fee") cF += e.usd;
+        const day = Math.floor((e.ts * 1000) / 86400000) * 86400000;
+        byDay.set(day, { depositedUSD: Math.max(0, cD - cW), withdrawnUSD: cW, feesUSD: cF });
+      }
+      const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
+      if (points.length) series.push({ posId: p.mint, label, points });
+    }
   }
   return series;
 }
