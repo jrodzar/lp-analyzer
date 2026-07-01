@@ -731,6 +731,14 @@ async function _lendBlockAt(chain, tsSec) {
   _lendBlockCache.set(key, hex);
   return hex;
 }
+const _lendValCache = new Map(); // chain:vault:owner:block -> valor en assets (histórico INMUTABLE → ahorra CU de Alchemy)
+// RPCs con archive para leer estado histórico: Base = RPC oficial (archive gratis); arb/eth = Alchemy
+// (los RPCs públicos de arb/eth podan el estado). Alchemy va con la key domain-allowlisted.
+function _lendArchiveRpcs(chainKey, fallbackRpcs) {
+  const alch = ALCHEMY_URL[chainKey];
+  if (chainKey === "base") return ["https://mainnet.base.org", alch].filter(Boolean);
+  return alch ? [alch] : (fallbackRpcs || []);
+}
 function buildLendingTimelineSpread(events, gainsUSD, nowSec) {
   if (!events || !events.length) return [];
   const sorted = [...events].sort((a, b) => a.ts - b.ts);
@@ -761,15 +769,22 @@ async function buildLendingTimelineExact(chain, rpcs, vault, owner, dec, events,
     for (const e of sorted) if (e.ts < nowSec) tsSet.add(e.ts);
     const tsList = [...tsSet].sort((a, b) => a - b);
     if (tsList.length > 48) throw new Error("demasiadas fronteras"); // seguridad → Spread
+    const archiveRpcs = _lendArchiveRpcs(chain, rpcs);
     const parts = await Promise.all(tsList.map(async (tsSec) => {
       const blk = await _lendBlockAt(chain, tsSec);
       if (!blk) throw new Error("sin bloque");
-      const shares = decU(await rpcCallFallback(rpcs, vault, "0x70a08231" + ownerArg, blk), 0);
-      let valueUSD = 0;
-      if (shares > 0n) {
-        const vHex = await rpcCallFallback(rpcs, vault, SEL_CONVERT_TO_ASSETS + shares.toString(16).padStart(64, "0"), blk);
-        valueUSD = (Number(decU(vHex, 0)) / 10 ** dec) * priceUSD;
+      const vkey = chain + ":" + vault + ":" + owner + ":" + blk;
+      let valueAsset = _lendValCache.get(vkey);
+      if (valueAsset === undefined) {
+        const shares = decU(await rpcCallFallback(archiveRpcs, vault, "0x70a08231" + ownerArg, blk), 0);
+        valueAsset = 0;
+        if (shares > 0n) {
+          const vHex = await rpcCallFallback(archiveRpcs, vault, SEL_CONVERT_TO_ASSETS + shares.toString(16).padStart(64, "0"), blk);
+          valueAsset = Number(decU(vHex, 0)) / 10 ** dec;
+        }
+        _lendValCache.set(vkey, valueAsset);
       }
+      const valueUSD = valueAsset * priceUSD;
       const c = _lendCums(sorted, tsSec);
       const tsMs = isEnd.has(tsSec) ? tsSec * 1000 : Math.floor((tsSec * 1000) / 86400000) * 86400000;
       return { ts: tsMs, depositedUSD: Math.max(0, (c.dep - c.wth) * priceUSD), withdrawnUSD: 0, feesUSD: Math.max(0, valueUSD + (c.wth - c.dep) * priceUSD) };
@@ -1650,7 +1665,11 @@ async function rpcBlockNumber(rpcOrList) {
 // herramienta para "todo lo de una address" (NFTs recibidos = detección; USDC owner↔vault = lending).
 // Key PÚBLICA (allowlist de dominio en alchemy.com). Pagina por pageKey. Verificado en vivo 2026-06-28.
 const ALCHEMY_KEY = "BdP2kXDexCf9CnXs5UL2f";
-const ALCHEMY_URL = { base: "https://base-mainnet.g.alchemy.com/v2/" + ALCHEMY_KEY };
+const ALCHEMY_URL = {
+  base:     "https://base-mainnet.g.alchemy.com/v2/" + ALCHEMY_KEY,
+  arbitrum: "https://arb-mainnet.g.alchemy.com/v2/" + ALCHEMY_KEY,
+  ethereum: "https://eth-mainnet.g.alchemy.com/v2/" + ALCHEMY_KEY,
+};
 async function alchemyTransfers(chainKey, params) {
   const url = ALCHEMY_URL[chainKey];
   if (!url) return null;
