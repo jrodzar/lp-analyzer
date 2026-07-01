@@ -3298,8 +3298,17 @@ async function fetchSolanaHistory(owner) {
     }
   }
 
+  // Posiciones con `_eventLog` ya clasificado (enrichSolanaPnL para ABIERTAS,
+  // reconstructClosedSol para CERRADAS): su serie se deriva de ESE log → el Histórico
+  // usa la MISMA clasificación que las fichas y cuadra por construcción (evita la
+  // heurística más burda del bucle raw, que colaba reembolsos/mixtos como fees). Solo
+  // con trustExclusion; si no, todo va por el bucle raw (fallback, sin regresión).
+  const eventLogMints = trustExclusion
+    ? new Set((state.positions || []).filter((p) => Array.isArray(p._eventLog) && p._eventLog.length).map((p) => p.mint))
+    : new Set();
   const series = [];
   for (const [posId, rec] of perPos) {
+    if (eventLogMints.has(posId)) continue; // se construye desde su _eventLog (abajo)
     rec.events.sort((a, b) => a.ts - b.ts);
     let cumDep = 0, cumWd = 0, cumFees = 0;
     const byDay = new Map();
@@ -3320,22 +3329,23 @@ async function fetchSolanaHistory(owner) {
     const points = [...byDay.entries()].map(([ts, v]) => ({ ts, ...v })).sort((a, b) => a.ts - b.ts);
     if (points.length) series.push({ posId, label: rec.label, points });
   }
-  // Series de las posiciones CERRADAS reconstruidas: derivadas de su _eventLog ya
-  // clasificado por reconstructClosedSol (cada pierna aislada en su componente, con su
-  // propio cumDep → el retiro de principal se clasifica bien como retiro, no como fee).
+  // Series de posiciones (ABIERTAS y CERRADAS) con `_eventLog`: derivadas de ese log ya
+  // clasificado (enrichSolanaPnL las abiertas, reconstructClosedSol las cerradas — cada
+  // pierna aislada, con su propio cumDep → el retiro se clasifica bien como retiro, no fee).
   // Reutilizar esa clasificación garantiza que el Histórico cuadre con las fichas por
   // construcción (mismas fees "al cobrar"). Solo con trustExclusion; si no, las cerradas
   // ya se capturaron por vault en el bucle de arriba (comportamiento anterior, sin regresión).
   if (trustExclusion) {
     for (const p of (state.positions || [])) {
-      if (!p.closed || !Array.isArray(p._eventLog) || !p._eventLog.length) continue;
+      if (!Array.isArray(p._eventLog) || !p._eventLog.length) continue;
       const label = `${p.token0.symbol}/${p.token1.symbol}`;
       let cD = 0, cW = 0, cF = 0;
       const byDay = new Map();
       for (const e of p._eventLog) { // ya en orden ascendente por ts
         if (e.cls === "deposit") cD += e.usd;
-        else if (e.cls === "withdraw") cW += e.usd;
+        else if (e.cls === "refund (mixed)") cD -= e.usd;  // Orca devuelve sobrante → reduce coste
         else if (e.cls === "fee") cF += e.usd;
+        else if (typeof e.cls === "string" && e.cls.indexOf("withdraw") === 0) cW += e.usd; // withdraw | withdraw (mixed)
         const day = Math.floor((e.ts * 1000) / 86400000) * 86400000;
         byDay.set(day, { depositedUSD: Math.max(0, cD - cW), withdrawnUSD: cW, feesUSD: cF });
       }
