@@ -1559,6 +1559,13 @@ function reconstructedCard(p) {
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3";
   el.style.borderLeft = "3px solid #a78bfa";
   el.dataset.reconstructed = "1";
+  const fmtDay = (ts) => ts ? new Date(ts * 1000).toISOString().slice(0, 10) : null;
+  const realId = p.mint && !String(p.mint).startsWith("recon-");
+  const hasWp = p.whirlpool && !String(p.whirlpool).startsWith("recon-");
+  // Solo mostramos PnL/IL/coste si capturamos depósito Y retiro (histórico completo);
+  // si no (apertura/cierre fuera de la ventana ~1000 txs), evitamos números que no cuadran.
+  const hasMoney = (p.depositedUSD || 0) > 0.01 && (p.withdrawnUSD || 0) > 0.01;
+  const hasRange = p.tickLower != null && p.tickUpper != null;
   el.innerHTML = `
     <div class="flex items-start justify-between gap-2">
       <div class="min-w-0">
@@ -1567,20 +1574,64 @@ function reconstructedCard(p) {
           <span class="text-[11px] uppercase tracking-wide text-slate-400">${proto.name}</span>
         </div>
         <div class="font-semibold mt-0.5 flex items-center gap-1.5 min-w-0"><span class="truncate">${p.token0.symbol} / ${p.token1.symbol}</span>${poolPairChartHTML(p)}</div>
+        ${(() => {
+          const parts = [];
+          if (p.feeTier != null) parts.push(`fee ${p.feeTier.toFixed(2)}%`);
+          const o = fmtDay(p.openedAt), cl = fmtDay(p.closedAt);
+          if (o && cl) parts.push(`abierta ${o} · cerrada ${cl} (${Math.round(p.ageDays || 0)}d)`);
+          else if (cl) parts.push(`cerrada ${cl}`);
+          return parts.length ? `<div class="text-[11px] text-slate-400">${parts.join(" · ")}</div>` : "";
+        })()}
       </div>
       <div class="flex flex-col items-end gap-1 shrink-0">
         <span class="chip bg-slate-700 text-slate-300">cerrada</span>
-        <span class="chip bg-violet-500/15 text-violet-300 border border-violet-500/30" title="Posición reconstruida desde el histórico de transacciones on-chain (el NFT se quemó al cerrar). Importes APROXIMADOS: fees vs retiros por heurística y precios históricos por día.">≈ reconstruida</span>
+        <span class="chip bg-violet-500/15 text-violet-300 border border-violet-500/30" title="Posición reconstruida desde el histórico de transacciones on-chain (el NFT se quemó al cerrar). Importes REALIZADOS y APROXIMADOS: fees vs retiros por heurística y precios históricos por día.">≈ reconstruida</span>
       </div>
     </div>
-    <div class="bg-slate-950/40 rounded-lg p-2 text-xs">
-      ${infoToggle(
-        `<span class="text-[10px] uppercase tracking-wide text-slate-500">Fees cobradas (valor actual, aprox.)</span>`,
-        `Valor ACTUAL de las fees cobradas: lo retenido <b>idle</b> a precio de hoy, más lo vendido a USDC al precio del día del swap.${p._feesAtCollectUSD != null ? ` <span style="color:#94a3b8">Al cobrarlas valían ${fmtUSD(p._feesAtCollectUSD)}.</span>` : ""}`
-      )}
-      <div class="font-semibold text-emerald-400">${fmtUSD(p.feesCollectedUSD || 0)}</div>
+
+    ${hasRange ? rangeBarHTML(p.tickLower, p.tickUpper, p.tick, p.token0.decimals, p.token1.decimals, false, true, p.token0.symbol, p.token1.symbol) : ""}
+
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-500">Retirado (al cierre)</div>
+        <div class="font-semibold">${fmtUSD(p.withdrawnUSD || 0)}</div>
+        <div class="text-[10px] text-slate-500 mt-0.5">posición cerrada · sin saldo vivo</div>
+      </div>
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        ${infoToggle(
+          `<span class="text-[10px] uppercase tracking-wide text-slate-500">Fees cobradas</span>`,
+          `Valor de las fees cobradas (aprox.): lo retenido <b>idle</b> a precio de hoy más lo vendido a USDC al precio del día.${p._feesAtCollectUSD != null ? ` <span style="color:#94a3b8">Al cobrarlas: ${fmtUSD(p._feesAtCollectUSD)}.</span>` : ""}`
+        )}
+        <div class="font-semibold text-emerald-400">${fmtUSD(p.feesCollectedUSD || 0)}</div>
+      </div>
+      ${hasMoney ? `
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL</span>`, `IL REALIZADO (aprox.): lo que extrajiste al cerrar frente a haber mantenido (HODL) los tokens depositados, ambos a precios del cierre. No incluye gas.`)}
+        <div class="font-semibold ${pnlColor(p.ilUSD)}">${fmtUSD(p.ilUSD)}</div>
+        <div class="text-[10px] ${pnlColor(p.ilUSD)} mt-0.5">${fmtPct(p.ilPct)}</div>
+      </div>
+      <div class="bg-slate-950/40 rounded-lg p-2">
+        ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">PnL neto (realizado)</span>`, `Retirado + fees − depositado. Estimación: fees vs retiros por heurística y precios históricos por día; no incluye gas.`)}
+        <div class="font-semibold ${pnlColor(p.pnlUSD)}">${fmtUSD(p.pnlUSD)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">coste ${fmtUSD(p.depositedUSD)}${p.hodlUSD != null && Math.abs(p.hodlUSD - p.depositedUSD) > 0.01 ? " · HODL " + fmtUSD(p.hodlUSD) : ""}</div>
+      </div>` : ""}
     </div>
-    <div class="text-[10px] text-slate-500">Reconstruida del histórico de transacciones (NFT quemado al cerrar). Fees estimadas por heurística. No se muestran depósitos/retiros: el histórico previo a las últimas transacciones del wallet puede estar incompleto y no cuadrarían.</div>
+
+    <details class="text-xs">
+      <summary class="text-slate-400 hover:text-slate-200">▾ detalles</summary>
+      <div class="mt-2 space-y-1 text-slate-400">
+        ${realId ? `<div>Position NFT: <a href="https://solscan.io/token/${p.mint}" target="_blank" class="font-mono text-slate-300 hover:text-purple-300">${shortAddr(p.mint)}</a> <span class="text-[10px] text-slate-500">(quemado)</span></div>` : ""}
+        ${hasWp ? `<div>Whirlpool: <a href="https://solscan.io/account/${p.whirlpool}" target="_blank" class="font-mono text-slate-300 hover:text-purple-300">${shortAddr(p.whirlpool)}</a></div>` : ""}
+        ${hasRange ? `<div>Rango ticks: ${p.tickLower} → ${p.tickUpper}</div>` : ""}
+        ${hasMoney ? `
+        <div class="pt-1 mt-1 border-t border-slate-800">Depositado (coste): ${fmtUSD(p.depositedUSD)}</div>
+        <div>Retirado: ${fmtUSD(p.withdrawnUSD)} · Fees cobradas: ${fmtUSD(p.feesCollectedUSD)}</div>
+        ${p.hodlUSD != null ? `<div>Valor HODL al cierre: ${fmtUSD(p.hodlUSD)}</div>` : ""}` : ""}
+        <div class="text-[10px] text-slate-500">Reconstruida del histórico on-chain (NFT quemado al cerrar). Importes realizados y aproximados; el histórico previo a las últimas ~1000 txs del wallet puede estar incompleto.</div>
+      </div>
+    </details>
+    ${solEventLogHTML(p)}
+    ${managementFooterHTML(managementLinkSol(p))}
   `;
   return el;
 }
@@ -1983,21 +2034,34 @@ async function reconstructClosedSol(owner, openVaults) {
   const out = [];
   for (const [c, rec] of byComp) {
     rec.events.sort((a, b) => a.ts - b.ts);
-    let cumDep = 0, cumWd = 0, cumFees = 0, firstTs = null;
+    let cumDep = 0, cumWd = 0, cumFees = 0, firstTs = null, lastTs = null;
     const feeAmtByMint = {}, feeCollects = []; // cantidades de fee por token (para el valor realizable)
+    const netAmt = new Map();  // mint → cantidad neta depositada (dep − retiro), para HODL/IL
+    const evLog = [];          // eventos clasificados → logs (paridad con las abiertas)
     for (const e of rec.events) {
       if (firstTs == null) firstTs = e.ts;
-      if (e.dir === "dep") cumDep += e.usd;
+      lastTs = e.ts; // eventos ordenados asc → el último es el CIERRE
+      let cls;
+      if (e.dir === "dep") { cumDep += e.usd; netAmt.set(e.mint, (netAmt.get(e.mint) || 0) + e.amount); cls = "deposit"; }
       else {
         const r = e.usd;
-        if (e.isWd || r > 0.05 * Math.max(cumDep - cumWd, 1)) cumWd += r;
+        if (e.isWd || r > 0.05 * Math.max(cumDep - cumWd, 1)) { cumWd += r; netAmt.set(e.mint, (netAmt.get(e.mint) || 0) - e.amount); cls = "withdraw"; }
         else {
-          cumFees += r;
+          cumFees += r; cls = "fee";
           if (e.amount > 0) { feeAmtByMint[e.mint] = (feeAmtByMint[e.mint] || 0) + e.amount; feeCollects.push({ mint: e.mint, amount: e.amount, ts: e.ts }); }
         }
       }
+      evLog.push({ ts: e.ts, sig: e.sig || "", mint: e.mint, dir: e.dir === "dep" ? "out" : "in", amount: e.amount, usd: e.usd, cls });
     }
     if (cumFees <= 0.01 && cumDep <= 0.01) continue;     // nada útil que mostrar
+    // HODL/IL/PnL REALIZADOS (aprox.): lo extraído (retirado) vs holdear los depósitos
+    // netos, ambos valorados al precio del día que CERRÓ (no el de hoy: la posición ya
+    // no existe, así que un movimiento posterior no le afecta). PnL = retirado+fees−dep.
+    let hodlUSD = 0;
+    for (const [m, a] of netAmt) { if (a <= 0) continue; let pc = await birdeyePriceAt(m, lastTs); if (pc == null) pc = priceOf(m); hodlUSD += a * pc; }
+    const pnlUSD = cumWd + cumFees - cumDep;
+    const ilUSD = cumWd - hodlUSD;
+    const ilPct = hodlUSD > 0 ? (ilUSD / hodlUSD) * 100 : null;
     // par = los 2 mints con más volumen
     let mints = [...rec.mintVol.entries()].sort((a, b) => b[1] - a[1]).map((x) => x[0]).slice(0, 2);
     // Orden consistente: si el par coincide con una posición ABIERTA, hereda SU orden
@@ -2006,7 +2070,7 @@ async function reconstructClosedSol(owner, openVaults) {
     if (_sibOrder) mints = _sibOrder.filter((m) => mints.includes(m));
     else mints.sort((a, b) => (SOL_STABLES.has(a) ? 1 : 0) - (SOL_STABLES.has(b) ? 1 : 0));
     const metas = await Promise.all(mints.map((m) => Promise.resolve(getTokenMeta(m)).catch(() => null)));
-    const mk = (i) => mints[i] ? { mint: mints[i], symbol: (metas[i] && metas[i].symbol) || shortAddr(mints[i]), decimals: (metas[i] && metas[i].decimals) || 0, priceUSD: null } : { mint: "", symbol: "—", decimals: 0, priceUSD: null };
+    const mk = (i) => mints[i] ? { mint: mints[i], symbol: (metas[i] && metas[i].symbol) || shortAddr(mints[i]), decimals: (metas[i] && metas[i].decimals) || 0, priceUSD: priceOf(mints[i]) } : { mint: "", symbol: "—", decimals: 0, priceUSD: null };
     out.push({
       protocol: rec.proto, reconstructed: true, closed: true, inRange: false,
       id: "recon-" + c, mint: "recon-" + c, whirlpool: "",
@@ -2018,8 +2082,11 @@ async function reconstructClosedSol(owner, openVaults) {
       _feesAtCollectUSD: cumFees,      // referencia "al cobrar" (la parte realizable lo sobrescribe)
       _feeAmtByMint: feeAmtByMint,     // cantidades de fee por token → reparto realizable
       _feeCollects: feeCollects,       // cobros {mint,amount,ts} → inventario FIFO wallet
+      _eventLog: evLog,                // logs (paridad con abiertas)
       depositedUSD: cumDep, withdrawnUSD: cumWd,
-      ageDays: firstTs ? Math.max(0, (Date.now() / 1000 - firstTs) / 86400) : 0,
+      hodlUSD, pnlUSD, ilUSD, ilPct,   // realizados (aprox.)
+      openedAt: firstTs, closedAt: lastTs,
+      ageDays: (firstTs && lastTs) ? Math.max(0, (lastTs - firstTs) / 86400) : 0,
       feesA: 0, feesB: 0, pnlBasis: "recon",
     });
   }
