@@ -935,6 +935,29 @@ async function fetchIdleTokensEVM(chainKey, address) {
     }
   } catch (e) { /* best-effort */ }
 
+  // ── HyperEVM: el índice de Hyperscan da saldos POCO FIABLES (verificado en vivo:
+  // USDC 120.92 indexado vs 88.31 on-chain; USD₮0 0.32 vs 0.73 — falla en AMBOS
+  // sentidos y no es retraso del índice: 10 días sin una sola transferencia). El
+  // `balanceOf` por RPC es la verdad → re-leemos y CORREGIMOS el saldo de cada
+  // ERC-20 (el fallback de arriba solo AÑADE los que faltan; esto arregla los que
+  // vienen con un valor equivocado). Read-only, paralelo, gated a hyperevm.
+  if (chainKey === "hyperevm" && tokens.length) {
+    await Promise.all(tokens.map(async (t) => {
+      if (t.native || !t.address || t.address === "0x0000000000000000000000000000000000000000") return;
+      let hex;
+      try { hex = await rpcEthCall(c.rpcUrls || c.rpcUrl, t.address, SEL_BALANCE_OF + encodeAddr32(address)); }
+      catch (e) { return; } // RPC falló → conservamos el valor del índice (mejor algo que nada)
+      if (hex == null || hex === "0x") return;
+      let raw; try { raw = BigInt(hex); } catch (e) { return; }
+      t.balance = bigIntToDecimal(raw, t.decimals);
+      if (t.priceUSD != null) t.valueUSD = t.balance * t.priceUSD; // sin precio aún → lo fija el fallback de precios con el balance YA corregido
+      t._rpcZero = raw === 0n;
+    }));
+    // balanceOf == 0 (y la llamada tuvo éxito) → el índice lo mostraba obsoleto: fuera.
+    for (let i = tokens.length - 1; i >= 0; i--) if (tokens[i]._rpcZero) tokens.splice(i, 1);
+    for (const t of tokens) delete t._rpcZero;
+  }
+
   // Fallback de precios via DefiLlama (1 petición batch para todos los faltantes).
   // Acepta tanto `chain:address` (ERC-20) como `coingecko:slug` (nativo).
   if (missingPrice.length) {
