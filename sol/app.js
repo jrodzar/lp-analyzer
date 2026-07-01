@@ -1987,7 +1987,7 @@ async function reconstructClosedSol(owner, openVaults) {
     if (p.id) posIdToMint.set(String(p.id), p.mint);
     if (p.token0 && p.token1 && p.token0.mint && p.token1.mint) openOrder.set([p.token0.mint, p.token1.mint].slice().sort().join("|"), [p.token0.mint, p.token1.mint]);
   }
-  const _openIdMints = (state.positions || []).filter((p) => p.id).map((p) => p.mint);
+  const _openIdMints = (state.positions || []).filter((p) => p.id && !p.reconstructed).map((p) => p.mint);
   const _matchedEver = new Set();
   for (const tx of txs) for (const m of clmmPosMatch(tx, posIdToMint)) _matchedEver.add(m);
   const trustMatch = _openIdMints.length > 0 && _openIdMints.every((m) => _matchedEver.has(m));
@@ -2513,7 +2513,7 @@ async function enrichSolanaPnL(owner) {
   // 1000 txs) → NO excluimos, para no perder eventos legítimos (fallback sin regresión).
   const matchedEver = new Set();
   for (const tx of txs) for (const m of txMatchedMints(tx)) matchedEver.add(m);
-  const _openIdMints = state.positions.filter((p) => p.id).map((p) => p.mint);
+  const _openIdMints = state.positions.filter((p) => p.id && !p.reconstructed).map((p) => p.mint);
   const trustExclusion = _openIdMints.length > 0 && _openIdMints.every((m) => matchedEver.has(m));
   for (const tx of txs) {
     // Aceptamos la tx si Helius la etiqueta como Raydium/Orca O si lleva una
@@ -3258,7 +3258,7 @@ async function fetchSolanaHistory(owner) {
   // emparejamiento por cuenta cubre TODAS las abiertas; si no, fallback a vault (sin regresión).
   const matchedEver = new Set();
   for (const tx of txs) for (const m of clmmPosMatch(tx, posIdToMint)) matchedEver.add(m);
-  const _openIdMints = (state.positions || []).filter((p) => p.id).map((p) => p.mint);
+  const _openIdMints = (state.positions || []).filter((p) => p.id && !p.reconstructed).map((p) => p.mint);
   const trustExclusion = _openIdMints.length > 0 && _openIdMints.every((m) => matchedEver.has(m));
   for (const tx of txs) {
     // Igual que en enrichSolanaPnL: rescatar txs de liquidez/fee que Helius
