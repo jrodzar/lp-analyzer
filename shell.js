@@ -676,7 +676,7 @@ function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
   const refFeesAgg = Math.max(0.01, ...shown.map((r) => r.feesUSD || 0));
   const refFeesPool = Math.max(0.01, ...poolList.map((p) => p.feesUSD || 0));
 
-  const rowsHTML = shown.map((r) => {
+  const rowsHTML = shown.map((r, mi) => {
     const pools = (poolsByMonthKey.get(r.monthKey) || []).slice().sort((a, b) => b.feesUSD - a.feesUSD);
     const ongoingBadge = r.isOngoing ? ` <span class="text-amber-300 text-[9px]">·en curso</span>` : "";
     const countLbl = pools.length ? `<span class="text-slate-500 text-[9px]">${pools.length} ${pools.length === 1 ? "pool" : "pools"}</span>` : "";
@@ -701,7 +701,7 @@ function monthlyAprByMonthHTML(aggRows, poolsByMonthKey, opts = {}) {
          </table>`
       : `<div class="text-[10px] text-slate-500 py-1">Sin desglose por pool para este mes (las fees vienen de posiciones sin histórico temporal).</div>`;
     return `
-      <tr class="apr-month-row border-b border-slate-800/50 cursor-pointer hover:bg-slate-800/40" data-apr-month="${r.monthKey}">
+      <tr class="apr-month-row ${mi % 2 ? "apr-zebra " : ""}border-b border-slate-800/50 cursor-pointer hover:bg-slate-800/40" data-apr-month="${r.monthKey}">
         <td class="py-1.5"><span class="inline-flex items-center gap-1.5"><span class="apr-chev text-slate-500 text-[9px]">▸</span><span class="text-slate-200 font-medium whitespace-nowrap">${r.monthLabel}</span>${ongoingBadge}${countLbl}</span></td>
         <td class="py-1.5 pr-3 text-right font-mono">${heatPill(fmtUSD(r.feesUSD), heatBg(r.feesUSD, refFeesAgg, false))}</td>
         <td class="py-1.5 pr-3 text-right text-slate-400 font-mono">${fmtUSD(r.capitalAvg)}</td>
@@ -735,6 +735,14 @@ function installMonthlyAprToggle() {
   const cont = els.histMonthlyApr;
   if (!cont || cont.__aprToggleInstalled) return;
   cont.__aprToggleInstalled = true;
+  // Zebra de las filas-mes: clase de baja especificidad (0,1,0) → el hover
+  // (`hover:bg-slate-800/40` = 0,2,0) la sobreescribe, así el hover sigue vivo.
+  if (!document.getElementById("apr-zebra-style")) {
+    const st = document.createElement("style");
+    st.id = "apr-zebra-style";
+    st.textContent = ".apr-zebra{background:rgba(255,255,255,0.04)}";
+    document.head.appendChild(st);
+  }
   cont.addEventListener("click", (e) => {
     const row = e.target.closest("[data-apr-month]");
     if (!row || !cont.contains(row)) return;
