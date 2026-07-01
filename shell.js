@@ -591,9 +591,13 @@ function computeMonthlyAPRs(points) {
     const capitalAvg = totalSpan > 0
       ? capWeighted / totalSpan
       : mp.reduce((s, p) => s + Math.max(0, (p.depositedUSD || 0) - (p.withdrawnUSD || 0)), 0) / mp.length;
-    const firstDayMs = Math.floor(m.firstTs / 86400000) * 86400000;
-    const lastDayMs = Math.floor(m.lastTs / 86400000) * 86400000;
-    const daysActive = Math.max(1, Math.round((lastDayMs - firstDayMs) / 86400000) + 1);
+    // Días activos del mes = cobertura REAL del mes por la posición (clampada por el primer punto
+    // de la serie = apertura, y el último = cierre/hoy). Antes usaba el span de PUNTOS, que para
+    // timelines dispersos (lending: 1 punto/mes) daba 1 día e inflaba el APR (p.ej. 137%).
+    const _mf = new Date(m.firstTs);
+    const _mStart = Date.UTC(_mf.getUTCFullYear(), _mf.getUTCMonth(), 1);
+    const _mEnd = Date.UTC(_mf.getUTCFullYear(), _mf.getUTCMonth() + 1, 1);
+    const daysActive = Math.max(1, (Math.min(_mEnd, sorted[sorted.length - 1].ts, nowMs) - Math.max(_mStart, sorted[0].ts)) / 86400000);
     const isOngoing = (i === months.length - 1) && (nowMs - m.lastTs < 7 * 86400000);
     const apr = (capitalAvg > 0 && daysActive >= 1) ? (feesMonth / capitalAvg) * (365 / daysActive) * 100 : null;
     result.push({ monthKey: m.key, monthLabel: m.label, feesUSD: feesMonth, capitalAvg, daysActive, daysInMonth: daysInMonth(m.firstTs), apr, isOngoing });
