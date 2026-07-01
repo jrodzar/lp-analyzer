@@ -2369,6 +2369,28 @@ async function enrichSolanaPnL(owner) {
   for (const p of state.positions) for (const v of (p.vaults || [])) if (v) vaultToPos.set(v, p.mint);
   if (!vaultToPos.size) return; // sin atribución por pool no podemos calcular fiable
 
+  // Fecha de apertura POR POSICIÓN. El vault es del POOL (compartido por todas las
+  // posiciones), así que en un REBALANCE dentro del mismo pool el `firstDep` de más
+  // abajo cogía el primer depósito de la posición VIEJA → la ficha marcaba la fecha
+  // original en vez de la del cambio de rango. La CUENTA de posición (`p.id`) sí
+  // aparece SIEMPRE en las instrucciones CLMM de ESA posición; su tx más antigua = su
+  // apertura real. Acumulamos mint→ts_apertura y lo preferimos al firstDep (con
+  // fallback al viejo comportamiento si no casa → sin riesgo de regresión).
+  const posIdToMint = new Map();
+  for (const p of state.positions) if (p.id) posIdToMint.set(String(p.id), p.mint);
+  const posFirstTs = new Map();
+  const scanPosOpen = (tx, ts) => {
+    if (!posIdToMint.size || !ts) return;
+    const scan = (ix) => {
+      if (!ix || (ix.programId !== ORCA_WHIRLPOOL_PROGRAM && ix.programId !== RAYDIUM_CLMM_PROGRAM)) return;
+      for (const a of (ix.accounts || [])) {
+        const m = posIdToMint.get(String(a));
+        if (m && (!posFirstTs.has(m) || ts < posFirstTs.get(m))) posFirstTs.set(m, ts);
+      }
+    };
+    for (const ix of (tx.instructions || [])) { scan(ix); for (const inner of (ix.innerInstructions || [])) scan(inner); }
+  };
+
   const SRC = new Set(["RAYDIUM", "ORCA", "WHIRLPOOL"]);
   // eventos por posición: { ts, sig, mint, amount(ui), dir: 'in'|'out', mixed }
   //
@@ -2395,6 +2417,7 @@ async function enrichSolanaPnL(owner) {
     const ts = tx.timestamp || 0;
     const sig = tx.signature || "";
     const isWd = txHasRealWithdraw(tx); // retiro real → no tratar como fee aunque sea pequeño
+    scanPosOpen(tx, ts); // registrar la apertura real por CUENTA de posición (fix rebalance mismo-pool)
     // clave (posId+mint) → { mint, posId, net }; net>0 = depósito, net<0 = retiro
     const perTxMint = new Map();
     // por posición, ¿esta tx tuvo flujos in y/o out?
@@ -2519,7 +2542,10 @@ async function enrichSolanaPnL(owner) {
     const pendFees = p.feesPendingUSD || 0;
     // antigüedad desde el primer depósito → APR de fees anualizado
     const firstDep = evs.find((e) => e.dir === "out");
-    const openedAt = firstDep ? firstDep.ts : null;
+    // Preferimos la apertura de ESTA posición (por su cuenta on-chain) sobre el 1er
+    // depósito atribuido por vault — que en un rebalance mismo-pool sería el de la
+    // posición vieja. Fallback al firstDep si no se pudo casar la cuenta.
+    const openedAt = posFirstTs.has(p.mint) ? posFirstTs.get(p.mint) : (firstDep ? firstDep.ts : null);
     const ageDays = openedAt ? Math.max((Date.now() / 1000 - openedAt) / 86400, 1 / 24) : null;
     p.depositedUSD = costBasisUSD;
     p.withdrawnUSD = withdrawnUSD;
