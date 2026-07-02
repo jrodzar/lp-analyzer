@@ -3546,6 +3546,8 @@ document.addEventListener("DOMContentLoaded", init);
         tickLower: p.tickLower, tickUpper: p.tickUpper, tick: p.tick,
         dec0: p.token0.decimals, dec1: p.token1.decimals,
         id: String(p.mint || ""),
+        // Aditivos (observación): dirección del pool + chain, para gráficos/OHLCV externos
+        pool: String(p.whirlpool || ""), chainKey: "solana",
       };
     });
   }

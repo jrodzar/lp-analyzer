@@ -4279,6 +4279,7 @@ function toPortfolioItems() {
         apr: typeof p.apr === "number" ? p.apr : null,
         inRange: !p.closed, closed: !!p.closed, reconstructed: !!p.reconstructed,
         id: p.vault || "",
+        chainKey: p.chainKey || "", // aditivo (observación)
       };
     }
     if (p._curve) {
@@ -4290,6 +4291,7 @@ function toPortfolioItems() {
         feesUSD: 0, feesPendingUSD: 0, ilUSD: null, pnlUSD: null, apr: null,
         inRange: true, closed: false, reconstructed: false,
         id: p.poolAddr || "",
+        pool: p.poolAddr || "", chainKey: p.chainKey || "", // aditivos (observación)
       };
     }
     return {
@@ -4308,6 +4310,8 @@ function toPortfolioItems() {
       tickLower: p.tickLower, tickUpper: p.tickUpper, tick: p.tick,
       dec0: p.token0.decimals, dec1: p.token1.decimals,
       id: String(p.nftId || ""),
+      // Aditivos (observación): dirección del pool + chain, para gráficos/OHLCV externos
+      pool: String(p.poolId || ""), chainKey: p.chainKey || "",
     };
   });
 }
