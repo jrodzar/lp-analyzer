@@ -2436,7 +2436,14 @@ async function reconstructBurnedSubgraph(chainKey, owner, openIds) {
     const ethPriceUSD = Number(data.bundles?.[0]?.ethPriceUSD || 0);
     for (const raw of (data.positions || [])) {
       if (!/^0x0+$/.test(String(raw.owner || "").toLowerCase())) continue; // SOLO quemadas (owner 0x0); las vendidas/transferidas tienen otro owner
-      try { const p = enrichPosition(raw, ethPriceUSD, chainKey); p.reconstructed = true; p.closed = true; await freezeClosedSubgraphHistorical(p, chain); out.push(p); } catch (e) {}
+      try {
+        const p = enrichPosition(raw, ethPriceUSD, chainKey); p.reconstructed = true; p.closed = true;
+        await freezeClosedSubgraphHistorical(p, chain);
+        // Quemada ⇒ pendientes 0 POR DEFINICIÓN (el burn del NPM exige tokensOwed=0).
+        // Sin esto quedaban null (el backfill excluye reconstruidas) → la ficha decía "n/d".
+        p.uncollected = { amount0: 0, amount1: 0 }; p.uncollectedUSD = 0; p.feesTotalUSD = p.feesUSD;
+        out.push(p);
+      } catch (e) {}
     }
   }
   if (out.length) console.log(`[evm-recon] ${chainKey}: ${out.length} posición(es) quemada(s) reconstruida(s)`);
@@ -2531,7 +2538,9 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
         token1: { id: a1, symbol: t1.symbol, decimals: t1.decimals, priceUSD: p1 },
         tick: null, tickLower: null, tickUpper: null, feeTier: null,
         amounts: { amount0: 0, amount1: 0 }, liquidity: "0",
-        currentValueUSD: 0, feesUSD, uncollected: null, uncollectedUSD: null,
+        // Quemada ⇒ pendientes 0 POR DEFINICIÓN (burn exige tokensOwed=0); null hacía
+        // que la ficha mostrara "n/d" (el backfill excluye reconstruidas a propósito).
+        currentValueUSD: 0, feesUSD, uncollected: { amount0: 0, amount1: 0 }, uncollectedUSD: 0,
         feesTotalUSD: feesUSD, depositedUSD, withdrawnUSD,
         // cantidades de fees por token (NETAS) → valor realizable (enrichRealizableFeesEVM)
         collectedFees0: hist.collectedFees0, collectedFees1: hist.collectedFees1,
