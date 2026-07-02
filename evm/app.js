@@ -1447,7 +1447,12 @@ async function backfillUncollectedFromRPC(positions, onProgress) {
   const poolGlobalsCache = new Map();   // key: chain|pool → { feeGrowthGlobal0X128, feeGrowthGlobal1X128 }
   let done = 0;
   const tasks = positions
-    .filter((p) => p.uncollected === null && !p.closed && state.chains[p.chainKey]?.rpcUrl)
+    // También las CERRADAS (no reconstruidas): su NFT sigue vivo y puede arrastrar
+    // tokensOwed sin cobrar — antes se saltaban y la ficha mostraba "n/d" en vez del
+    // 0.00 real (o del importe recuperable si se retiró liquidez sin cobrar fees).
+    // Las quemadas/reconstruidas quedan fuera: sin NFT no hay nada que leer (y su
+    // pendiente es 0 por definición — burn exige tokensOwed=0).
+    .filter((p) => p.uncollected === null && !p.reconstructed && state.chains[p.chainKey]?.rpcUrl)
     .map(async (p) => {
       const chain = state.chains[p.chainKey];
       const rpc = chain.rpcUrl;
@@ -4380,7 +4385,7 @@ async function analyzeAddressCore(addr, opts = {}) {
   // números finales). En navegador NO se pide aquí (awaitBackfill=false): lo orquesta
   // analyze() en segundo plano con render, exactamente como siempre.
   if (opts.awaitBackfill && positions.length) {
-    const pendingRPC = positions.filter((p) => p.uncollected === null && !p.closed && state.chains[p.chainKey]?.rpcUrl).length;
+    const pendingRPC = positions.filter((p) => p.uncollected === null && !p.reconstructed && state.chains[p.chainKey]?.rpcUrl).length;
     if (pendingRPC > 0) {
       try { await backfillUncollectedFromRPC(positions, opts.onBackfillTick || (() => {})); } catch (e) { console.warn("backfill:", e); }
     }
@@ -4436,7 +4441,7 @@ async function analyze() {
 
     if (positions.length) {
       // Backfill por RPC de fees no cobradas en chains con tickField scalar
-      const pendingRPC = positions.filter((p) => p.uncollected === null && !p.closed && state.chains[p.chainKey]?.rpcUrl).length;
+      const pendingRPC = positions.filter((p) => p.uncollected === null && !p.reconstructed && state.chains[p.chainKey]?.rpcUrl).length;
       if (pendingRPC > 0) {
         const baseMsg = document.getElementById("status-msg").textContent;
         backfillUncollectedFromRPC(positions, (done) => {
@@ -4558,7 +4563,7 @@ if (HAS_DOM) document.addEventListener("DOMContentLoaded", init);
       Promise.resolve(typeof analyze === "function" ? analyze() : null)
         .then(async () => {
           // Esperar backfill RPC antes de enviar resultado (Arbitrum/Base usan tickField scalar)
-          const needsRPC = (state.positions || []).filter((p) => p.uncollected === null && !p.closed && state.chains[p.chainKey]?.rpcUrl);
+          const needsRPC = (state.positions || []).filter((p) => p.uncollected === null && !p.reconstructed && state.chains[p.chainKey]?.rpcUrl);
           if (needsRPC.length > 0) await backfillUncollectedFromRPC(state.positions).catch(() => {});
           // Snapshots para línea temporal de fees
           let timeline = [];
