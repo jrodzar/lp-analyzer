@@ -316,15 +316,13 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
   // se cachean (TTL corto): son la MAYORÍA de las llamadas y no cambian cada segundo.
   const isBalances = /^v2\/addresses\//.test(extraPath) && !isTransfers;
   const cacheable = isLogs || isTransfers || isBalances;
-  // TTLs SUBIDOS (jun 2026) para recortar ~3× las escrituras KV y no agotar el tope GRATUITO
-  // de 1000 PUT/día del plan free (Cloudflare avisó al superarlo con re-análisis intensivos).
-  // Las escrituras solo ocurren en cache MISS, así que más TTL = menos misses = menos PUT.
-  //   · getLogs Base/BNB (thirdweb): 1h (histórico estable, query cara → mantener caliente).
-  //   · resto getLogs/transfers: 30min (eventos pasados casi inmutables; coste: histórico
-  //     hasta 30min stale — el "pendientes" viene del RPC en vivo, así que no afecta a lo
-  //     accionable).
-  //   · balances/idle: 5min (no cambian segundo a segundo).
-  const cacheTtl = (isLogs && EVM_THIRDWEB_CHAINID[chain]) ? 3600 : (isLogs || isTransfers) ? 1800 : 300;
+  // TTLs ORIGINALES restaurados (jul 2026): el bump ×3 de jun 2026 era un workaround del
+  // tope GRATUITO de KV (1000 PUT/día); con Workers Paid (1M PUT/día, activado 2026-07-02)
+  // ya no hace falta y prima la FRESCURA del histórico (cobros/adds visibles en ≤10min).
+  //   · getLogs Base/BNB (thirdweb): 30min (histórico estable, query cara → mantener caliente).
+  //   · resto getLogs/transfers: 10min (eventos pasados casi inmutables).
+  //   · balances/idle: 2min (no cambian segundo a segundo).
+  const cacheTtl = (isLogs && EVM_THIRDWEB_CHAINID[chain]) ? 1800 : (isLogs || isTransfers) ? 600 : 120;
   const cacheKey = cacheable ? "evm:" + chain + ":" + (await sha256hex(extraPath + search)) : null;
 
   // 1) Caché KV
