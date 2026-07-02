@@ -2085,6 +2085,7 @@ async function reconstructClosedSol(owner, openVaults) {
       _feeAmtByMint: feeAmtByMint,     // cantidades de fee por token → reparto realizable
       _feeCollects: feeCollects,       // cobros {mint,amount,ts} → inventario FIFO wallet
       _eventLog: evLog,                // logs (paridad con abiertas)
+      _vaults: new Set(rec.events.map((e) => e.vault)), // vaults del pool → emparejar con su tx de apertura
       depositedUSD: cumDep, withdrawnUSD: cumWd,
       hodlUSD, pnlUSD, ilUSD, ilPct,   // realizados (aprox.)
       openedAt: firstTs, closedAt: lastTs,
@@ -2092,7 +2093,120 @@ async function reconstructClosedSol(owner, openVaults) {
       feesA: 0, feesB: 0, pnlBasis: "recon",
     });
   }
+  // 2ª fase de la ficha: rango + id del NFT + fee%/tick del pool, desde la tx de
+  // apertura (la cuenta de la posición se quemó, pero la instrucción sigue on-chain).
+  try { await enrichReconWithOpenData(out, txs, owner); } catch (e) { console.warn("[sol-recon] open-data:", e?.message || e); }
   return out;
+}
+
+// ── 2ª fase ficha de cerradas: rango + NFT + pool desde la tx de APERTURA ──────
+// Al cerrar, la cuenta de la posición y el NFT se queman, pero la instrucción
+// open_position* de su apertura sigue on-chain: los TICKS van en los args y el
+// mint del NFT / el pool en las cuentas. Offsets e índices VERIFICADOS con txs
+// reales (memoria orca-open-position-layout + validación en vivo 4/4 contra
+// posiciones abiertas con ticks conocidos). El fee%/tickSpacing/tick actual salen
+// del POOL (sigue vivo): se copian de una posición real hermana del mismo pool si
+// la hay (gratis), si no se lee y decodifica el pool por RPC. Best-effort: si algo
+// falla, los campos quedan null y la ficha no pinta esa parte (guards del render).
+const OPEN_IX_LAYOUTS = [
+  { prog: ORCA_WHIRLPOOL_PROGRAM, name: "open_position",                       off: 9,  mintIdx: 3, poolIdx: 5 },
+  { prog: ORCA_WHIRLPOOL_PROGRAM, name: "open_position_with_metadata",         off: 10, mintIdx: 3, poolIdx: 6 },
+  { prog: ORCA_WHIRLPOOL_PROGRAM, name: "open_position_with_token_extensions", off: 8,  mintIdx: 3, poolIdx: 5 },
+  { prog: RAYDIUM_CLMM_PROGRAM,   name: "open_position",                       off: 8,  mintIdx: 2, poolIdx: 5 },
+  { prog: RAYDIUM_CLMM_PROGRAM,   name: "open_position_v2",                    off: 8,  mintIdx: 2, poolIdx: 5 },
+  { prog: RAYDIUM_CLMM_PROGRAM,   name: "open_position_with_token22_nft",      off: 8,  mintIdx: 2, poolIdx: 4 },
+];
+async function enrichReconWithOpenData(recons, txs, owner) {
+  if (!recons.length || !txs.length) return;
+  const layouts = await Promise.all(OPEN_IX_LAYOUTS.map(async (l) => ({ ...l, disc: await globalDisc(l.name) })));
+  const discEq = (bytes, d) => { for (let i = 0; i < 8; i++) if (bytes[i] !== d[i]) return false; return true; };
+  const i32At = (b, o) => (o + 4 <= b.length) ? (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) : null;
+  const MAXT = 443636; // rango válido de ticks en Orca/Raydium
+  // Identidades de posiciones REALES (abiertas o cerradas-con-NFT): sus aperturas no son de una quemada.
+  const openKeys = new Set();
+  for (const p of (state.positions || [])) if (!p.reconstructed) { if (p.id) openKeys.add(String(p.id)); if (p.mint) openKeys.add(String(p.mint)); }
+  const opens = []; // {ts, proto, tickLower, tickUpper, mint, pool, vaults:Set}
+  for (const tx of txs) {
+    const ts = tx.timestamp || 0;
+    let found = null;
+    const scan = (ix) => {
+      if (found || !ix || (ix.programId !== ORCA_WHIRLPOOL_PROGRAM && ix.programId !== RAYDIUM_CLMM_PROGRAM)) return;
+      let bytes; try { bytes = base58Decode(ix.data || ""); } catch (e) { return; }
+      if (bytes.length < 16) return;
+      for (const l of layouts) {
+        if (l.prog !== ix.programId || !discEq(bytes, l.disc)) continue;
+        const accs = (ix.accounts || []).map(String);
+        if (accs.some((a) => openKeys.has(a))) return;            // apertura de una posición viva
+        const tl = i32At(bytes, l.off), tu = i32At(bytes, l.off + 4);
+        if (tl == null || tu == null || tl >= tu || tl < -MAXT || tu > MAXT) return; // args no plausibles
+        found = { ts, proto: ix.programId === ORCA_WHIRLPOOL_PROGRAM ? "orca" : "raydium",
+                  tickLower: tl, tickUpper: tu, mint: accs[l.mintIdx] || null, pool: accs[l.poolIdx] || null, vaults: new Set() };
+        return;
+      }
+    };
+    for (const ix of (tx.instructions || [])) { scan(ix); for (const inner of (ix.innerInstructions || [])) scan(inner); }
+    if (!found) continue;
+    for (const t of (tx.tokenTransfers || [])) {
+      if (t.fromUserAccount === owner && t.toTokenAccount) found.vaults.add(t.toTokenAccount);
+      else if (t.toUserAccount === owner && t.fromTokenAccount) found.vaults.add(t.fromTokenAccount);
+    }
+    opens.push(found);
+  }
+  if (!opens.length) return;
+  // Emparejar cada cerrada con su apertura: mismo protocolo + vault en común (la
+  // apertura suele depositar en la misma tx); si no hay vínculo por vault, la más
+  // cercana en tiempo (con tope de 7 días para no casar aperturas ajenas).
+  const used = new Set();
+  for (const p of recons) {
+    let best = null, bestIdx = -1, bestD = Infinity, bestByVault = false;
+    for (let i = 0; i < opens.length; i++) {
+      const o = opens[i];
+      if (used.has(i) || o.proto !== p.protocol) continue;
+      const vaultHit = o.vaults.size && [...(p._vaults || [])].some((v) => o.vaults.has(v));
+      const d = Math.abs((o.ts || 0) - (p.openedAt || 0));
+      if ((vaultHit && !bestByVault) || ((vaultHit === bestByVault) && d < bestD)) { best = o; bestIdx = i; bestD = d; bestByVault = !!vaultHit; }
+    }
+    if (!best || (!bestByVault && bestD > 7 * 86400)) continue;
+    used.add(bestIdx);
+    p.tickLower = best.tickLower; p.tickUpper = best.tickUpper;
+    if (best.mint) p.mint = best.mint;       // el NFT real (quemado) → link Solscan + posId estable
+    if (best.pool) p.whirlpool = best.pool;
+    if (best.ts && (!p.openedAt || best.ts < p.openedAt)) { // la apertura puede preceder al 1er depósito
+      p.openedAt = best.ts;
+      if (p.closedAt) p.ageDays = Math.max(0, (p.closedAt - p.openedAt) / 86400);
+    }
+  }
+  // fee% / tickSpacing / tick actual desde el pool (sigue vivo).
+  const needPool = new Map(); // pool → [posiciones]
+  for (const p of recons) {
+    if (!p.whirlpool) continue;
+    const sib = (state.positions || []).find((q) => !q.reconstructed && String(q.whirlpool) === String(p.whirlpool) && q.feeTier != null);
+    if (sib) { p.feeTier = sib.feeTier; p.tickSpacing = sib.tickSpacing ?? null; p.tick = sib.tick ?? null; continue; }
+    if (!needPool.has(p.whirlpool)) needPool.set(p.whirlpool, []);
+    needPool.get(p.whirlpool).push(p);
+  }
+  if (needPool.size) {
+    try {
+      const keys = [...needPool.keys()];
+      const res = await rpc("getMultipleAccounts", [keys, { encoding: "base64" }]);
+      const vals = (res && res.value) || [];
+      for (let i = 0; i < keys.length; i++) {
+        const v = vals[i]; if (!v || !v.data) continue;
+        const raw = Uint8Array.from(atob(v.data[0]), (ch) => ch.charCodeAt(0));
+        for (const p of needPool.get(keys[i])) {
+          try {
+            if (p.protocol === "orca") {
+              const w = await decodeWhirlpool(raw);
+              if (w) { p.feeTier = w.feeRate / 10000; p.tickSpacing = w.tickSpacing; p.tick = w.tickCurrentIndex; }
+            } else {
+              const d = await decodeRaydiumPool(raw);
+              if (d) { p.tickSpacing = d.tickSpacing; p.tick = d.tickCurrent; } // el fee de Raydium vive en el AmmConfig (no compensa otra llamada)
+            }
+          } catch (e) { /* pool no decodificable → campos null, la ficha lo omite */ }
+        }
+      }
+    } catch (e) { console.warn("[sol-recon] pools:", e?.message || e); }
+  }
 }
 
 // Discriminador de decrease_liquidity_v2 (Orca y Raydium, ambos Anchor →
