@@ -112,10 +112,25 @@ const DEFAULT_CHAINS = {
 };
 
 const GATEWAY = "https://gateway.thegraph.com/api";
+// ── Entorno sin DOM (Node/Worker) ────────────────────────────────────────────
+// El pipeline de análisis no toca el DOM; los únicos acoplamientos del módulo
+// eran localStorage al cargar, setStatus/setLoading y la capa embed. Con este
+// shim el fichero CARGA y ANALIZA headless (analyzeAddressHeadless) sin cambiar
+// NADA en navegador (store === localStorage). Para sembrar config/token antes de
+// cargar: globalThis.__LP_HEADLESS = { proxyToken, store: { "lp:...": "..." } }.
+const HAS_DOM = typeof document !== "undefined";
+const _memStore = new Map();
+const store = (typeof localStorage !== "undefined") ? localStorage : {
+  getItem: (k) => (_memStore.has(k) ? _memStore.get(k) : null),
+  setItem: (k, v) => { _memStore.set(k, String(v)); },
+  removeItem: (k) => { _memStore.delete(k); },
+};
+const _headlessEnv = (typeof globalThis !== "undefined" && globalThis.__LP_HEADLESS) || null;
+if (_headlessEnv && _headlessEnv.store) { try { for (const [k, v] of Object.entries(_headlessEnv.store)) store.setItem(k, v); } catch (e) {} }
 // Proxy de Cloudflare (las API keys viven dentro del Worker, no aquí). Si está
 // puesto, los usuarios no necesitan su propia key. Override por localStorage.
-const PROXY_BASE = (localStorage.getItem("lp:proxyBase") || "https://lp-proxy.jrodzar.workers.dev").replace(/\/$/, "");
-let proxyToken = ""; // ID token de Firebase, lo envía el shell (lp-set-token); requerido por el proxy
+const PROXY_BASE = (store.getItem("lp:proxyBase") || "https://lp-proxy.jrodzar.workers.dev").replace(/\/$/, "");
+let proxyToken = (_headlessEnv && _headlessEnv.proxyToken) || ""; // ID token de Firebase, lo envía el shell (lp-set-token); requerido por el proxy
 function proxyAuth(url) {
   return (PROXY_BASE && url.startsWith(PROXY_BASE) && proxyToken) ? { Authorization: `Bearer ${proxyToken}` } : {};
 }
@@ -151,10 +166,10 @@ const DEFAULTS_VERSION = 8; // bump cuando cambien IDs por defecto para forzar r
 // ============================================================================
 
 const state = {
-  apiKey: localStorage.getItem("lp:apiKey") || "",
+  apiKey: store.getItem("lp:apiKey") || "",
   etherscanKey: "", // key propia Etherscan V2 (la inyecta el shell vía lp-apply-keys, cifrada en Firestore; failover client-side de getLogs)
   chains: loadChainConfig(),
-  selectedChains: JSON.parse(localStorage.getItem("lp:selectedChains") || "null") || Object.keys(DEFAULT_CHAINS),
+  selectedChains: JSON.parse(store.getItem("lp:selectedChains") || "null") || Object.keys(DEFAULT_CHAINS),
   address: "",
   positions: [],
   loading: false,
@@ -166,14 +181,14 @@ let charts = { fees: null, value: null };
 
 function loadChainConfig() {
   try {
-    const storedVersion = Number(localStorage.getItem("lp:chainsVersion") || 0);
+    const storedVersion = Number(store.getItem("lp:chainsVersion") || 0);
     // si los defaults se han actualizado, descartamos lo cacheado para coger los nuevos IDs
     if (storedVersion < DEFAULTS_VERSION) {
-      localStorage.removeItem("lp:chains");
-      localStorage.setItem("lp:chainsVersion", String(DEFAULTS_VERSION));
+      store.removeItem("lp:chains");
+      store.setItem("lp:chainsVersion", String(DEFAULTS_VERSION));
       return structuredClone(DEFAULT_CHAINS);
     }
-    const stored = JSON.parse(localStorage.getItem("lp:chains") || "null");
+    const stored = JSON.parse(store.getItem("lp:chains") || "null");
     if (!stored) return structuredClone(DEFAULT_CHAINS);
     const merged = structuredClone(DEFAULT_CHAINS);
     for (const k of Object.keys(stored)) {
@@ -3362,7 +3377,7 @@ async function testChain(chainKey) {
 
 function saveSettings() {
   state.apiKey = document.getElementById("cfg-api-key").value.trim();
-  localStorage.setItem("lp:apiKey", state.apiKey);
+  store.setItem("lp:apiKey", state.apiKey);
   document.querySelectorAll(".cfg-subgraph").forEach((inp) => {
     const key = inp.dataset.chain;
     state.chains[key].subgraphId = inp.value.trim();
@@ -3371,14 +3386,14 @@ function saveSettings() {
   for (const k of Object.keys(state.chains)) {
     persisted[k] = { subgraphId: state.chains[k].subgraphId };
   }
-  localStorage.setItem("lp:chains", JSON.stringify(persisted));
+  store.setItem("lp:chains", JSON.stringify(persisted));
   closeSettings();
   setStatus("Settings guardadas.", "ok");
 }
 
 function resetConfig() {
   state.chains = structuredClone(DEFAULT_CHAINS);
-  localStorage.removeItem("lp:chains");
+  store.removeItem("lp:chains");
   renderSettings();
 }
 
@@ -3401,7 +3416,7 @@ function renderChainChips() {
     btn.onclick = () => {
       if (active) state.selectedChains = state.selectedChains.filter((k) => k !== key);
       else state.selectedChains.push(key);
-      localStorage.setItem("lp:selectedChains", JSON.stringify(state.selectedChains));
+      store.setItem("lp:selectedChains", JSON.stringify(state.selectedChains));
       renderChainChips();
     };
     container.appendChild(btn);
@@ -3413,7 +3428,11 @@ function renderChainChips() {
 // ============================================================================
 
 function setStatus(msg, kind) {
+  // Hook headless (Node/Worker): progreso observable sin DOM. En navegador no existe → no-op.
+  try { if (typeof globalThis !== "undefined" && typeof globalThis.__lpOnStatus === "function") globalThis.__lpOnStatus(msg, kind); } catch (e) {}
+  if (!HAS_DOM) return;
   const el = document.getElementById("status-msg");
+  if (!el) return;
   if (!msg) { el.classList.add("hidden"); el.textContent = ""; return; }
   el.classList.remove("hidden");
   const palette = {
@@ -3427,7 +3446,9 @@ function setStatus(msg, kind) {
 
 function setLoading(loading) {
   state.loading = loading;
+  if (!HAS_DOM) return;
   const btn = document.getElementById("btn-analyze");
+  if (!btn) return;
   btn.disabled = loading;
   btn.textContent = loading ? "Analizando…" : "Analizar";
 }
@@ -4166,10 +4187,10 @@ function renderFeesChart(series) {
   try {
     const inp = document.getElementById("fees-min-threshold");
     if (!inp) return;
-    const saved = localStorage.getItem("lp:feesMinThreshold");
+    const saved = store.getItem("lp:feesMinThreshold");
     if (saved !== null) inp.value = saved;
     inp.addEventListener("input", () => {
-      localStorage.setItem("lp:feesMinThreshold", String(inp.value || 0));
+      store.setItem("lp:feesMinThreshold", String(inp.value || 0));
       renderFeesChart(null); // re-render con las series ya cargadas
     });
   } catch (e) { /* ignore */ }
@@ -4207,6 +4228,185 @@ function isValidAddress(addr) {
   return /^0x[a-fA-F0-9]{40}$/.test(addr);
 }
 
+// Normaliza las posiciones EVM para el portfolio del shell — y para el modo
+// headless (misma proyección en ambos). En headless positionCard/lendingCard no
+// pueden construir DOM → el try/catch deja cardHTML="" y el resto de campos van
+// completos (era ya el comportamiento ante cualquier fallo de render).
+function toPortfolioItems() {
+  return (state.positions || []).map((p) => {
+    // cardHTML: la MISMA ficha que se ve en Quick (misma función positionCard/lendingCard)
+    // → Portfolio y Quick siempre consistentes.
+    let cardHTML = "";
+    try { cardHTML = (p._lending ? lendingCard(p) : positionCard(p)).outerHTML; } catch (e) {}
+    if (p._lending) {
+      return {
+        kind: "evm", lending: true, cardHTML,
+        venue: `Revert Lend · ${p.chainName}`,
+        pair: `${p.asset} (lending)`,
+        valueUSD: p.currentValueUSD || 0,
+        feesUSD: p.gainsUSD || 0,           // interés ganado
+        feesPendingUSD: 0,
+        ilUSD: null,
+        pnlUSD: p.gainsUSD == null ? null : p.gainsUSD,
+        apr: typeof p.apr === "number" ? p.apr : null,
+        inRange: !p.closed, closed: !!p.closed, reconstructed: !!p.reconstructed,
+        id: p.vault || "",
+      };
+    }
+    if (p._curve) {
+      return {
+        kind: "evm", curve: true, cardHTML,
+        venue: `Curve · ${p.chainName}`,
+        pair: p.symbol || p.name || "Curve",
+        valueUSD: p.currentValueUSD || 0,
+        feesUSD: 0, feesPendingUSD: 0, ilUSD: null, pnlUSD: null, apr: null,
+        inRange: true, closed: false, reconstructed: false,
+        id: p.poolAddr || "",
+      };
+    }
+    return {
+      kind: "evm", cardHTML,
+      venue: (state.chains[p.chainKey] && state.chains[p.chainKey].name) || p.chainKey,
+      pair: `${p.token0.symbol}/${p.token1.symbol}`,
+      valueUSD: p.currentValueUSD || 0,
+      feesUSD: p.feesUSD || 0,
+      feesPendingUSD: p.uncollectedUSD == null ? null : p.uncollectedUSD,
+      ilUSD: p.ilUSD == null ? null : p.ilUSD,
+      pnlUSD: p.pnlUSD == null ? null : p.pnlUSD,
+      apr: typeof p.apr === "number" && isFinite(p.apr) ? p.apr : null,
+      inRange: !!p.inRange,
+      closed: !!p.closed,
+      reconstructed: !!p.reconstructed,
+      tickLower: p.tickLower, tickUpper: p.tickUpper, tick: p.tick,
+      dec0: p.token0.decimals, dec1: p.token1.decimals,
+      id: String(p.nftId || ""),
+    };
+  });
+}
+
+// ── Núcleo del análisis SIN DOM (headless: Node / Worker / tests) ─────────────
+// Pipeline COMPLETO de cálculo (LPs multi-chain + lending + Curve + Aerodrome +
+// idle + indicadores) extraído de analyze(): puebla state.* y devuelve el resumen.
+// analyze() (navegador) delega aquí sin cambiar comportamiento; un Worker/Node
+// llama a analyzeAddressHeadless() más abajo. El progreso sale por opts.onStatus
+// (por defecto setStatus, que headless ya es no-op seguro).
+async function analyzeAddressCore(addr, opts = {}) {
+  const onStatus = opts.onStatus || setStatus;
+  state.address = addr;
+  state.positions = [];
+  onStatus(`Consultando ${state.selectedChains.length} red(es)…`, "info");
+  // fetchAllPositions puede LANZAR si una chain (p.ej. subgraph de Base) cae.
+  // Lo aislamos para que lending + Curve se sigan analizando igualmente.
+  let positions = [], errors = [], skipped = [];
+  try {
+    ({ positions, errors, skipped } = await fetchAllPositions(addr));
+  } catch (e) {
+    console.warn("fetchAllPositions:", e);
+    errors = [{ chainKey: "evm", __error: e }];
+  }
+  state.positions = positions;
+  // Revert Lend (vaults ERC-4626) — se añade como posiciones de tipo "lending"
+  try {
+    const lending = await fetchRevertLending(addr);
+    if (lending.length) state.positions.push(...lending);
+  } catch (e) { console.warn("Revert Lend:", e); }
+  // Curve Finance (LP/gauge ERC-20) — autodetectado por cruce con tokens del wallet
+  try {
+    const curve = await fetchCurvePositions(addr);
+    if (curve.length) state.positions.push(...curve);
+  } catch (e) { console.warn("Curve:", e); }
+  // Aerodrome Slipstream (CL, fork Uni V3) en Base — incl. stakeadas en gauge.
+  // Acotado a 40s (el race devuelve en cuanto termina, no espera el tope) como RED DE SEGURIDAD
+  // por si el descubrimiento se cuelga. El timing fino vive DENTRO de fetchAerodromePositions:
+  // intenta con histórico (15s) y, si no llega, reintenta sin histórico (rápido) para que la card
+  // SIEMPRE aparezca en frío. Peor caso interno ~26s (descubrimiento + 15s + reintento) < 40s.
+  try {
+    const aero = await Promise.race([fetchAerodromePositions(addr), new Promise((res) => setTimeout(() => res([]), 40000))]);
+    if (aero && aero.length) state.positions.push(...aero);
+  } catch (e) { console.warn("Aerodrome:", e); }
+  assignColors(state.positions);
+
+  // Tokens "idle" en wallet (no metidos en LPs) — en paralelo por cada red
+  // seleccionada que tenga Blockscout. Fallback de precios via DefiLlama.
+  try {
+    const chainsForIdle = state.selectedChains.filter((k) => state.chains[k]?.blockscoutApi);
+    const tokenLists = await Promise.all(chainsForIdle.map((k) => fetchIdleTokensEVM(k, addr)));
+    state.idleTokens = tokenLists.flat();
+  } catch (e) { console.warn("idle tokens:", e); state.idleTokens = []; }
+
+  // Indicador idle "¿buen momento para pasar a USDC?" (entrada + rango 30d).
+  // best-effort: nunca rompe el análisis si DefiLlama / histórico fallan.
+  try { await enrichIdleIndicatorsEVM(addr); } catch (e) { console.warn("[idle-indicator-evm]", e); }
+
+  const skippedNote = skipped.length ? ` (saltadas: ${skipped.map((s) => state.chains[s.chainKey].name).join(", ")})` : "";
+  const lendN = state.positions.filter((p) => p._lending).length;
+  const curveN = state.positions.filter((p) => p._curve).length;
+  const lpN = positions.length;
+  // Resumen estructurado del análisis para el shell (banner de resultado)
+  state.analysisStatus = {
+    ok: errors.length === 0,
+    errors: errors.map((e) => ({ source: state.chains[e.chainKey]?.name || e.chainKey, reason: classifyError(e.__error).text })),
+  };
+
+  // Mensaje final (idéntico al histórico de analyze(); el caller decide dónde mostrarlo)
+  let statusMsg, statusKind;
+  if (errors.length) {
+    // Clasificar errores por causa y nombrar las redes afectadas
+    const byCat = new Map();
+    for (const e of errors) {
+      const c = classifyError(e.__error);
+      if (!byCat.has(c.text)) byCat.set(c.text, { cat: c.cat, chains: [] });
+      byCat.get(c.text).chains.push(state.chains[e.chainKey].name);
+    }
+    const detail = [...byCat.entries()].map(([text, v]) => `${v.chains.join(", ")} (${text})`).join(" · ");
+    const allAuth = [...byCat.values()].every((v) => v.cat === "auth");
+    const lead = lpN > 0
+      ? `${lpN} posiciones${lendN ? ` + ${lendN} lending` : ""}, pero no se pudo consultar: `
+      : allAuth
+        ? "Para analizar, inicia sesión o configura tu API key en Settings. Sin consultar: "
+        : "No se pudo consultar: ";
+    statusMsg = `${lead}${detail}.${skippedNote}`;
+    statusKind = allAuth && lpN === 0 ? "info" : "err";
+  } else if (state.positions.length === 0) {
+    statusMsg = `Sin posiciones para ${shortAddr(addr)} en las redes seleccionadas (todo consultado correctamente).${skippedNote}`;
+    statusKind = "info";
+  } else {
+    const lendNote = lendN ? ` + ${lendN} en Revert Lend` : "";
+    const curveNote = curveN ? ` + ${curveN} en Curve` : "";
+    statusMsg = `${lpN} posiciones de LP${lendNote}${curveNote}.${skippedNote}`;
+    statusKind = "ok";
+  }
+  // Backfill de fees pendientes por RPC: headless se espera INLINE (el Worker quiere
+  // números finales). En navegador NO se pide aquí (awaitBackfill=false): lo orquesta
+  // analyze() en segundo plano con render, exactamente como siempre.
+  if (opts.awaitBackfill && positions.length) {
+    const pendingRPC = positions.filter((p) => p.uncollected === null && !p.closed && state.chains[p.chainKey]?.rpcUrl).length;
+    if (pendingRPC > 0) {
+      try { await backfillUncollectedFromRPC(positions, opts.onBackfillTick || (() => {})); } catch (e) { console.warn("backfill:", e); }
+    }
+  }
+  return { positions, errors, skipped, statusMsg, statusKind, lpN, lendN, curveN };
+}
+
+// Punto de entrada HEADLESS (Worker/Node): análisis completo sin DOM. Devuelve
+// además los items estilo portfolio (misma proyección que consume el shell) y
+// las fees a valor realizable. NO construye el timeline histórico (pesado; el
+// vigilante 24/7 de MVP-2 necesita estado actual, no la serie).
+async function analyzeAddressHeadless(addr, opts = {}) {
+  if (!isValidAddress(addr)) throw new Error("Dirección EVM no válida (0x + 40 hex).");
+  if (!state.selectedChains.length) throw new Error("Sin redes seleccionadas (siembra lp:selectedChains).");
+  const r = await analyzeAddressCore(addr, {
+    onStatus: opts.onStatus || (() => {}),
+    awaitBackfill: opts.awaitBackfill !== false,
+    onBackfillTick: opts.onBackfillTick,
+  });
+  // Fees cobradas a valor realizable + AERO como fees (mismos pasos best-effort
+  // que corre el flujo del shell tras el análisis; ambos sin DOM).
+  try { await enrichRealizableFeesEVM(addr); } catch (e) { console.warn("[realizable-evm]", e); }
+  try { applyAerodromeAeroAsFees(state.positions); } catch (e) {}
+  return { ...r, items: toPortfolioItems(), idleTokens: state.idleTokens || [], analysisStatus: state.analysisStatus, feesRealizableUSD: state._feesRealizableUSD };
+}
+
 async function analyze() {
   const addr = document.getElementById("addr-input").value.trim();
   if (!isValidAddress(addr)) { setStatus("Dirección EVM no válida (0x + 40 hex).", "err"); return; }
@@ -4215,10 +4415,7 @@ async function analyze() {
   const needsApiKey = state.selectedChains.some(k => state.chains[k]?.subgraphId && !state.chains[k]?.nftManagerAddress);
   if (needsApiKey && !state.apiKey && !PROXY_BASE) { setStatus("Falta API key de The Graph. Abre Settings.", "err"); openSettings(); return; }
 
-  state.address = addr;
-  state.positions = [];
   setLoading(true);
-  setStatus(`Consultando ${state.selectedChains.length} red(es)…`, "info");
 
   document.getElementById("empty-state").classList.add("hidden");
   document.getElementById("positions-section").classList.add("hidden");
@@ -4226,82 +4423,9 @@ async function analyze() {
   document.getElementById("charts-section").classList.add("hidden");
 
   try {
-    // fetchAllPositions puede LANZAR si una chain (p.ej. subgraph de Base) cae.
-    // Lo aislamos para que lending + Curve se sigan analizando igualmente.
-    let positions = [], errors = [], skipped = [];
-    try {
-      ({ positions, errors, skipped } = await fetchAllPositions(addr));
-    } catch (e) {
-      console.warn("fetchAllPositions:", e);
-      errors = [{ chainKey: "evm", __error: e }];
-    }
-    state.positions = positions;
-    // Revert Lend (vaults ERC-4626) — se añade como posiciones de tipo "lending"
-    try {
-      const lending = await fetchRevertLending(addr);
-      if (lending.length) state.positions.push(...lending);
-    } catch (e) { console.warn("Revert Lend:", e); }
-    // Curve Finance (LP/gauge ERC-20) — autodetectado por cruce con tokens del wallet
-    try {
-      const curve = await fetchCurvePositions(addr);
-      if (curve.length) state.positions.push(...curve);
-    } catch (e) { console.warn("Curve:", e); }
-    // Aerodrome Slipstream (CL, fork Uni V3) en Base — incl. stakeadas en gauge.
-    // Acotado a 40s (el race devuelve en cuanto termina, no espera el tope) como RED DE SEGURIDAD
-    // por si el descubrimiento se cuelga. El timing fino vive DENTRO de fetchAerodromePositions:
-    // intenta con histórico (15s) y, si no llega, reintenta sin histórico (rápido) para que la card
-    // SIEMPRE aparezca en frío. Peor caso interno ~26s (descubrimiento + 15s + reintento) < 40s.
-    try {
-      const aero = await Promise.race([fetchAerodromePositions(addr), new Promise((res) => setTimeout(() => res([]), 40000))]);
-      if (aero && aero.length) state.positions.push(...aero);
-    } catch (e) { console.warn("Aerodrome:", e); }
-    assignColors(state.positions);
-
-    // Tokens "idle" en wallet (no metidos en LPs) — en paralelo por cada red
-    // seleccionada que tenga Blockscout. Fallback de precios via DefiLlama.
-    try {
-      const chainsForIdle = state.selectedChains.filter((k) => state.chains[k]?.blockscoutApi);
-      const tokenLists = await Promise.all(chainsForIdle.map((k) => fetchIdleTokensEVM(k, addr)));
-      state.idleTokens = tokenLists.flat();
-    } catch (e) { console.warn("idle tokens:", e); state.idleTokens = []; }
-
-    // Indicador idle "¿buen momento para pasar a USDC?" (entrada + rango 30d).
-    // best-effort: nunca rompe el análisis si DefiLlama / histórico fallan.
-    try { await enrichIdleIndicatorsEVM(addr); } catch (e) { console.warn("[idle-indicator-evm]", e); }
-
-    const skippedNote = skipped.length ? ` (saltadas: ${skipped.map((s) => state.chains[s.chainKey].name).join(", ")})` : "";
-    const lendN = state.positions.filter((p) => p._lending).length;
-    const curveN = state.positions.filter((p) => p._curve).length;
-    const lpN = positions.length;
-    // Resumen estructurado del análisis para el shell (banner de resultado)
-    state.analysisStatus = {
-      ok: errors.length === 0,
-      errors: errors.map((e) => ({ source: state.chains[e.chainKey]?.name || e.chainKey, reason: classifyError(e.__error).text })),
-    };
-
-    if (errors.length) {
-      // Clasificar errores por causa y nombrar las redes afectadas
-      const byCat = new Map();
-      for (const e of errors) {
-        const c = classifyError(e.__error);
-        if (!byCat.has(c.text)) byCat.set(c.text, { cat: c.cat, chains: [] });
-        byCat.get(c.text).chains.push(state.chains[e.chainKey].name);
-      }
-      const detail = [...byCat.entries()].map(([text, v]) => `${v.chains.join(", ")} (${text})`).join(" · ");
-      const allAuth = [...byCat.values()].every((v) => v.cat === "auth");
-      const lead = lpN > 0
-        ? `${lpN} posiciones${lendN ? ` + ${lendN} lending` : ""}, pero no se pudo consultar: `
-        : allAuth
-          ? "Para analizar, inicia sesión o configura tu API key en Settings. Sin consultar: "
-          : "No se pudo consultar: ";
-      setStatus(`${lead}${detail}.${skippedNote}`, allAuth && lpN === 0 ? "info" : "err");
-    } else if (state.positions.length === 0) {
-      setStatus(`Sin posiciones para ${shortAddr(addr)} en las redes seleccionadas (todo consultado correctamente).${skippedNote}`, "info");
-    } else {
-      const lendNote = lendN ? ` + ${lendN} en Revert Lend` : "";
-      const curveNote = curveN ? ` + ${curveN} en Curve` : "";
-      setStatus(`${lpN} posiciones de LP${lendNote}${curveNote}.${skippedNote}`, "ok");
-    }
+    // Núcleo compartido con el modo headless; el progreso sigue saliendo por setStatus.
+    const { positions, statusMsg, statusKind } = await analyzeAddressCore(addr);
+    setStatus(statusMsg, statusKind);
 
     renderAll();
 
@@ -4355,12 +4479,13 @@ function init() {
   }
 }
 
-document.addEventListener("DOMContentLoaded", init);
+if (HAS_DOM) document.addEventListener("DOMContentLoaded", init);
 
 // ============================================================================
 // Modo embebido (cuando corre dentro del shell unificado lp-analyzer)
 // ============================================================================
 (function () {
+  if (typeof window === "undefined") return; // headless (Node/Worker): sin capa embed
   if (window.parent === window) return; // no embebido
   const style = document.createElement("style");
   // Cuando estamos embebidos: ocultamos header, input block y el summary interno
@@ -4368,58 +4493,8 @@ document.addEventListener("DOMContentLoaded", init);
   style.textContent = "header{display:none!important}#addr-block{display:none!important}#input-section{margin-top:0}#summary-section{display:none!important}";
   document.head.appendChild(style);
   document.documentElement.classList.add("embedded");
-  // Normaliza las posiciones EVM para el portfolio del shell
-  function toPortfolioItems() {
-    return (state.positions || []).map((p) => {
-      // cardHTML: la MISMA ficha que se ve en Quick (misma función positionCard/lendingCard)
-      // → Portfolio y Quick siempre consistentes.
-      let cardHTML = "";
-      try { cardHTML = (p._lending ? lendingCard(p) : positionCard(p)).outerHTML; } catch (e) {}
-      if (p._lending) {
-        return {
-          kind: "evm", lending: true, cardHTML,
-          venue: `Revert Lend · ${p.chainName}`,
-          pair: `${p.asset} (lending)`,
-          valueUSD: p.currentValueUSD || 0,
-          feesUSD: p.gainsUSD || 0,           // interés ganado
-          feesPendingUSD: 0,
-          ilUSD: null,
-          pnlUSD: p.gainsUSD == null ? null : p.gainsUSD,
-          apr: typeof p.apr === "number" ? p.apr : null,
-          inRange: !p.closed, closed: !!p.closed, reconstructed: !!p.reconstructed,
-          id: p.vault || "",
-        };
-      }
-      if (p._curve) {
-        return {
-          kind: "evm", curve: true, cardHTML,
-          venue: `Curve · ${p.chainName}`,
-          pair: p.symbol || p.name || "Curve",
-          valueUSD: p.currentValueUSD || 0,
-          feesUSD: 0, feesPendingUSD: 0, ilUSD: null, pnlUSD: null, apr: null,
-          inRange: true, closed: false, reconstructed: false,
-          id: p.poolAddr || "",
-        };
-      }
-      return {
-        kind: "evm", cardHTML,
-        venue: (state.chains[p.chainKey] && state.chains[p.chainKey].name) || p.chainKey,
-        pair: `${p.token0.symbol}/${p.token1.symbol}`,
-        valueUSD: p.currentValueUSD || 0,
-        feesUSD: p.feesUSD || 0,
-        feesPendingUSD: p.uncollectedUSD == null ? null : p.uncollectedUSD,
-        ilUSD: p.ilUSD == null ? null : p.ilUSD,
-        pnlUSD: p.pnlUSD == null ? null : p.pnlUSD,
-        apr: typeof p.apr === "number" && isFinite(p.apr) ? p.apr : null,
-        inRange: !!p.inRange,
-        closed: !!p.closed,
-        reconstructed: !!p.reconstructed,
-        tickLower: p.tickLower, tickUpper: p.tickUpper, tick: p.tick,
-        dec0: p.token0.decimals, dec1: p.token1.decimals,
-        id: String(p.nftId || ""),
-      };
-    });
-  }
+  // toPortfolioItems (normalización para el shell) vive ahora a nivel de módulo
+  // (junto a analyzeAddressCore): la usa también el modo headless → una sola proyección.
   window.addEventListener("message", (e) => {
     const d = e.data || {};
     if (d.type === "lp-clear") {
@@ -4453,7 +4528,7 @@ document.addEventListener("DOMContentLoaded", init);
       // Las guardamos como override del proxy (lo que ya hacía openSettings/saveSettings).
       if (typeof d.graph === "string") {
         state.apiKey = d.graph;
-        try { localStorage.setItem("lp:apiKey", d.graph); } catch (e) {}
+        try { store.setItem("lp:apiKey", d.graph); } catch (e) {}
       }
       if (typeof d.etherscan === "string") state.etherscanKey = d.etherscan; // failover client-side (cifrada en Firestore por el shell)
     } else if (d.type === "lp-analyze" && typeof d.address === "string") {
@@ -4475,7 +4550,7 @@ document.addEventListener("DOMContentLoaded", init);
       if (typeof openSettings === "function") openSettings();
     } else if (d.type === "lp-set-chains" && Array.isArray(d.chains)) {
       state.selectedChains = d.chains.slice();
-      localStorage.setItem("lp:selectedChains", JSON.stringify(state.selectedChains));
+      store.setItem("lp:selectedChains", JSON.stringify(state.selectedChains));
       if (typeof renderChainChips === "function") renderChainChips();
     } else if (d.type === "lp-portfolio-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
