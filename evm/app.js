@@ -1477,13 +1477,19 @@ async function backfillUncollectedFromRPC(positions, onProgress) {
       // decrease previo). Bug: tras un "Añadir liquidez", el increaseLiquidity mueve las
       // fees acumuladas a tokensOwed y resetea el checkpoint; "pendientes" mostraba solo el
       // delta NUEVO (p.ej. $0.0563) ocultando lo consolidado (~$0.78) que sigue reclamable.
-      const nftMgr = chain.uniNftManager || chain.nftManagerAddress;
+      // Aerodrome usa SU PROPIO position manager: con el de Uniswap, un tokenId
+      // coincidente devolvería los datos de una posición AJENA (tokensOwed de otro).
+      const nftMgr = p._aerodrome
+        ? (typeof AERODROME !== "undefined" && AERODROME[p.chainKey] && AERODROME[p.chainKey].nftMgr) || null
+        : (chain.uniNftManager || chain.nftManagerAddress);
       try {
         const [lo, up, globals, nftData] = await Promise.all([
           getTick(p.tickLower),
           getTick(p.tickUpper),
           getPoolGlobals(),
-          nftMgr ? fetchNftPositionDataRPC(rpc, nftMgr, p.id) : Promise.resolve(null),
+          // Cerradas: si el NFT se QUEMÓ (el close de Revert hace burn), positions(id)
+          // revierte — lo toleramos (null): burn exige tokensOwed=0 → pendiente 0 real.
+          nftMgr ? (p.closed ? fetchNftPositionDataRPC(rpc, nftMgr, p.id).catch(() => null) : fetchNftPositionDataRPC(rpc, nftMgr, p.id)) : Promise.resolve(null),
         ]);
         // Parcheamos raw con TODOS los valores frescos del RPC. Crítico: refrescar
         // también feeGrowthGlobal del pool y feeGrowthInside_Last del NFT (no solo
@@ -1499,7 +1505,12 @@ async function backfillUncollectedFromRPC(positions, onProgress) {
         }
         const dec0 = Number(p.token0.decimals);
         const dec1 = Number(p.token1.decimals);
-        const uc = computeUncollectedFees(p.raw, dec0, dec1);
+        // Cerrada con NFT quemado (nftData null): pendiente = 0 POR DEFINICIÓN (el
+        // burn del NPM exige liquidity=0 y tokensOwed=0) — no calculamos con datos
+        // stale del subgraph, fijamos el 0 real y la ficha deja de decir "n/d".
+        const uc = (p.closed && !nftData)
+          ? { amount0: 0, amount1: 0 }
+          : computeUncollectedFees(p.raw, dec0, dec1);
         if (uc) {
           // Sumar tokensOwed (fees liquidadas tras un increase/decrease previo que
           // aún no se han cobrado). Sin esto se subestiman fees en posiciones que
