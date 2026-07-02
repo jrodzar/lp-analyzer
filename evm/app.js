@@ -1455,7 +1455,10 @@ async function backfillUncollectedFromRPC(positions, onProgress) {
     .filter((p) => p.uncollected === null && !p.reconstructed && state.chains[p.chainKey]?.rpcUrl)
     .map(async (p) => {
       const chain = state.chains[p.chainKey];
-      const rpc = chain.rpcUrl;
+      // Lista con FAILOVER (rpcEthCall rota endpoints ante 429/5xx): el RPC público de
+      // Base rate-limitaba en plena ráfaga del análisis y el backfill de esa posición
+      // caía entera (pendientes "n/d" en la cerrada de Aerodrome; flaky en la abierta).
+      const rpc = chain.rpcUrls || chain.rpcUrl;
       const getTick = async (tickIdx) => {
         const key = `${p.chainKey}|${p.poolId}|${tickIdx}`;
         if (tickCache.has(key)) return tickCache.get(key);
