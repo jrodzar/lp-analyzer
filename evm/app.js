@@ -671,34 +671,93 @@ async function explorerDirect(fullUrl) {
   throw bsErr || new Error("explorer no disponible");
 }
 
-async function fetchLendingHistory(apiBase, vault, owner, dec, force = false) {
+// Fallback del histórico de lending: tokentx (transferencias ERC-20 del OWNER, indexadas por
+// ADDRESS). Es una ruta DISTINTA a getLogs-por-topics y a Alchemy: sobrevive cuando el filtro
+// por topics miente o el tier gratis de Alchemy está estrangulado (429 en picos globales).
+// El par owner↔vault identifica depósitos/retiros; assetAddr (si se conoce) afina el filtro.
+async function lendingTokenTx(apiBase, owner, vault, dec, assetAddr) {
+  const o = owner.toLowerCase(), v = vault.toLowerCase(), a = assetAddr ? assetAddr.toLowerCase() : null;
+  const dep = [], wth = [];
+  for (let page = 1; page <= 5; page++) {
+    // El explorador también se rate-limita — y más DURANTE un análisis completo, que ya lo
+    // usa en paralelo (idle/Aerodrome). Reintento con backoff por página: sin él, el fallback
+    // nacía muerto justo cuando más falta hace.
+    let list = null;
+    for (let intento = 0; intento < 3 && list === null; intento++) {
+      if (intento) await new Promise((res) => setTimeout(res, 2200 * intento + Math.floor(Math.random() * 500)));
+      try {
+        const r = await explorerFetch(`${apiBase}?module=account&action=tokentx&address=${owner}&page=${page}&offset=1000&sort=asc`);
+        const j = await r.json();
+        list = Array.isArray(j.result) ? j.result : null;
+      } catch (e) { list = null; }
+    }
+    if (list === null) { if (page === 1) throw new Error("tokentx no disponible"); break; }
+    for (const t of list) {
+      if (a && String(t.contractAddress || "").toLowerCase() !== a) continue;
+      const from = String(t.from || "").toLowerCase(), to = String(t.to || "").toLowerCase();
+      const decT = Number(t.tokenDecimal != null ? t.tokenDecimal : dec) || dec;
+      const rec = { amt: Number(t.value || 0) / 10 ** decT, ts: Number(t.timeStamp) || 0 };
+      if (from === o && to === v) dep.push(rec);
+      else if (from === v && to === o) wth.push(rec);
+    }
+    if (list.length < 1000) break;
+  }
+  return { dep, wth };
+}
+
+async function fetchLendingHistory(apiBase, vault, owner, dec, force = false, assetAddr = null) {
   const cacheKey = `${apiBase}:lend:${vault}:${owner.toLowerCase()}`;
   const cached = _histCache.get(cacheKey);
   if (!force && cached && (Date.now() - cached.ts) < HIST_CACHE_TTL) return cached.data;
   const isBaseLend = /base\.blockscout\.com/i.test(apiBase || "");
-  let depList = [], wthList = []; // {amt, ts}
+  // null = la fuente FALLÓ (≠ [] vacío real). La confusión fallo↔vacío era la raíz del
+  // "depo —" recurrente en Base: un 429 de Alchemy acababa cacheado como historia vacía.
+  let depList = null, wthList = null; // {amt, ts}
   if (isBaseLend) {
-    // Alchemy getAssetTransfers (FIABLE, full-chain ~500ms): el USDC que el owner mandó al vault =
-    // depósitos; vault→owner = retiros. (Antes: getLogs Deposit topic2 / Withdraw topic3 por
-    // Blockscout → vacío en días malos. El filtro por owner full-chain es justo lo que Alchemy hace bien.)
+    // Alchemy getAssetTransfers (primario en Base): el USDC que el owner mandó al vault =
+    // depósitos; vault→owner = retiros. Full-chain ~500ms cuando no está estrangulado.
     const toTs = (t) => Math.floor(new Date((t.metadata && t.metadata.blockTimestamp) || 0).getTime() / 1000) || 0;
     const dep = await alchemyTransfers("base", { fromAddress: owner, toAddress: vault, category: ["erc20"] });
-    const wth = (dep && dep.length) ? await alchemyTransfers("base", { fromAddress: vault, toAddress: owner, category: ["erc20"] }) : [];
-    depList = (dep || []).map((t) => ({ amt: t.value || 0, ts: toTs(t) }));
-    wthList = (wth || []).map((t) => ({ amt: t.value || 0, ts: toTs(t) }));
+    const wth = (dep && dep.length) ? await alchemyTransfers("base", { fromAddress: vault, toAddress: owner, category: ["erc20"] }) : (dep ? [] : null);
+    if (dep) depList = dep.map((t) => ({ amt: t.value || 0, ts: toTs(t) }));
+    if (wth) wthList = wth.map((t) => ({ amt: t.value || 0, ts: toTs(t) }));
   } else {
     // Otras chains: getLogs por Blockscout (Deposit owner=topic2 / Withdraw owner=topic3).
     const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
     const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
-    const get = async (qs) => {
-      const r = await explorerFetch(`${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${vault}&${qs}`);
-      const j = await r.json();
-      return Array.isArray(j.result) ? j.result : [];
+    const get = async (qs) => { // null = fallo (excepción o resultado no-array), [] = vacío real
+      try {
+        const r = await explorerFetch(`${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${vault}&${qs}`);
+        const j = await r.json();
+        return Array.isArray(j.result) ? j.result : null;
+      } catch (e) { return null; }
     };
     const dep = await get(`topic0=${EV_4626_DEPOSIT}&topic2=${ownerTopic}&topic0_2_opr=and`);
-    const wth = dep.length ? await get(`topic0=${EV_4626_WITHDRAW}&topic3=${ownerTopic}&topic0_3_opr=and`) : [];
-    depList = dep.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16) }));
-    wthList = wth.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16) }));
+    const wth = (dep && dep.length) ? await get(`topic0=${EV_4626_WITHDRAW}&topic3=${ownerTopic}&topic0_3_opr=and`) : (dep ? [] : null);
+    if (dep) depList = dep.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16) }));
+    if (wth) wthList = wth.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16) }));
+  }
+  // Primario caído → fallback por OTRA ruta del explorer (tokentx por address).
+  if (depList === null || wthList === null) {
+    try {
+      const bt = await lendingTokenTx(apiBase, owner, vault, dec, assetAddr);
+      depList = bt.dep; wthList = bt.wth;
+    } catch (e) { /* también caído → LKG abajo */ }
+  }
+  const lkgKey = "lp:lendhist:" + vault.toLowerCase() + ":" + owner.toLowerCase();
+  if (depList === null || wthList === null) {
+    // Todo caído → último histórico BUENO persistido. Los depósitos/retiros son append-only:
+    // datos de ayer valen infinitamente más que una card en "—" (el valor vivo sigue siendo
+    // de ahora; solo el coste base podría llegar ligeramente viejo, y se refresca solo).
+    try {
+      const lkg = JSON.parse(store.getItem(lkgKey) || "null");
+      if (lkg && lkg.deposited > 0) {
+        const data = { deposited: lkg.deposited, withdrawn: lkg.withdrawn, firstTs: lkg.firstTs, events: lkg.events || [], stale: true, staleTs: lkg.savedAt || null };
+        _histCache.set(cacheKey, { data, ts: Date.now() }); // en memoria sí: evita martillear fuentes caídas
+        return data;
+      }
+    } catch (e) {}
+    return null; // fallo real sin LKG: NO cachear (el reintento del caller puede recuperarlo)
   }
   let d = 0, w = 0, firstTs = null;
   const events = [];
@@ -706,6 +765,7 @@ async function fetchLendingHistory(apiBase, vault, owner, dec, force = false) {
   for (const e of wthList) { w += e.amt; events.push({ ts: e.ts, type: "wth", amt: e.amt }); }
   const data = { deposited: d, withdrawn: w, firstTs, events };
   _histCache.set(cacheKey, { data, ts: Date.now() });
+  if (events.length) { try { store.setItem(lkgKey, JSON.stringify({ deposited: d, withdrawn: w, firstTs, events, savedAt: Date.now() })); } catch (e) {} }
   return data;
 }
 
@@ -1056,15 +1116,14 @@ async function fetchRevertLending(owner) {
       // si nunca depositó → barato en vaults nunca tocados.
       let h = null;
       if (c.explorerApi) {
-        try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec); } catch (e) {}
+        try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, false, assetAddr); } catch (e) {}
         // Una posición ABIERTA (shares>0) SIEMPRE tiene un Deposit en su histórico. Si vino
-        // vacío, el getLogs se aplazó/falló (Base: thirdweb tardó >3.5s y el Worker devolvió
-        // vacío "temporal" + caché en background). Reintentamos forzando (saltando la caché
-        // de 10min) para dar tiempo a que el KV del Worker se caliente → así recuperamos
-        // depósito/interés/APR en vez de dejar la card en "—".
+        // null/vacío es que TODAS las fuentes fallaron a la vez (Alchemy 429 + tokentx caído
+        // y sin LKG persistido — raro tras el fix por capas). Reintento forzado (salta la
+        // caché) por si la racha de throttling amaina → recupera depósito/interés/APR.
         for (let r = 0; open && !(h && h.deposited > 0) && r < 3; r++) {
           await new Promise((res) => setTimeout(res, 2500));
-          try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true); } catch (e) {}
+          try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true, assetAddr); } catch (e) {}
         }
       }
       const everDeposited = !!(h && h.deposited > 0);
@@ -1735,10 +1794,23 @@ async function alchemyTransfers(chainKey, params) {
   for (let i = 0; i < 8; i++) {
     const p = Object.assign({ fromBlock: "0x0", toBlock: "latest", withMetadata: true, maxCount: "0x3e8" }, params);
     if (pageKey) p.pageKey = pageKey;
-    const r = await fetchWithTimeout(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "alchemy_getAssetTransfers", params: [p] }) }, { timeoutMs: 12000, tries: 1 });
-    if (!r.ok) return out.length ? out : null;
-    const j = await r.json();
-    if (!j || !j.result) return out.length ? out : null;
+    // El tier gratis devuelve HTTP 429 en PICOS DE TRÁFICO GLOBALES de Alchemy (no depende de
+    // nuestro volumen) y la racha dura minutos → backoff con jitter antes de dar la página por
+    // perdida. Devolver null = FALLO (≠ [] vacío real): el caller decide fallback, nunca cachea.
+    let j = null;
+    for (let a = 0; a < 3; a++) {
+      let r = null;
+      try { r = await fetchWithTimeout(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "alchemy_getAssetTransfers", params: [p] }) }, { timeoutMs: 12000, tries: 1 }); } catch (e) { r = null; }
+      if (r && r.ok) {
+        let cand = null;
+        try { cand = await r.json(); } catch (e) { cand = null; }
+        if (cand && cand.result) { j = cand; break; }
+        const code = cand && cand.error && Number(cand.error.code);
+        if (code !== 429 && code !== -32005 && code !== -32000) break; // error real (no throttle): no insistir
+      } else if (r && r.status !== 429 && r.status < 500) break;       // 4xx real: no insistir
+      if (a < 2) await new Promise((res) => setTimeout(res, 1500 * (a + 1) + Math.floor(Math.random() * 700)));
+    }
+    if (!j) return out.length ? out : null;
     out.push(...(j.result.transfers || []));
     pageKey = j.result.pageKey;
     if (!pageKey) break;
