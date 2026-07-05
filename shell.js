@@ -1795,7 +1795,14 @@ async function hydrateCachesDown(key) {
           const mins = Math.max(1, Math.round((Date.now() - (ts || 0)) / 60000));
           setPfStatus(`Mostrando datos de hace ${mins} min — actualizando…`, "info");
           setTimeout(() => {
-            try { if (els.analyzeAll && !els.analyzeAll.disabled) analyzeAll({ silent: true }); } catch (e) {}
+            // Mismo patrón que el auto-refresh: spinner de la cabecera girando y
+            // _autoBusy marcado (sin él, el temporizador podría solapar un 2º análisis).
+            try {
+              if (els.analyzeAll && !els.analyzeAll.disabled && !_autoBusy) {
+                _autoBusy = true; spinRefresh(true);
+                Promise.resolve(analyzeAll({ silent: true })).finally(() => { _autoBusy = false; spinRefresh(false); });
+              }
+            } catch (e) { _autoBusy = false; spinRefresh(false); }
           }, 1200);
         }
       } catch (e) { /* clave distinta → sin pintado instantáneo, sin drama */ }
