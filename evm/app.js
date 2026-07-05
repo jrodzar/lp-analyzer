@@ -2368,12 +2368,17 @@ async function fetchAerodromePositions(owner) {
   const keep = [], stakedSet = new Set(), earnedById = {}, gaugeById = {};
   await Promise.all([...ids].map(async (id) => {
     try {
-      const oh = await rpcEthCall(rpc, A.nftMgr, SEL_OWNER_OF + encodeU32(id));
+      // ownerOf y positions(id) solo dependen del id → juntas (una ida menos en la
+      // cadena por id; en Base el RPC va justo de rate limit durante el análisis).
+      const [oh, ph] = await Promise.all([
+        rpcEthCall(rpc, A.nftMgr, SEL_OWNER_OF + encodeU32(id)),
+        rpcEthCall(rpc, A.nftMgr, SEL_POSITIONS_NFT + encodeU32(id)).catch(() => null),
+      ]);
       const curOwner = ("0x" + (oh || "").slice(-40)).toLowerCase();
       if (!/^0x[0-9a-f]{40}$/.test(curOwner) || /^0x0+$/.test(curOwner)) return;
       if (curOwner === ownerLc) { keep.push(id); return; } // en wallet (sin stakear)
       // Posible stakeada: pool del NFT → gauge del pool → ¿lo stakeó este owner?
-      const ph = await rpcEthCall(rpc, A.nftMgr, SEL_POSITIONS_NFT + encodeU32(id));
+      if (!ph) return;
       const raw = decodeRawPos(ph, BigInt(id));
       if (!raw || raw.liquidity === "0") return;
       const poolH = await rpcEthCall(rpc, A.factory, SEL_GET_POOL_CL + encodeAddr32(raw.token0) + encodeAddr32(raw.token1) + encodeU32(raw.fee));
@@ -2382,17 +2387,22 @@ async function fetchAerodromePositions(owner) {
       const gh = await rpcEthCall(rpc, A.voter, SEL_GAUGES + encodeAddr32(pool));
       const gauge = ("0x" + (gh || "").slice(-40)).toLowerCase();
       if (/^0x0+$/.test(gauge) || gauge !== curOwner) return; // el NFT no está en el gauge de su pool
-      const sc = await rpcEthCall(rpc, gauge, SEL_STAKED_CONTAINS + ownerTopic + encodeU32(id));
+      // stakedContains, la bóveda de Revert y earned dependen solo del gauge → una tanda.
+      // earned se pide especulativamente (barato) y solo se GUARDA si la posición es nuestra.
+      const [sc, vh, eh] = await Promise.all([
+        rpcEthCall(rpc, gauge, SEL_STAKED_CONTAINS + ownerTopic + encodeU32(id)),
+        A.revertVault ? rpcEthCall(rpc, A.revertVault, SEL_OWNER_OF + encodeU32(id)).catch(() => null) : Promise.resolve(null),
+        rpcEthCall(rpc, gauge, SEL_EARNED + ownerTopic + encodeU32(id)).catch(() => null),
+      ]);
       let mine = sc && sc !== "0x" && decU(sc, 0) === 1n; // lo stakeó el owner directamente
       if (!mine && A.revertVault) {
         // Stakeada vía la bóveda de Revert: el gauge registra como staker al proxy de Revert
         // (no al owner) → stakedContains(owner)=0. Confirmamos propiedad con V3Vault.ownerOf(id)==owner.
-        const vh = await rpcEthCall(rpc, A.revertVault, SEL_OWNER_OF + encodeU32(id)).catch(() => null);
         mine = vh && vh !== "0x" && ("0x" + vh.slice(-40)).toLowerCase() === ownerLc;
       }
       if (!mine) return; // ni lo stakeó el owner ni es suyo vía la bóveda de Revert
       keep.push(id); stakedSet.add(String(id)); gaugeById[String(id)] = gauge;
-      try { const eh = await rpcEthCall(rpc, gauge, SEL_EARNED + ownerTopic + encodeU32(id)); earnedById[String(id)] = (eh && eh !== "0x") ? Number(decU(eh, 0)) / 1e18 : 0; } catch (e) {}
+      try { earnedById[String(id)] = (eh && eh !== "0x") ? Number(decU(eh, 0)) / 1e18 : 0; } catch (e) {}
     } catch (e) {}
   }));
   if (!keep.length) return [];
@@ -2405,6 +2415,9 @@ async function fetchAerodromePositions(owner) {
   // el histórico —que sigue corriendo y cacheándose en background— sale completo en el siguiente
   // análisis / auto-refresh. En caliente la 1ª gana el race y la card sale completa de una.
   const rpcOpts = { tokenIds: keep, nftMgr: A.nftMgr, factory: A.factory, getPoolSel: SEL_GET_POOL_CL, tag: "_aerodrome", stakedSet };
+  // El precio del AERO no depende de las posiciones → se lanza YA y se espera al final
+  // (antes se pedía tras el race y sumaba su latencia a la cola).
+  const aeroPxPromise = getAeroPriceUSD().catch(() => null);
   let positions = await Promise.race([
     fetchPositionsFromRPCDirect(owner, chainKey, rpcOpts).catch(() => null),
     new Promise((res) => setTimeout(() => res(null), 15000)),
@@ -2416,8 +2429,11 @@ async function fetchAerodromePositions(owner) {
   // AERO: reclamable (gauge.earned) + ya reclamado (transfers AERO del gauge → owner, Alchemy) + precio.
   // Stakeada, el AERO es el rendimiento real (las trading fees van a los votantes), así que lo metemos
   // en fees/APR/PnL en applyAerodromeAeroAsFees() tras el cálculo estándar (que si no lo pisaría).
-  const aeroPx = await getAeroPriceUSD().catch(() => null);
-  for (const p of positions) {
+  const aeroPx = await aeroPxPromise;
+  // Los transfers de AERO cobrado (uno por posición stakeada, vía Alchemy) son
+  // independientes entre posiciones → en paralelo. En serie, cada backoff de 429
+  // del tier free se sumaba a la cola del análisis (medido: ~6s de silencio).
+  await Promise.all(positions.map(async (p) => {
     p.aeroClaimable = earnedById[p.id] || 0;
     p.gaugeAddr = gaugeById[p.id] || null;
     p._aeroPx = aeroPx;
@@ -2429,7 +2445,7 @@ async function fetchAerodromePositions(owner) {
         p._aeroClaimedRaw = (tr || []).map((t) => ({ v: t.value || 0, ts: Math.floor(new Date((t.metadata && t.metadata.blockTimestamp) || 0).getTime() / 1000) || 0 }));
       } catch (e) {}
     }
-  }
+  }));
   return positions;
 }
 
