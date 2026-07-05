@@ -496,6 +496,23 @@ function encodeInt24Padded(n) {
   return unsigned.toString(16).padStart(64, "0");
 }
 
+// Ejecuta fn(item, idx) con como mucho `limit` promesas en vuelo. Devuelve los
+// resultados EN EL ORDEN DE ENTRADA (no de finalización): el orden de fichas y
+// colores debe ser determinista aunque la red no lo sea. Si fn lanza, su hueco
+// queda undefined y el resto de items sigue (best-effort por item).
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) {
+      const idx = next++;
+      try { out[idx] = await fn(items[idx], idx); } catch (e) { out[idx] = undefined; }
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
 // eth_call resiliente: acepta un RPC (string) o una lista (rota entre ellos) y
 // reintenta con backoff ante fallos transitorios (429 / 5xx / red).
 async function rpcEthCall(rpcOrList, to, data, blockTag) {
@@ -2635,13 +2652,16 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
   const candidates = [...received].filter((id) => !openIds.has(id)).slice(0, 40); // tope de seguridad
   if (!candidates.length) return [];
   const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
-  const out = [];
-  for (const tokenId of candidates) {
+  // Candidatas en paralelo acotado (3 en vuelo): cada una encadena ~8 idas a
+  // RPC/explorer y en serie el bucle dominaba el análisis de la chain. mapLimit
+  // conserva el ORDEN de entrada → fichas/colores deterministas. Los `continue`
+  // del bucle original son ahora `return null` (misma semántica best-effort).
+  const results = await mapLimit(candidates, 3, async (tokenId) => {
     try {
       // ¿quemada? ownerOf revierte; si devuelve otra dirección → transferida/vendida → omitir.
       try {
         const oh = await rpcEthCall(rpc, nftMgr, "0x6352211e" + BigInt(tokenId).toString(16).padStart(64, "0"));
-        if (!/^0x0+$/.test("0x" + (oh || "").slice(-40))) continue; // alguien la posee → no es burn nuestro
+        if (!/^0x0+$/.test("0x" + (oh || "").slice(-40))) return null; // alguien la posee → no es burn nuestro
       } catch (e) { /* revert → quemada */ }
       // 1ª tx Increase → de su recibo sacamos la POOL (evento Mint de la pool V3, cuyo
       // emisor ES la propia pool) y leemos token0()/token1() directos. Robusto: la
@@ -2649,7 +2669,7 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       // router/wrap (no directo del owner) → dejaba toks<2 y descartaba la posición.
       const h0 = await fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, 18, 18);
       const incs = (h0.events || []).filter((e) => e.type === "inc").sort((a, b) => a.ts - b.ts);
-      if (!incs.length || !incs[0].tx) continue;
+      if (!incs.length || !incs[0].tx) return null;
       const rcpt = await fetch(rpcOne, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getTransactionReceipt", params: [incs[0].tx] }) }).then((x) => x.json());
       let pool = null, tickLo = null, tickHi = null;
       for (const l of (rcpt?.result?.logs || [])) {
@@ -2667,21 +2687,36 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
           break;
         }
       }
-      if (!pool) continue; // no se localizó la pool en la tx → omitir
-      // fee de la pool + tick ACTUAL (slot0): completan la paridad de ficha con las abiertas
+      if (!pool) return null; // no se localizó la pool en la tx → omitir
+      // fee de la pool + tick ACTUAL (slot0) + token0/token1: independientes entre sí
+      // → una sola tanda. fee/slot0 siguen siendo best-effort (null); sin token0/token1
+      // no hay par → omitir (mismos descartes que en serie).
+      const [ftH, s0H, t0H, t1H] = await Promise.all([
+        rpcEthCall(rpc, pool, "0xddca3f43").catch(() => null),
+        rpcEthCall(rpc, pool, "0x3850c7bd").catch(() => null),
+        rpcEthCall(rpc, pool, SEL_TOKEN0_POOL).catch(() => null),
+        rpcEthCall(rpc, pool, SEL_TOKEN1_POOL).catch(() => null),
+      ]);
       let feeTier = null, tickNow = null;
-      try { feeTier = String(decU(await rpcEthCall(rpc, pool, "0xddca3f43"), 0)); } catch (e) {}
-      try { const s0 = await rpcEthCall(rpc, pool, "0x3850c7bd"); if (s0 && s0.length >= 2 + 128) tickNow = Number(BigInt.asIntN(256, BigInt("0x" + s0.slice(2 + 64, 2 + 128)))); } catch (e) {}
-      let a0, a1;
-      try {
-        a0 = ("0x" + (await rpcEthCall(rpc, pool, SEL_TOKEN0_POOL)).slice(-40)).toLowerCase();
-        a1 = ("0x" + (await rpcEthCall(rpc, pool, SEL_TOKEN1_POOL)).slice(-40)).toLowerCase();
-      } catch (e) { continue; }
-      if (!/^0x[0-9a-f]{40}$/.test(a0) || !/^0x[0-9a-f]{40}$/.test(a1)) continue; // par no resuelto → omitir
-      const meta = async (a) => { let sym = a.slice(0, 6), dec = 18; try { sym = decABIString(await rpcEthCall(rpc, a, SEL_SYMBOL)) || sym; } catch (e) {} try { dec = Number(decU(await rpcEthCall(rpc, a, SEL_DECIMALS), 0)); } catch (e) {} return { symbol: sym, decimals: dec }; };
-      const t0 = await meta(a0), t1 = await meta(a1);
-      const hist = await fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, t0.decimals, t1.decimals);
-      const prices = await priceTokensViaPool(rpc, chain.factoryAddress, { [a0]: { symbol: t0.symbol, decimals: t0.decimals }, [a1]: { symbol: t1.symbol, decimals: t1.decimals } }).catch(() => ({}));
+      try { if (ftH) feeTier = String(decU(ftH, 0)); } catch (e) {}
+      try { if (s0H && s0H.length >= 2 + 128) tickNow = Number(BigInt.asIntN(256, BigInt("0x" + s0H.slice(2 + 64, 2 + 128)))); } catch (e) {}
+      if (!t0H || !t1H) return null;
+      const a0 = ("0x" + t0H.slice(-40)).toLowerCase();
+      const a1 = ("0x" + t1H.slice(-40)).toLowerCase();
+      if (!/^0x[0-9a-f]{40}$/.test(a0) || !/^0x[0-9a-f]{40}$/.test(a1)) return null; // par no resuelto → omitir
+      const meta = async (a) => {
+        const [sh, dh] = await Promise.all([rpcEthCall(rpc, a, SEL_SYMBOL).catch(() => null), rpcEthCall(rpc, a, SEL_DECIMALS).catch(() => null)]);
+        let sym = a.slice(0, 6), dec = 18;
+        try { if (sh) sym = decABIString(sh) || sym; } catch (e) {}
+        try { if (dh) dec = Number(decU(dh, 0)); } catch (e) {}
+        return { symbol: sym, decimals: dec };
+      };
+      const [t0, t1] = await Promise.all([meta(a0), meta(a1)]);
+      // hist (con los decimales reales) y precios actuales no dependen entre sí → en paralelo
+      const [hist, prices] = await Promise.all([
+        fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, t0.decimals, t1.decimals),
+        priceTokensViaPool(rpc, chain.factoryAddress, { [a0]: { symbol: t0.symbol, decimals: t0.decimals }, [a1]: { symbol: t1.symbol, decimals: t1.decimals } }).catch(() => ({})),
+      ]);
       const p0 = prices[a0] || 0, p1 = prices[a1] || 0;
       // Posición CERRADA → congelar la valoración al DÍA DEL CIERRE (último DecreaseLiquidity),
       // NO al precio de hoy: el PnL/IL de una cerrada es realizado y no debe moverse con el mercado.
@@ -2689,28 +2724,41 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       const decTs = (hist.events || []).filter((e) => e.type === "dec").map((e) => e.ts).filter(Boolean);
       const closeTs = decTs.length ? Math.max(...decTs) : ((hist.events || []).reduce((m, e) => Math.max(m, e.ts || 0), 0) || null);
       let pc0 = p0, pc1 = p1;   // precios al CIERRE (fallback al actual si no hay histórico)
-      try {
-        if (lc && closeTs) {
-          const [c0, c1] = await Promise.all([histPriceUSD(lc, a0, closeTs), histPriceUSD(lc, a1, closeTs)]);
-          if (c0 != null) pc0 = c0;
-          if (c1 != null) pc1 = c1;
-        }
-      } catch (e) { /* fallback precio actual */ }
+      // Precios al CIERRE y al DÍA DEL DEPÓSITO: dos grupos independientes → en paralelo,
+      // cada uno con su fallback de siempre (precio actual / HODL respectivamente).
+      const [closePx, mintPx] = await Promise.all([
+        (async () => {
+          try {
+            if (lc && closeTs) return await Promise.all([histPriceUSD(lc, a0, closeTs), histPriceUSD(lc, a1, closeTs)]);
+          } catch (e) { /* fallback precio actual */ }
+          return null;
+        })(),
+        (async () => {
+          try {
+            if (lc && hist.mintTs && (hist.deposited0 > 0 || hist.deposited1 > 0)) {
+              return await Promise.all([
+                hist.deposited0 > 0 ? histPriceUSD(lc, a0, hist.mintTs) : Promise.resolve(0),
+                hist.deposited1 > 0 ? histPriceUSD(lc, a1, hist.mintTs) : Promise.resolve(0),
+              ]);
+            }
+          } catch (e) { /* fallback HODL */ }
+          return null;
+        })(),
+      ]);
+      if (closePx) {
+        if (closePx[0] != null) pc0 = closePx[0];
+        if (closePx[1] != null) pc1 = closePx[1];
+      }
       const feesUSD = hist.collectedFees0 * pc0 + hist.collectedFees1 * pc1;     // fees a precio de CIERRE
       const hodlUSD = hist.deposited0 * pc0 + hist.deposited1 * pc1;             // HODL: depósitos a precio de CIERRE
       const withdrawnUSD = hist.withdrawn0 * pc0 + hist.withdrawn1 * pc1;        // retirado a precio de CIERRE
       // COSTE real: depósitos a su precio del DÍA DEL DEPÓSITO (mintTs) vía DefiLlama; fallback a HODL.
       // Igual que las posiciones abiertas → la ficha de la cerrada muestra coste·HODL·PnL·IL coherentes.
       let depositedUSD = hodlUSD;
-      try {
-        if (lc && hist.mintTs && (hist.deposited0 > 0 || hist.deposited1 > 0)) {
-          const [hp0, hp1] = await Promise.all([
-            hist.deposited0 > 0 ? histPriceUSD(lc, a0, hist.mintTs) : Promise.resolve(0),
-            hist.deposited1 > 0 ? histPriceUSD(lc, a1, hist.mintTs) : Promise.resolve(0),
-          ]);
-          if (hp0 != null && hp1 != null) { const cb = hist.deposited0 * hp0 + hist.deposited1 * hp1; if (cb > 0) depositedUSD = cb; }
-        }
-      } catch (e) { /* fallback HODL */ }
+      if (mintPx && mintPx[0] != null && mintPx[1] != null) {
+        const cb = hist.deposited0 * mintPx[0] + hist.deposited1 * mintPx[1];
+        if (cb > 0) depositedUSD = cb;
+      }
       const ilUSD = withdrawnUSD - hodlUSD;                                // cerrada: lo retirado vs haber holdeado (al cierre)
       const ilPct = hodlUSD > 0 ? (ilUSD / hodlUSD) * 100 : 0;
       const pnlUSD = withdrawnUSD + feesUSD - depositedUSD;                // realizado, vs COSTE (congelado al cierre)
@@ -2718,7 +2766,7 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       // paridad con las abiertas (la ficha muestra APR/MPR también en cerradas).
       const durDays = (hist.mintTs && closeTs && closeTs > hist.mintTs) ? Math.max((closeTs - hist.mintTs) / 86400, 1 / 24) : null;
       const aprReal = (durDays && depositedUSD > 0) ? (feesUSD / depositedUSD) * (365 / durDays) * 100 : null;
-      out.push({
+      return {
         id: String(tokenId), chainKey, nftId: String(tokenId), poolId: pool,
         reconstructed: true, closed: true, inRange: false,
         // priceUSD = precio ACTUAL (no el de cierre) a propósito: la cerrada participa en el cálculo de fees
@@ -2746,9 +2794,10 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
           collectedFeesToken0: String(hist.collectedFees0), collectedFeesToken1: String(hist.collectedFees1),
           transaction: { timestamp: String(hist.mintTs || 0) },
         },
-      });
-    } catch (e) { /* best-effort: omitir esta candidata */ }
-  }
+      };
+    } catch (e) { return null; /* best-effort: omitir esta candidata */ }
+  });
+  const out = results.filter(Boolean);
   if (out.length) console.log(`[evm-recon] ${chainKey} (HyperEVM): ${out.length} quemada(s) reconstruida(s)`);
   return out;
 }
@@ -4525,44 +4574,49 @@ async function analyzeAddressCore(addr, opts = {}) {
   state.address = addr;
   state.positions = [];
   onStatus(`Consultando ${state.selectedChains.length} red(es)…`, "info");
-  // fetchAllPositions puede LANZAR si una chain (p.ej. subgraph de Base) cae.
-  // Lo aislamos para que lending + Curve se sigan analizando igualmente.
+  // Las CINCO familias (LPs Uni V3, Revert Lend, Curve, Aerodrome e idle) son
+  // independientes entre sí → EN PARALELO. En serie, la pared del análisis sumaba
+  // sus latencias (medido en P4: ~10s de huecos sin red — backoffs/timeouts de una
+  // fase que podían solaparse con el trabajo de las demás). El ORDEN de
+  // state.positions se conserva (LP → lending → Curve → Aero, como siempre) porque
+  // se rellena AL FINAL en ese orden fijo: fichas y colores no dependen de qué
+  // promesa termine antes. Cada familia conserva su try/catch (best-effort).
   let positions = [], errors = [], skipped = [];
-  try {
-    ({ positions, errors, skipped } = await fetchAllPositions(addr));
-  } catch (e) {
-    console.warn("fetchAllPositions:", e);
-    errors = [{ chainKey: "evm", __error: e }];
-  }
+  const [lpRes, lendingRes, curveRes, aeroRes, idleRes] = await Promise.all([
+    // fetchAllPositions puede LANZAR si una chain (p.ej. subgraph de Base) cae.
+    // Lo aislamos para que lending + Curve se sigan analizando igualmente.
+    fetchAllPositions(addr).catch((e) => {
+      console.warn("fetchAllPositions:", e);
+      return { positions: [], errors: [{ chainKey: "evm", __error: e }], skipped: [] };
+    }),
+    // Revert Lend (vaults ERC-4626) — se añade como posiciones de tipo "lending"
+    fetchRevertLending(addr).catch((e) => { console.warn("Revert Lend:", e); return []; }),
+    // Curve Finance (LP/gauge ERC-20) — autodetectado por cruce con tokens del wallet
+    fetchCurvePositions(addr).catch((e) => { console.warn("Curve:", e); return []; }),
+    // Aerodrome Slipstream (CL, fork Uni V3) en Base — incl. stakeadas en gauge.
+    // Acotado a 40s (el race devuelve en cuanto termina, no espera el tope) como RED DE SEGURIDAD
+    // por si el descubrimiento se cuelga. El timing fino vive DENTRO de fetchAerodromePositions:
+    // intenta con histórico (15s) y, si no llega, reintenta sin histórico (rápido) para que la card
+    // SIEMPRE aparezca en frío. Peor caso interno ~26s (descubrimiento + 15s + reintento) < 40s.
+    Promise.race([fetchAerodromePositions(addr), new Promise((res) => setTimeout(() => res([]), 40000))])
+      .catch((e) => { console.warn("Aerodrome:", e); return []; }),
+    // Tokens "idle" en wallet (no metidos en LPs) — por cada red seleccionada que
+    // tenga Blockscout. Fallback de precios via DefiLlama.
+    (async () => {
+      try {
+        const chainsForIdle = state.selectedChains.filter((k) => state.chains[k]?.blockscoutApi);
+        const tokenLists = await Promise.all(chainsForIdle.map((k) => fetchIdleTokensEVM(k, addr)));
+        return tokenLists.flat();
+      } catch (e) { console.warn("idle tokens:", e); return []; }
+    })(),
+  ]);
+  ({ positions, errors, skipped } = lpRes);
   state.positions = positions;
-  // Revert Lend (vaults ERC-4626) — se añade como posiciones de tipo "lending"
-  try {
-    const lending = await fetchRevertLending(addr);
-    if (lending.length) state.positions.push(...lending);
-  } catch (e) { console.warn("Revert Lend:", e); }
-  // Curve Finance (LP/gauge ERC-20) — autodetectado por cruce con tokens del wallet
-  try {
-    const curve = await fetchCurvePositions(addr);
-    if (curve.length) state.positions.push(...curve);
-  } catch (e) { console.warn("Curve:", e); }
-  // Aerodrome Slipstream (CL, fork Uni V3) en Base — incl. stakeadas en gauge.
-  // Acotado a 40s (el race devuelve en cuanto termina, no espera el tope) como RED DE SEGURIDAD
-  // por si el descubrimiento se cuelga. El timing fino vive DENTRO de fetchAerodromePositions:
-  // intenta con histórico (15s) y, si no llega, reintenta sin histórico (rápido) para que la card
-  // SIEMPRE aparezca en frío. Peor caso interno ~26s (descubrimiento + 15s + reintento) < 40s.
-  try {
-    const aero = await Promise.race([fetchAerodromePositions(addr), new Promise((res) => setTimeout(() => res([]), 40000))]);
-    if (aero && aero.length) state.positions.push(...aero);
-  } catch (e) { console.warn("Aerodrome:", e); }
+  if (lendingRes.length) state.positions.push(...lendingRes);
+  if (curveRes.length) state.positions.push(...curveRes);
+  if (aeroRes && aeroRes.length) state.positions.push(...aeroRes);
   assignColors(state.positions);
-
-  // Tokens "idle" en wallet (no metidos en LPs) — en paralelo por cada red
-  // seleccionada que tenga Blockscout. Fallback de precios via DefiLlama.
-  try {
-    const chainsForIdle = state.selectedChains.filter((k) => state.chains[k]?.blockscoutApi);
-    const tokenLists = await Promise.all(chainsForIdle.map((k) => fetchIdleTokensEVM(k, addr)));
-    state.idleTokens = tokenLists.flat();
-  } catch (e) { console.warn("idle tokens:", e); state.idleTokens = []; }
+  state.idleTokens = idleRes;
 
   // Indicador idle "¿buen momento para pasar a USDC?" (entrada + rango 30d).
   // best-effort: nunca rompe el análisis si DefiLlama / histórico fallan.
