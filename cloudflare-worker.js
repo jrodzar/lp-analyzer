@@ -235,6 +235,12 @@ const EVM_BLOCKSCOUT = {
   hyperevm: "https://www.hyperscan.com/api",
 };
 const EVM_ETHERSCAN_FREE = { ethereum: 1, arbitrum: 42161, polygon: 137, hyperevm: 999 };
+// Chains donde el ÍNDICE de logs de Blockscout va MUY retrasado respecto al head (HyperEVM:
+// bloques ~1s → el catchup fetcher de Blockscout queda HORAS por detrás, así que getLogs
+// devuelve arrays VÁLIDOS pero INCOMPLETOS, sin los eventos recientes; verificado jun-2026:
+// índice ~13h por detrás). Para estas chains, getLogs usa Etherscan V2 (explorer oficial, al
+// head) como PRIMARIO y Blockscout queda solo de failover. Reusa EVM_ETHERSCAN_FREE[chain].
+const EVM_LOGS_ETHERSCAN_PRIMARY = { hyperevm: 999 };
 // Chains que Etherscan NO cubre gratis (Base/BNB) → failover de getLogs a thirdweb Insight.
 const EVM_THIRDWEB_CHAINID = { base: 8453, bnb: 56 };
 
@@ -330,7 +336,7 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
     try { const c = await env.QUOTA.get(cacheKey); if (c) return rawJson(c, cors); } catch (e) {}
   }
 
-  let bodyText = null, okData = false, deferred = false;
+  let bodyText = null, okData = false, deferred = false, etherscanServed = false;
 
   // 2a) getLogs de Base/BNB: su Blockscout va degradado y Etherscan los cobra → thirdweb
   //     Insight. Las queries CON datos responden ~1s; las VACÍAS (escaneo completo sin
@@ -350,6 +356,34 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
       }
       bodyText = JSON.stringify({ status: "1", message: "OK", result: [] }); // vacío temporal (NO se cachea)
       deferred = true;
+    }
+  }
+
+  // 2a-bis) getLogs en chains con índice Blockscout MUY retrasado (HyperEVM): Etherscan V2
+  //     PRIMARIO (explorer oficial, al head). Mismos params + chainid + apikey; mismo shape
+  //     {status,message,result:[...]}. Si Etherscan falla/rate-limita, cae al Blockscout (2b).
+  if (!okData && !deferred && isLogs && EVM_LOGS_ETHERSCAN_PRIMARY[chain] && env.ETHERSCAN_KEY) {
+    const p = new URLSearchParams(search.replace(/^\?/, ""));
+    p.set("chainid", String(EVM_LOGS_ETHERSCAN_PRIMARY[chain]));
+    p.set("apikey", env.ETHERSCAN_KEY);
+    const eUrl = "https://api.etherscan.io/v2/api?" + p.toString();
+    // Etherscan free = 5 req/s; un análisis dispara VARIAS getLogs de HyperEVM a la vez y algunas
+    // rate-limitan (result NO-array, "Max rate limit reached"). Reintentar con backoff+jitter, NO
+    // caer a hyperscan (va ~13h atrasado y su resultado viejo envenenaría la caché 30min). Solo si
+    // TODOS los reintentos fallan se cae a Blockscout (2b) — y entonces NO se cachea (ver abajo).
+    // Backoff de ~1.1s × intento (no sub-segundo): los reintentos deben caer en SEGUNDOS
+    // POSTERIORES, porque dentro del mismo segundo el límite de 5/s ya está saturado por la
+    // ráfaga. 4 intentos (t≈0, 1.1, 2.2, 3.3s) reparten ~12 getLogs en ~4s = 20 de capacidad.
+    // El jitter evita que los reintentos se vuelvan a agolpar en el mismo instante.
+    for (let attempt = 0; attempt < 4 && !okData; attempt++) {
+      if (attempt > 0) await new Promise((res) => setTimeout(res, 1100 * attempt + Math.floor(Math.random() * 500)));
+      try {
+        const r0 = await fetchTimeout(eUrl, 12000);
+        if (r0.ok) {
+          const t0 = await r0.text();
+          try { if (Array.isArray(JSON.parse(t0).result)) { bodyText = t0; okData = true; etherscanServed = true; } } catch (e) {}
+        }
+      } catch (e) {}
     }
   }
 
@@ -384,8 +418,12 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
   }
 
   if (bodyText == null) return json({ error: "explorer EVM no disponible (" + chain + ")" }, 502, cors);
-  // Cachear SOLO respuestas válidas (no errores ni getLogs vacíos/no-array).
-  if (cacheKey && okData && env.QUOTA) {
+  // Cachear SOLO respuestas válidas (no errores ni getLogs vacíos/no-array). EXCEPCIÓN: en
+  // chains con Etherscan PRIMARIO (HyperEVM), si el dato NO vino de Etherscan (cayó a Blockscout
+  // por rate-limit) NO lo cacheamos — sería el índice atrasado y envenenaría 30min. Que el
+  // siguiente análisis reintente Etherscan.
+  const poison = isLogs && EVM_LOGS_ETHERSCAN_PRIMARY[chain] && !etherscanServed;
+  if (cacheKey && okData && env.QUOTA && !poison) {
     try { await env.QUOTA.put(cacheKey, bodyText, { expirationTtl: cacheTtl }); } catch (e) {}
   }
   return rawJson(bodyText, cors);
