@@ -246,7 +246,12 @@ const EVM_LOGS_ETHERSCAN_PRIMARY = { hyperevm: 999 };
 // HyperSync (Envío): índice de eventos AL HEAD (verificado 2026-07-05 a 2 bloques del
 // RPC, con Etherscan-999 e hyperscan congelados ~12 días). Con el secret
 // HYPERSYNC_TOKEN puesto, es el PRIMARIO de getLogs para estas chains; sin él, no-op.
-const EVM_LOGS_HYPERSYNC = { hyperevm: "https://999.hypersync.xyz" };
+// Base y BNB también (verificado 2026-07-05: /height al head en ~300-400ms): son el
+// RESPALDO fiable de getLogs cuando thirdweb se cae/cuelga (cazado en vivo: el thirdweb
+// del worker colgaba 10s por petición mientras el directo iba en 200ms) — Blockscout de
+// Base miente vacíos y Etherscan cobra esas chains. Orden efectivo: thirdweb (2a) →
+// HyperSync (2a-ter) → Blockscout (2b).
+const EVM_LOGS_HYPERSYNC = { hyperevm: "https://999.hypersync.xyz", base: "https://8453.hypersync.xyz", bnb: "https://56.hypersync.xyz" };
 // Chains que Etherscan NO cubre gratis (Base/BNB) → failover de getLogs a thirdweb Insight.
 const EVM_THIRDWEB_CHAINID = { base: 8453, bnb: 56 };
 
