@@ -2566,7 +2566,11 @@ async function freezeClosedSubgraphHistorical(p, chain) {
   p.pnlUSD = cv + p.withdrawnUSD + p.feesUSD - p.depositedUSD;
   p.feesTotalUSD = p.feesUSD + (p.uncollectedUSD || 0);
   p.openedAt = hist.mintTs;
-  p.ageDays = Math.max((Date.now() / 1000 - hist.mintTs) / 86400, 1 / 24);
+  p.closedAt = closeTs || null;
+  // Cerrada → edad CONGELADA a su vida real (apertura→cierre) y APR de fees realizado
+  // sobre esa vida: paridad con las abiertas (la ficha muestra fechas y APR/MPR).
+  p.ageDays = Math.max((((closeTs || Date.now() / 1000)) - hist.mintTs) / 86400, 1 / 24);
+  if (p.depositedUSD > 0 && p.ageDays) p.apr = (p.feesUSD / p.depositedUSD) * (365 / p.ageDays) * 100;
   // Amounts del histórico on-chain (getLogs) → coherente con HyperEVM y con el valor realizable de fees.
   p.deposited0 = hist.deposited0; p.deposited1 = hist.deposited1;
   p.collectedFees0 = hist.collectedFees0; p.collectedFees1 = hist.collectedFees1;
@@ -2636,11 +2640,27 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       const incs = (h0.events || []).filter((e) => e.type === "inc").sort((a, b) => a.ts - b.ts);
       if (!incs.length || !incs[0].tx) continue;
       const rcpt = await fetch(rpcOne, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getTransactionReceipt", params: [incs[0].tx] }) }).then((x) => x.json());
-      let pool = null;
+      let pool = null, tickLo = null, tickHi = null;
       for (const l of (rcpt?.result?.logs || [])) {
-        if (((l.topics || [])[0] || "").toLowerCase() === EV_POOL_MINT) { pool = (l.address || "").toLowerCase(); break; }
+        if (((l.topics || [])[0] || "").toLowerCase() === EV_POOL_MINT) {
+          pool = (l.address || "").toLowerCase();
+          // El Mint de la pool V3 lleva el RANGO en los topics (int24 indexados, sign-extended
+          // a 32 bytes): topics[2]=tickLower, topics[3]=tickUpper → la cerrada puede usar la
+          // FICHA COMPLETA (rango incluido) como las abiertas, sin coste extra.
+          try {
+            if ((l.topics || []).length >= 4) {
+              tickLo = Number(BigInt.asIntN(256, BigInt(l.topics[2])));
+              tickHi = Number(BigInt.asIntN(256, BigInt(l.topics[3])));
+            }
+          } catch (e) {}
+          break;
+        }
       }
       if (!pool) continue; // no se localizó la pool en la tx → omitir
+      // fee de la pool + tick ACTUAL (slot0): completan la paridad de ficha con las abiertas
+      let feeTier = null, tickNow = null;
+      try { feeTier = String(decU(await rpcEthCall(rpc, pool, "0xddca3f43"), 0)); } catch (e) {}
+      try { const s0 = await rpcEthCall(rpc, pool, "0x3850c7bd"); if (s0 && s0.length >= 2 + 128) tickNow = Number(BigInt.asIntN(256, BigInt("0x" + s0.slice(2 + 64, 2 + 128)))); } catch (e) {}
       let a0, a1;
       try {
         a0 = ("0x" + (await rpcEthCall(rpc, pool, SEL_TOKEN0_POOL)).slice(-40)).toLowerCase();
@@ -2683,15 +2703,19 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       const ilUSD = withdrawnUSD - hodlUSD;                                // cerrada: lo retirado vs haber holdeado (al cierre)
       const ilPct = hodlUSD > 0 ? (ilUSD / hodlUSD) * 100 : 0;
       const pnlUSD = withdrawnUSD + feesUSD - depositedUSD;                // realizado, vs COSTE (congelado al cierre)
+      // Duración REAL (apertura→cierre, congelada) y APR de fees realizado sobre esa vida:
+      // paridad con las abiertas (la ficha muestra APR/MPR también en cerradas).
+      const durDays = (hist.mintTs && closeTs && closeTs > hist.mintTs) ? Math.max((closeTs - hist.mintTs) / 86400, 1 / 24) : null;
+      const aprReal = (durDays && depositedUSD > 0) ? (feesUSD / depositedUSD) * (365 / durDays) * 100 : null;
       out.push({
-        id: String(tokenId), chainKey, nftId: String(tokenId), poolId: "",
+        id: String(tokenId), chainKey, nftId: String(tokenId), poolId: pool,
         reconstructed: true, closed: true, inRange: false,
         // priceUSD = precio ACTUAL (no el de cierre) a propósito: la cerrada participa en el cálculo de fees
         // REALIZABLES (enrichRealizableFeesEVM) igual que las abiertas → fees idle a precio de hoy + lo swapeado a
         // su USDC real. HODL/IL/retirado y coste SÍ quedan congelados al cierre (pc0/pc1 y mintTs); solo fees+PnL realizable.
         token0: { id: a0, symbol: t0.symbol, decimals: t0.decimals, priceUSD: p0 },
         token1: { id: a1, symbol: t1.symbol, decimals: t1.decimals, priceUSD: p1 },
-        tick: null, tickLower: null, tickUpper: null, feeTier: null,
+        tick: tickNow, tickLower: tickLo, tickUpper: tickHi, feeTier,
         amounts: { amount0: 0, amount1: 0 }, liquidity: "0",
         // Quemada ⇒ pendientes 0 POR DEFINICIÓN (burn exige tokensOwed=0); null hacía
         // que la ficha mostrara "n/d" (el backfill excluye reconstruidas a propósito).
@@ -2699,9 +2723,10 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
         feesTotalUSD: feesUSD, depositedUSD, withdrawnUSD,
         // cantidades de fees por token (NETAS) → valor realizable (enrichRealizableFeesEVM)
         collectedFees0: hist.collectedFees0, collectedFees1: hist.collectedFees1,
-        hodlUSD, ilUSD, ilPct, pnlUSD, apr: null,
-        ageDays: hist.mintTs ? Math.max(0, (Date.now() / 1000 - hist.mintTs) / 86400) : 0,
-        openedAt: hist.mintTs || 0, _rpcOnly: true,
+        hodlUSD, ilUSD, ilPct, pnlUSD, apr: aprReal,
+        // Cerrada → la EDAD se congela a su vida real (apertura→cierre), no sigue creciendo
+        ageDays: durDays != null ? durDays : (hist.mintTs ? Math.max(0, (Date.now() / 1000 - hist.mintTs) / 86400) : 0),
+        openedAt: hist.mintTs || 0, closedAt: closeTs || null, _rpcOnly: true,
       });
     } catch (e) { /* best-effort: omitir esta candidata */ }
   }
@@ -4100,7 +4125,9 @@ function reconstructedCardEvm(p) {
 function positionCard(p) {
   if (p._lending) return lendingCard(p);
   if (p._curve) return curveCard(p);
-  if (p.reconstructed && p.tick == null) return reconstructedCardEvm(p);
+  // Solo la ficha COMPACTA cuando NO hay rango (paridad cerradas↔abiertas: desde que el
+  // rango se extrae del Mint de la 1ª tx, las quemadas de HyperEVM usan la ficha completa).
+  if (p.reconstructed && p.tickLower == null) return reconstructedCardEvm(p);
   const chain = state.chains[p.chainKey];
   const el = document.createElement("article");
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
@@ -4128,7 +4155,7 @@ function positionCard(p) {
           ${p._aerodrome ? `<span class="chip bg-sky-500/15 text-sky-300 border border-sky-500/30" title="Posición de Aerodrome Slipstream (liquidez concentrada)">Aerodrome${p.staked ? " · 🔒 staked" : ""}</span>` : ""}
         </div>
         <div class="font-semibold mt-0.5 flex items-center gap-1.5 min-w-0"><span class="truncate">${p.token0.symbol} / ${p.token1.symbol}</span>${poolPairChartHTML(p)}</div>
-        <div class="text-[11px] text-slate-400">fee ${feeTierLabel(p.feeTier)} · abierta ${date} (${Math.round(p.ageDays)}d)${p._aerodrome && p.aeroClaimable ? ` · <span class="text-fuchsia-300" title="AERO reclamable del gauge">AERO ${p.aeroClaimable.toFixed(4)}</span>` : ""}</div>
+        <div class="text-[11px] text-slate-400">fee ${feeTierLabel(p.feeTier)} · abierta ${date}${p.closed && p.closedAt ? ` → cerrada ${new Date(p.closedAt * 1000).toISOString().slice(0, 10)}` : ""} (${Math.round(p.ageDays)}d)${p._aerodrome && p.aeroClaimable ? ` · <span class="text-fuchsia-300" title="AERO reclamable del gauge">AERO ${p.aeroClaimable.toFixed(4)}</span>` : ""}</div>
       </div>
       ${rangeChip}
     </div>
