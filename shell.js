@@ -2377,7 +2377,7 @@ function fillSummary(prefix, items, extra = {}) {
     const note = $i("closed-note");
     if (a.closedCount) {
       note.classList.remove("hidden");
-      note.innerHTML = `🗃️ Incluye <span class="text-slate-300 font-semibold">${a.closedCount}</span> posición${a.closedCount > 1 ? "es" : ""} cerrada${a.closedCount > 1 ? "s" : ""} (liquidez retirada): sus <span class="text-slate-300">fees cobradas, PnL e IL</span> siguen contando en estos totales.`;
+      note.innerHTML = `🗃️ Incluye <span class="text-slate-300 font-semibold">${a.closedCount}</span> posici${a.closedCount > 1 ? "ones" : "ón"} cerrada${a.closedCount > 1 ? "s" : ""} (liquidez retirada): sus <span class="text-slate-300">fees cobradas, PnL e IL</span> siguen contando en estos totales.`;
     } else {
       note.classList.add("hidden");
     }
