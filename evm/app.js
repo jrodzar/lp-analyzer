@@ -2232,9 +2232,21 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey, opts = {}) {
       aeroSub = await fetchAeroHistoryFromSubgraph(rawPositions.map((r) => r.tokenId)).catch((e) => { console.warn("[aero-subgraph]", e?.message || e); return {}; });
     }
     await Promise.all(rawPositions.map(async (raw) => {
-      if (aeroSub[String(raw.tokenId)]) { histories[raw.tokenId] = aeroSub[String(raw.tokenId)]; return; }
       const d0 = tokenInfos[raw.token0]?.decimals ?? 18;
       const d1 = tokenInfos[raw.token1]?.decimals ?? 18;
+      if (aeroSub[String(raw.tokenId)]) {
+        // Subgraph = fuente PRIMARIA de los TOTALES (dinero), pero trae events:[] y la
+        // ficha se quedaba sin visor de depósitos/retiros. Con el almacén incremental
+        // del Worker los getLogs por tokenId ya son baratos (delta tras la 1ª vez) →
+        // se piden SOLO para los EVENTOS del visor, best-effort: si fallan, la card
+        // sale igual (el race de 15s del llamador sigue protegiendo el conjunto).
+        histories[raw.tokenId] = aeroSub[String(raw.tokenId)];
+        try {
+          const h = await fetchPositionHistory(histApi, nftMgr, raw.tokenId, d0, d1);
+          if (h && h.events && h.events.length) histories[raw.tokenId] = { ...aeroSub[String(raw.tokenId)], events: h.events };
+        } catch (e) { /* sin eventos para el visor; los totales del subgraph mandan */ }
+        return;
+      }
       try { histories[raw.tokenId] = await fetchPositionHistory(histApi, nftMgr, raw.tokenId, d0, d1); }
       catch (e) { /* sin histórico para esta posición */ }
     }));
@@ -4296,26 +4308,34 @@ function eventLogHTML(p) {
     `;
   };
 
+  // Stakeada de Aerodrome CON eventos de LP: los claims de AERO se integran en la
+  // pestaña Fees (encima de los cobros/compounds de la LP, si los hubiera) y cuentan
+  // en los totales del visor. Así depósitos/retiros Y cobros AERO conviven en un 📜.
+  const aeroClaims = p.rewardKind === "AERO" ? (p._aeroClaimedRaw || []).filter((x) => !p.openedAt || x.ts >= p.openedAt) : [];
+  const feesCount = compounds.length + aeroClaims.length;
+  const feesPanel = (aeroClaims.length ? aeroClaimsTableHTML(p) : "")
+    + ((compounds.length || !aeroClaims.length) ? tableFor(compounds, "Sin compounds ni cobros de fees registrados.") : "");
   return `
     <details class="text-xs">
-      <summary class="text-slate-400 hover:text-slate-200">📜 logs (${events.length})</summary>
+      <summary class="text-slate-400 hover:text-slate-200">📜 logs (${events.length + aeroClaims.length})${p._aeroClaimedStale ? ` <span class="text-amber-400" title="Fuentes de transfers AERO caídas ahora mismo: se muestra el último dato bueno guardado">⚠︎</span>` : ""}</summary>
       <div class="mt-2">
         <div class="flex gap-1 border-b border-slate-800 mb-1 text-[11px]">
           <button data-tab-btn="cashflows" data-uid="${uid}" class="px-3 py-1.5 border-b-2 border-emerald-400 text-emerald-300 font-semibold">Cash flows (${cashFlows.length})</button>
-          <button data-tab-btn="compounds" data-uid="${uid}" class="px-3 py-1.5 border-b-2 border-transparent text-slate-400 hover:text-slate-200">Fees (${compounds.length})</button>
+          <button data-tab-btn="compounds" data-uid="${uid}" class="px-3 py-1.5 border-b-2 border-transparent text-slate-400 hover:text-slate-200">Fees (${feesCount})</button>
         </div>
         <div data-tab-panel="cashflows" data-uid="${uid}">${tableFor(cashFlows, "Sin depósitos ni retiros registrados.")}</div>
-        <div data-tab-panel="compounds" data-uid="${uid}" class="hidden">${tableFor(compounds, "Sin compounds ni cobros de fees registrados.")}</div>
+        <div data-tab-panel="compounds" data-uid="${uid}" class="hidden">${feesPanel}</div>
       </div>
     </details>
   `;
 }
 
-// Visor 📜 para stakeadas de Aerodrome: la tabla son los COBROS de AERO (gauge→wallet,
-// con fecha y tx del explorer), filtrados desde la apertura de ESTA posición — el mismo
-// criterio con el que applyAerodromeAeroAsFees computa "cobradas". El AERO se valora al
-// precio actual (⚠︎ si los datos vienen del último-bueno persistido por fuentes caídas).
-function aeroLogHTML(p) {
+// Tabla de COBROS de AERO (gauge→wallet, con fecha y tx del explorer), filtrados desde
+// la apertura de ESTA posición — el mismo criterio con el que applyAerodromeAeroAsFees
+// computa "cobradas". El AERO se valora al precio actual (⚠︎ en la nota si los datos
+// vienen del último-bueno persistido por fuentes caídas). Se usa sola (aeroLogHTML,
+// cuando no hay eventos de LP) o dentro de la pestaña Fees del visor clásico.
+function aeroClaimsTableHTML(p) {
   const claims = (p._aeroClaimedRaw || []).filter((x) => !p.openedAt || x.ts >= p.openedAt);
   if (!claims.length) return "";
   const chain = state.chains[p.chainKey] || {};
@@ -4338,9 +4358,7 @@ function aeroLogHTML(p) {
       <td class="px-2 py-1 text-right">${fmtTx(c.tx)}</td>
     </tr>`).join("");
   return `
-    <details class="text-xs">
-      <summary class="text-slate-400 hover:text-slate-200">📜 logs (${claims.length})${p._aeroClaimedStale ? ` <span class="text-amber-400" title="Fuentes de transfers caídas ahora mismo: se muestra el último dato bueno guardado">⚠︎</span>` : ""}</summary>
-      <div class="mt-2 overflow-x-auto -mx-1">
+      <div class="overflow-x-auto -mx-1 mt-1">
         <table class="text-[11px] w-full min-w-[380px]">
           <thead>
             <tr class="text-slate-500 text-left">
@@ -4353,7 +4371,22 @@ function aeroLogHTML(p) {
           </thead>
           <tbody>${rows}</tbody>
         </table>
-        <div class="text-[10px] text-slate-500 italic px-2 pt-1">Solo cobros de AERO desde la apertura de esta posición. Los depósitos/retiros de la LP no tienen visor en Aerodrome: el subgraph da totales sin eventos.</div>
+        <div class="text-[10px] text-slate-500 italic px-2 pt-1">Cobros de AERO desde la apertura de esta posición, valorados al precio actual del AERO.${p._aeroClaimedStale ? " ⚠︎ Fuentes de transfers caídas ahora mismo: se muestra el último dato bueno guardado." : ""}</div>
+      </div>`;
+}
+
+// Visor 📜 para stakeadas de Aerodrome cuando NO hay eventos de LP (getLogs de Base
+// caídos en ese momento): al menos los claims. Con eventos, el visor clásico integra
+// la tabla de claims en su pestaña Fees (ver eventLogHTML).
+function aeroLogHTML(p) {
+  const inner = aeroClaimsTableHTML(p);
+  if (!inner) return "";
+  const n = (p._aeroClaimedRaw || []).filter((x) => !p.openedAt || x.ts >= p.openedAt).length;
+  return `
+    <details class="text-xs">
+      <summary class="text-slate-400 hover:text-slate-200">📜 logs (${n})${p._aeroClaimedStale ? ` <span class="text-amber-400" title="Fuentes de transfers caídas ahora mismo: se muestra el último dato bueno guardado">⚠︎</span>` : ""}</summary>
+      <div class="mt-2">${inner}
+        <div class="text-[10px] text-slate-500 italic px-2 pt-1">Depósitos/retiros de la LP no disponibles en este análisis (getLogs de Base sin respuesta) — reaparecerán en el siguiente.</div>
       </div>
     </details>`;
 }
