@@ -138,6 +138,22 @@ function proxyAuth(url) {
 const _histCache = new Map(); // clave -> { data, ts }
 const HIST_CACHE_TTL = 10 * 60 * 1000; // 10 min
 
+// ── F-inmutables: memo PERSISTENTE (store) de datos on-chain que no cambian nunca ──
+// símbolo/decimales de token, dirección de pool por par+fee (CREATE2), pool de
+// precio por token, gauge por pool (auto-validado), extracción del Mint por txHash
+// y cerradas reconstruidas enteras (un burn es definitivo). Además de ahorrar
+// latencia, cada lectura evitada es un boleto menos en la lotería del 429 cuando
+// las fuentes gratis van estranguladas. REGLAS: nunca memoizar fallbacks, "?" ni
+// direcciones cero (un par sin pool hoy puede tenerlo mañana).
+// IMM_VER: súbelo si cambia el shape o la lógica de lo memoizado (invalida todo).
+const IMM_VER = 1;
+function immGet(kind, key) {
+  try { const v = store.getItem(`lp:imm${IMM_VER}:${kind}:${key}`); return v == null ? null : JSON.parse(v); } catch (e) { return null; }
+}
+function immSet(kind, key, val) {
+  try { store.setItem(`lp:imm${IMM_VER}:${kind}:${key}`, JSON.stringify(val)); } catch (e) {}
+}
+
 // Precio histórico USD de un token (DefiLlama coins) al timestamp de un depósito → COSTE
 // real (base) = cantidades depositadas × precio DEL DÍA, en vez del valor HODL de hoy.
 // Cacheado por (chain:addr:día). El prefijo de cadena sale de chain.llamaChain.
@@ -1227,11 +1243,42 @@ async function fetchRevertLending(owner) {
         try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, false, assetAddr); } catch (e) {}
         // Una posición ABIERTA (shares>0) SIEMPRE tiene un Deposit en su histórico. Si vino
         // null/vacío es que TODAS las fuentes fallaron a la vez (Alchemy 429 + tokentx caído
-        // y sin LKG persistido — raro tras el fix por capas). Reintento forzado (salta la
-        // caché) por si la racha de throttling amaina → recupera depósito/interés/APR.
-        for (let r = 0; open && !(h && h.deposited > 0) && r < 3; r++) {
-          await new Promise((res) => setTimeout(res, 2500));
+        // y sin LKG persistido — raro tras el fix por capas). ANTES: 3 reintentos BLOQUEANTES
+        // de 2,5s + cascada completa cada uno → hasta 41s de pared medidos en tormenta de 429.
+        // AHORA: UN reintento inline acotado; el resto pasa a SEGUNDO PLANO (solo navegador):
+        // si un reintento tardío gana, parchea la posición en state.positions y repinta.
+        // En Portfolio la card sale ya con interés "—" y se completa en el siguiente
+        // análisis/auto-refresh (el LKG persistido cubre la mayoría de tormentas); el
+        // Vigía headless la ve "—" un ciclo como mucho. La corrección no se pierde:
+        // solo deja de RETENER el análisis entero.
+        if (open && !(h && h.deposited > 0)) {
+          await new Promise((res) => setTimeout(res, 1500));
           try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true, assetAddr); } catch (e) {}
+        }
+        if (HAS_DOM && open && !(h && h.deposited > 0)) {
+          const vaultLc = c.vault.toLowerCase();
+          (async () => {
+            for (let r = 0; r < 2; r++) {
+              await new Promise((res) => setTimeout(res, 5000 * (r + 1)));
+              let h2 = null;
+              try { h2 = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true, assetAddr); } catch (e) {}
+              if (!(h2 && h2.deposited > 0)) continue;
+              const p = (state.positions || []).find((x) => x._lending && x.vault && x.vault.toLowerCase() === vaultLc && String(x.owner).toLowerCase() === owner.toLowerCase());
+              if (!p || p.depositedUSD != null) break; // ya no está en pantalla o ya se completó
+              const nowBg = Math.floor(Date.now() / 1000);
+              p.depositedUSD = (h2.deposited - h2.withdrawn) * priceUSD;
+              p.gainsUSD = p.currentValueUSD - p.depositedUSD;
+              p.openedAt = h2.firstTs || p.openedAt;
+              p.ageDays = h2.firstTs ? Math.max((nowBg - h2.firstTs) / 86400, 1 / 24) : p.ageDays;
+              p.apr = (p.depositedUSD > 0 && p.ageDays) ? (p.gainsUSD / p.depositedUSD) * (365 / p.ageDays) * 100 : null;
+              p.feesUSD = p.gainsUSD || 0;
+              p.pnlUSD = p.gainsUSD == null ? 0 : p.gainsUSD;
+              p.hodlUSD = p.depositedUSD || p.currentValueUSD;
+              try { p.timelineSeries = await buildLendingTimelineExact(chainKey, c.rpcs, c.vault, owner, dec, h2.events, priceUSD, p.gainsUSD, nowBg); } catch (e) {}
+              try { renderAll(); } catch (e) {}
+              break;
+            }
+          })();
         }
       }
       const everDeposited = !!(h && h.deposited > 0);
@@ -1770,16 +1817,39 @@ function decodeRawPos(hex, tokenId) {
  * → $1) y precia el resto buscando un pool token/stable contra CUALQUIER stable.
  * `tokenInfos`: { [addr]: { symbol, decimals } }
  */
-async function priceTokensViaPool(rpc, factoryAddr, tokenInfos) {
+async function priceTokensViaPool(rpc, factoryAddr, tokenInfos, chainScope) {
   const prices = {};
   const isStable = (sym) => /usd/i.test(sym || "");
   const addrs = Object.keys(tokenInfos);
   const stables = addrs.filter((a) => isStable(tokenInfos[a].symbol));
   for (const s of stables) prices[s] = 1.0;
   if (!stables.length) return prices;
+  // ámbito del memo: el MISMO factory address existe en varias chains (Uniswap V3
+  // despliega con la misma dirección) → la clave necesita la chain. Fallback: host del RPC.
+  const scope = chainScope || (Array.isArray(rpc) ? rpc[0] : rpc) || "";
 
   await Promise.all(addrs.map(async (addr) => {
     if (prices[addr] != null) return; // ya es stable
+    // El POOL de precio (dirección + orientación + decimales del estable) es inmutable
+    // → memo persistente; lo único vivo es slot0 (el precio). Si el memo falla en vivo
+    // (pool sin liquidez, RPC raro) se cae al descubrimiento completo de siempre.
+    const mk = `${scope}:${factoryAddr}:${addr}`;
+    const memo = immGet("pxpool", mk);
+    if (memo && memo.pool && memo.pt0) {
+      try {
+        const s0h = await rpcEthCall(rpc, memo.pool, SEL_SLOT0);
+        const sqrtP = decU(s0h, 0);
+        if (sqrtP) {
+          const decTok = tokenInfos[addr]?.decimals ?? 18;
+          const decStb = memo.decStb ?? 6;
+          const sq = Number(sqrtP) / 2 ** 96;
+          prices[addr] = (memo.pt0 === addr)
+            ? sq * sq * 10 ** (decTok - decStb)
+            : 1 / (sq * sq * 10 ** (decStb - decTok));
+          return;
+        }
+      } catch (e) { /* memo inválido en vivo → descubrimiento completo */ }
+    }
     for (const stable of stables) {
       let found = false;
       for (const fee of [3000, 500, 10000, 100]) {
@@ -1801,6 +1871,7 @@ async function priceTokensViaPool(rpc, factoryAddr, tokenInfos) {
           prices[addr] = (pt0 === addr)
             ? sq * sq * 10 ** (decTok - decStb)        // token = token0, stable = token1
             : 1 / (sq * sq * 10 ** (decStb - decTok)); // stable = token0, token = token1
+          immSet("pxpool", mk, { pool, pt0, stable, decStb });
           found = true;
           break;
         } catch {}
@@ -2096,12 +2167,19 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey, opts = {}) {
 
   if (!rawPositions.length) return [];
 
-  // 4. Dirección del pool para cada combinación token0/token1/fee
+  // 4. Dirección del pool para cada combinación token0/token1/fee — inmutable
+  // (CREATE2) → memo persistente; solo se memoizan direcciones NO-cero.
   const poolKeyMap = {};
   await Promise.all([...new Set(rawPositions.map(p => `${p.token0}-${p.token1}-${p.fee}`))].map(async key => {
+    const mk = `${chainKey}:${factory}:${key}`;
+    const memo = immGet("pool", mk);
+    if (memo) { poolKeyMap[key] = memo; return; }
     const [t0, t1, fee] = key.split("-");
     const h = await rpcEthCall(rpc, factory, getPoolSel + encodeAddr32(t0) + encodeAddr32(t1) + encodeU32(fee)).catch(() => null);
-    if (h) poolKeyMap[key] = ("0x" + h.slice(-40)).toLowerCase();
+    if (h) {
+      poolKeyMap[key] = ("0x" + h.slice(-40)).toLowerCase();
+      if (!/^0x0+$/.test(poolKeyMap[key])) immSet("pool", mk, poolKeyMap[key]);
+    }
   }));
 
   // 5. Estado de cada pool (tick actual + feeGrowthGlobal para backfill)
@@ -2123,18 +2201,24 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey, opts = {}) {
     } catch {}
   }));
 
-  // 6. Info de tokens (símbolo + decimales)
+  // 6. Info de tokens (símbolo + decimales) — inmutables → memo persistente.
+  // El fallback (addr recortado / "?") NO se memoiza: solo lecturas reales.
   const uniqueTokens = [...new Set(rawPositions.flatMap(p => [p.token0, p.token1]))];
   const tokenInfos = {};
   await Promise.all(uniqueTokens.map(async addr => {
+    const memo = immGet("tok", `${chainKey}:${addr}`);
+    if (memo && memo.symbol && memo.decimals != null) { tokenInfos[addr] = { id: addr, symbol: memo.symbol, decimals: memo.decimals }; return; }
     try {
       const [sh, dh] = await Promise.all([rpcEthCall(rpc, addr, SEL_SYMBOL), rpcEthCall(rpc, addr, SEL_DECIMALS)]);
       tokenInfos[addr] = { id: addr, symbol: decABIString(sh), decimals: Number(decU(dh, 0)) };
+      if (tokenInfos[addr].symbol && tokenInfos[addr].symbol !== "?" && Number.isFinite(tokenInfos[addr].decimals)) {
+        immSet("tok", `${chainKey}:${addr}`, { symbol: tokenInfos[addr].symbol, decimals: tokenInfos[addr].decimals });
+      }
     } catch { tokenInfos[addr] = { id: addr, symbol: addr.slice(0,6), decimals: 18 }; }
   }));
 
   // 7. Precios USD vía pools contra stables (detectados por símbolo)
-  const prices = await priceTokensViaPool(rpc, factory, tokenInfos).catch(() => ({}));
+  const prices = await priceTokensViaPool(rpc, factory, tokenInfos, chainKey).catch(() => ({}));
 
   // 7.5 Histórico (depósitos/retiros/fees cobradas + fecha de minteo) vía Blockscout
   const histories = {};
@@ -2384,8 +2468,14 @@ async function fetchAerodromePositions(owner) {
       const poolH = await rpcEthCall(rpc, A.factory, SEL_GET_POOL_CL + encodeAddr32(raw.token0) + encodeAddr32(raw.token1) + encodeU32(raw.fee));
       const pool = "0x" + (poolH || "").slice(-40);
       if (/^0x0+$/.test(pool)) return;
-      const gh = await rpcEthCall(rpc, A.voter, SEL_GAUGES + encodeAddr32(pool));
-      const gauge = ("0x" + (gh || "").slice(-40)).toLowerCase();
+      // gauge por pool: casi-inmutable → memo AUTO-VALIDADO: solo vale si coincide con
+      // el poseedor vivo del NFT (curOwner); si no coincide, se relee y se actualiza.
+      let gauge = immGet("gauge", `${chainKey}:${pool}`);
+      if (gauge !== curOwner) {
+        const gh = await rpcEthCall(rpc, A.voter, SEL_GAUGES + encodeAddr32(pool));
+        gauge = ("0x" + (gh || "").slice(-40)).toLowerCase();
+        if (!/^0x0+$/.test(gauge)) immSet("gauge", `${chainKey}:${pool}`, gauge);
+      }
       if (/^0x0+$/.test(gauge) || gauge !== curOwner) return; // el NFT no está en el gauge de su pool
       // stakedContains, la bóveda de Revert y earned dependen solo del gauge → una tanda.
       // earned se pide especulativamente (barato) y solo se GUARDA si la posición es nuestra.
@@ -2674,6 +2764,26 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
   // del bucle original son ahora `return null` (misma semántica best-effort).
   const results = await mapLimit(candidates, 3, async (tokenId) => {
     try {
+      // 0) Cerrada ya reconstruida en un análisis anterior → servir del memo (un burn
+      // es DEFINITIVO: fechas/rango/fees/APR congelados para siempre) refrescando solo
+      // lo vivo: precios de los tokens (valor realizable) y tick actual de la pool.
+      // Ahorra por cerrada: ~6 getLogs + recibo + ~10 idas RPC → 2 idas.
+      const memoPos = immGet("recon", `${chainKey}:${tokenId}`);
+      if (memoPos && memoPos.poolId && memoPos.token0 && memoPos.token1) {
+        try {
+          const [prices, s0H] = await Promise.all([
+            priceTokensViaPool(rpc, chain.factoryAddress, {
+              [memoPos.token0.id]: { symbol: memoPos.token0.symbol, decimals: memoPos.token0.decimals },
+              [memoPos.token1.id]: { symbol: memoPos.token1.symbol, decimals: memoPos.token1.decimals },
+            }, chainKey).catch(() => ({})),
+            rpcEthCall(rpc, memoPos.poolId, "0x3850c7bd").catch(() => null),
+          ]);
+          if (prices[memoPos.token0.id] != null) memoPos.token0.priceUSD = prices[memoPos.token0.id];
+          if (prices[memoPos.token1.id] != null) memoPos.token1.priceUSD = prices[memoPos.token1.id];
+          if (s0H && s0H.length >= 2 + 128) memoPos.tick = Number(BigInt.asIntN(256, BigInt("0x" + s0H.slice(2 + 64, 2 + 128))));
+        } catch (e) { /* precios/tick rancios mejor que re-reconstruir */ }
+        return memoPos;
+      }
       // ¿quemada? ownerOf revierte; si devuelve otra dirección → transferida/vendida → omitir.
       try {
         const oh = await rpcEthCall(rpc, nftMgr, "0x6352211e" + BigInt(tokenId).toString(16).padStart(64, "0"));
@@ -2686,22 +2796,30 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       const h0 = await fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, 18, 18);
       const incs = (h0.events || []).filter((e) => e.type === "inc").sort((a, b) => a.ts - b.ts);
       if (!incs.length || !incs[0].tx) return null;
-      const rcpt = await fetch(rpcOne, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getTransactionReceipt", params: [incs[0].tx] }) }).then((x) => x.json());
+      // La extracción del Mint (pool + rango) sale de un RECIBO — historia inmutable →
+      // memo persistente por txHash; el fetch del recibo solo se paga una vez.
       let pool = null, tickLo = null, tickHi = null;
-      for (const l of (rcpt?.result?.logs || [])) {
-        if (((l.topics || [])[0] || "").toLowerCase() === EV_POOL_MINT) {
-          pool = (l.address || "").toLowerCase();
-          // El Mint de la pool V3 lleva el RANGO en los topics (int24 indexados, sign-extended
-          // a 32 bytes): topics[2]=tickLower, topics[3]=tickUpper → la cerrada puede usar la
-          // FICHA COMPLETA (rango incluido) como las abiertas, sin coste extra.
-          try {
-            if ((l.topics || []).length >= 4) {
-              tickLo = Number(BigInt.asIntN(256, BigInt(l.topics[2])));
-              tickHi = Number(BigInt.asIntN(256, BigInt(l.topics[3])));
-            }
-          } catch (e) {}
-          break;
+      const mintMemo = immGet("mint", `${chainKey}:${incs[0].tx}`);
+      if (mintMemo && mintMemo.pool) {
+        pool = mintMemo.pool; tickLo = mintMemo.tickLo; tickHi = mintMemo.tickHi;
+      } else {
+        const rcpt = await fetch(rpcOne, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getTransactionReceipt", params: [incs[0].tx] }) }).then((x) => x.json());
+        for (const l of (rcpt?.result?.logs || [])) {
+          if (((l.topics || [])[0] || "").toLowerCase() === EV_POOL_MINT) {
+            pool = (l.address || "").toLowerCase();
+            // El Mint de la pool V3 lleva el RANGO en los topics (int24 indexados, sign-extended
+            // a 32 bytes): topics[2]=tickLower, topics[3]=tickUpper → la cerrada puede usar la
+            // FICHA COMPLETA (rango incluido) como las abiertas, sin coste extra.
+            try {
+              if ((l.topics || []).length >= 4) {
+                tickLo = Number(BigInt.asIntN(256, BigInt(l.topics[2])));
+                tickHi = Number(BigInt.asIntN(256, BigInt(l.topics[3])));
+              }
+            } catch (e) {}
+            break;
+          }
         }
+        if (pool) immSet("mint", `${chainKey}:${incs[0].tx}`, { pool, tickLo, tickHi });
       }
       if (!pool) return null; // no se localizó la pool en la tx → omitir
       // fee de la pool + tick ACTUAL (slot0) + token0/token1: independientes entre sí
@@ -2731,7 +2849,7 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       // hist (con los decimales reales) y precios actuales no dependen entre sí → en paralelo
       const [hist, prices] = await Promise.all([
         fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, t0.decimals, t1.decimals),
-        priceTokensViaPool(rpc, chain.factoryAddress, { [a0]: { symbol: t0.symbol, decimals: t0.decimals }, [a1]: { symbol: t1.symbol, decimals: t1.decimals } }).catch(() => ({})),
+        priceTokensViaPool(rpc, chain.factoryAddress, { [a0]: { symbol: t0.symbol, decimals: t0.decimals }, [a1]: { symbol: t1.symbol, decimals: t1.decimals } }, chainKey).catch(() => ({})),
       ]);
       const p0 = prices[a0] || 0, p1 = prices[a1] || 0;
       // Posición CERRADA → congelar la valoración al DÍA DEL CIERRE (último DecreaseLiquidity),
@@ -2782,7 +2900,7 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       // paridad con las abiertas (la ficha muestra APR/MPR también en cerradas).
       const durDays = (hist.mintTs && closeTs && closeTs > hist.mintTs) ? Math.max((closeTs - hist.mintTs) / 86400, 1 / 24) : null;
       const aprReal = (durDays && depositedUSD > 0) ? (feesUSD / depositedUSD) * (365 / durDays) * 100 : null;
-      return {
+      const pos = {
         id: String(tokenId), chainKey, nftId: String(tokenId), poolId: pool,
         reconstructed: true, closed: true, inRange: false,
         // priceUSD = precio ACTUAL (no el de cierre) a propósito: la cerrada participa en el cálculo de fees
@@ -2811,6 +2929,11 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
           transaction: { timestamp: String(hist.mintTs || 0) },
         },
       };
+      // Un burn es definitivo → memo persistente de la cerrada ENTERA, pero SOLO si la
+      // reconstrucción quedó completa (pool + cierre + eventos); una parcial (explorer
+      // caído a mitad) debe re-intentarse en el siguiente análisis, no quedar grabada.
+      if (closeTs && hist.mintTs && (hist.events || []).length) immSet("recon", `${chainKey}:${tokenId}`, pos);
+      return pos;
     } catch (e) { return null; /* best-effort: omitir esta candidata */ }
   });
   const out = results.filter(Boolean);
