@@ -2541,7 +2541,7 @@ async function fetchAerodromePositions(owner) {
       let claims = null;
       try {
         const tr = await alchemyTransfers("base", { fromAddress: p.gaugeAddr, toAddress: owner, contractAddresses: [A.aero], category: ["erc20"] });
-        if (tr) claims = tr.map((t) => ({ v: t.value || 0, ts: Math.floor(new Date((t.metadata && t.metadata.blockTimestamp) || 0).getTime() / 1000) || 0 }));
+        if (tr) claims = tr.map((t) => ({ v: t.value || 0, ts: Math.floor(new Date((t.metadata && t.metadata.blockTimestamp) || 0).getTime() / 1000) || 0, tx: t.hash || "" }));
       } catch (e) {}
       if (claims == null && apiBase) {
         try {
@@ -2551,7 +2551,7 @@ async function fetchAerodromePositions(owner) {
             const gl = p.gaugeAddr.toLowerCase(), ol = owner.toLowerCase();
             claims = j.result
               .filter((t) => (t.from || "").toLowerCase() === gl && (t.to || "").toLowerCase() === ol)
-              .map((t) => ({ v: Number(t.value) / 10 ** (parseInt(t.tokenDecimal) || 18), ts: parseInt(t.timeStamp) || 0 }));
+              .map((t) => ({ v: Number(t.value) / 10 ** (parseInt(t.tokenDecimal) || 18), ts: parseInt(t.timeStamp) || 0, tx: t.hash || "" }));
           }
         } catch (e) {}
       }
@@ -4226,6 +4226,9 @@ function eventLogHTML(p) {
   const events = (p._snapshots && p._snapshots.length)
     ? classifyEvents(p._snapshots)
     : classifyRpcEvents(p._rpcEvents, Number(p.token0.decimals), Number(p.token1.decimals));
+  // Aerodrome stakeada: el histórico del subgraph trae TOTALES sin eventos → sin
+  // visor clásico; pero los COBROS de AERO sí son eventos reales (fecha + tx) → 📜 propio.
+  if (!events.length && p.rewardKind === "AERO" && (p._aeroClaimedRaw || []).length) return aeroLogHTML(p);
   if (!events.length) return "";
 
   // Cash flows = movimientos de capital (deposit/withdraw, no fees)
@@ -4306,6 +4309,53 @@ function eventLogHTML(p) {
       </div>
     </details>
   `;
+}
+
+// Visor 📜 para stakeadas de Aerodrome: la tabla son los COBROS de AERO (gauge→wallet,
+// con fecha y tx del explorer), filtrados desde la apertura de ESTA posición — el mismo
+// criterio con el que applyAerodromeAeroAsFees computa "cobradas". El AERO se valora al
+// precio actual (⚠︎ si los datos vienen del último-bueno persistido por fuentes caídas).
+function aeroLogHTML(p) {
+  const claims = (p._aeroClaimedRaw || []).filter((x) => !p.openedAt || x.ts >= p.openedAt);
+  if (!claims.length) return "";
+  const chain = state.chains[p.chainKey] || {};
+  const explorer = chain.explorer || "";
+  const px = p._aeroPx;
+  const fmtDate = (ts) => {
+    const d = new Date(ts * 1000);
+    return d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" })
+      + " " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", hour12: false });
+  };
+  const fmtTx = (h) => h
+    ? `<a href="${explorer}/tx/${h}" target="_blank" class="font-mono text-fuchsia-300 hover:underline">${h.slice(0, 6)}…${h.slice(-4)}</a>`
+    : `<span class="text-slate-600">—</span>`;
+  const rows = claims.map((c) => `
+    <tr class="border-t border-slate-800">
+      <td class="px-2 py-1 text-slate-400 whitespace-nowrap">${fmtDate(c.ts)}</td>
+      <td class="px-2 py-1 whitespace-nowrap"><span class="text-fuchsia-300 font-semibold">AERO Claim</span></td>
+      <td class="px-2 py-1 font-mono text-slate-300 text-right">${c.v >= 1 ? c.v.toFixed(4) : c.v.toFixed(6)}</td>
+      <td class="px-2 py-1 font-mono text-slate-300 text-right">${px != null ? fmtUSD(c.v * px) : "—"}</td>
+      <td class="px-2 py-1 text-right">${fmtTx(c.tx)}</td>
+    </tr>`).join("");
+  return `
+    <details class="text-xs">
+      <summary class="text-slate-400 hover:text-slate-200">📜 logs (${claims.length})${p._aeroClaimedStale ? ` <span class="text-amber-400" title="Fuentes de transfers caídas ahora mismo: se muestra el último dato bueno guardado">⚠︎</span>` : ""}</summary>
+      <div class="mt-2 overflow-x-auto -mx-1">
+        <table class="text-[11px] w-full min-w-[380px]">
+          <thead>
+            <tr class="text-slate-500 text-left">
+              <th class="px-2 py-1 font-medium whitespace-nowrap">Fecha</th>
+              <th class="px-2 py-1 font-medium">Tipo</th>
+              <th class="px-2 py-1 font-medium text-right">AERO</th>
+              <th class="px-2 py-1 font-medium text-right">≈ USD</th>
+              <th class="px-2 py-1 font-medium text-right">Tx</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="text-[10px] text-slate-500 italic px-2 pt-1">Solo cobros de AERO desde la apertura de esta posición. Los depósitos/retiros de la LP no tienen visor en Aerodrome: el subgraph da totales sin eventos.</div>
+      </div>
+    </details>`;
 }
 
 // Ficha compacta para posiciones reconstruidas SIN datos de pool/tick (HyperEVM
