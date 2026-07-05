@@ -1580,6 +1580,7 @@ function renderAuthArea() {
 
 // ---- Firestore portfolio (cifrado E2E) ----
 let _legacyPortfolio = null; // datos en texto plano de cuentas antiguas (a migrar)
+let _lastUserDoc = null;     // doc del usuario tal como lo leyó loadPortfolio (lo reusa la fase 3)
 
 async function loadPortfolio(uid) {
   _pendingEnc = null; _legacyPortfolio = null; _pendingApiKeysEnc = null; crypto_.key = null;
@@ -1588,6 +1589,7 @@ async function loadPortfolio(uid) {
     const ref = fb.fsMod.doc(fb.db, "users", uid);
     const snap = await fb.fsMod.getDoc(ref);
     const data = snap.exists() ? snap.data() : {};
+    _lastUserDoc = data; // F-cache fase 3: la hidratación consume ESTA lectura (una sola ida)
     state.prefs = {
       chains: Array.isArray(data.prefs?.chains) ? data.prefs.chains : DEFAULT_PREFS.chains.slice(),
       protocols: Array.isArray(data.prefs?.protocols) ? data.prefs.protocols : DEFAULT_PREFS.protocols.slice(),
@@ -1756,11 +1758,15 @@ async function syncCachesUp() {
 // por kind; empate/viejo → se respeta lo local). Merge ADITIVO: nunca borra claves
 // locales que el remoto no tenga (peor caso de conflicto = re-bajar un delta).
 async function hydrateCachesDown(key) {
-  if (!state.user || !fb.db || typeof DecompressionStream === "undefined") return;
+  if (!state.user || typeof DecompressionStream === "undefined") return;
   try {
-    const snap = await fb.fsMod.getDoc(fb.fsMod.doc(fb.db, "users", state.user.uid));
-    if (!snap.exists()) return;
-    const d = snap.data();
+    // Reusa el doc que loadPortfolio acaba de leer en este mismo arranque (una sola
+    // ida a Firestore). NOTA de guerra: un getDoc propio aquí devolvía el doc VACÍO
+    // (exists=true, data()={}, fromCache=false) mientras el de loadPortfolio veía
+    // todos los campos — mismo path, misma app. Sin explicación del SDK; esquivado
+    // por diseño consumiendo la lectura buena, que además es más rápido.
+    const d = _lastUserDoc;
+    if (!d) return;
     for (const kind of Object.keys(CACHE_SYNC_KINDS)) {
       const enc = d[CACHE_FIELD[kind]];
       const remoteTs = Number(d["cacheTs_" + kind] || 0);
