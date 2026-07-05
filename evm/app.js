@@ -2425,11 +2425,15 @@ async function fetchAerodromePositions(owner) {
   // el owner → tokenIds (capta TODAS, incl. stakeadas, que el NFT lo tiene el gauge). Es la
   // herramienta correcta para queries por owner; sin la limitación de ventana del parche anterior y
   // sin esperar al Blockscout lento. Si llena ids, el bucle Blockscout de abajo se salta (!ids.size).
+  let discoveryOk = false;
   try {
     const tr = await alchemyTransfers("base", { toAddress: owner, contractAddresses: [A.nftMgr], category: ["erc721"] });
-    if (tr) for (const t of tr) { const id = t.erc721TokenId; if (id) { try { ids.add(BigInt(id).toString()); } catch (e) {} } }
+    if (tr) { discoveryOk = true; for (const t of tr) { const id = t.erc721TokenId; if (id) { try { ids.add(BigInt(id).toString()); } catch (e) {} } } }
   } catch (e) {}
-  for (let attempt = 0; attempt < 3 && !ids.size; attempt++) {
+  // fallo ≠ vacío (lección v344): si Alchemy FALLÓ (null) el bucle Blockscout corre
+  // igualmente — sin los Transfer(to=owner) las STAKEADAS (su NFT lo tiene el gauge,
+  // el enum de wallet no las ve) desaparecerían de la card en plena tormenta de 429.
+  for (let attempt = 0; attempt < 3 && !discoveryOk && !ids.size; attempt++) {
     let allValid = true;
     for (const apiUrl of [A.blockscout, chain.blockscoutApi]) {
       if (!apiUrl || ids.size) continue;
@@ -2520,9 +2524,13 @@ async function fetchAerodromePositions(owner) {
   // Stakeada, el AERO es el rendimiento real (las trading fees van a los votantes), así que lo metemos
   // en fees/APR/PnL en applyAerodromeAeroAsFees() tras el cálculo estándar (que si no lo pisaría).
   const aeroPx = await aeroPxPromise;
-  // Los transfers de AERO cobrado (uno por posición stakeada, vía Alchemy) son
-  // independientes entre posiciones → en paralelo. En serie, cada backoff de 429
-  // del tier free se sumaba a la cola del análisis (medido: ~6s de silencio).
+  // Los transfers de AERO cobrado (uno por posición stakeada) son independientes
+  // entre posiciones → en paralelo. Y fallo ≠ vacío (lección v344, cazado EN VIVO:
+  // un cobro de 0,1775 AERO de la mañana salía como "$0 cobradas" porque Alchemy
+  // devolvía null en tormenta de 429 y `(tr || [])` lo convertía en "nunca cobró").
+  // Capas: (1) Alchemy → (2) tokentx del explorer filtrado gauge→owner (ruta
+  // distinta; validada en vivo durante la tormenta) → (3) último-bueno persistido.
+  // El historial de cobros es append-only: el LKG nunca inventa, solo envejece.
   await Promise.all(positions.map(async (p) => {
     p.aeroClaimable = earnedById[p.id] || 0;
     p.gaugeAddr = gaugeById[p.id] || null;
@@ -2530,10 +2538,30 @@ async function fetchAerodromePositions(owner) {
     p.aeroClaimableUSD = aeroPx != null ? p.aeroClaimable * aeroPx : null;
     p._aeroClaimedRaw = [];
     if (p.staked && p.gaugeAddr && A.aero) {
+      let claims = null;
       try {
         const tr = await alchemyTransfers("base", { fromAddress: p.gaugeAddr, toAddress: owner, contractAddresses: [A.aero], category: ["erc20"] });
-        p._aeroClaimedRaw = (tr || []).map((t) => ({ v: t.value || 0, ts: Math.floor(new Date((t.metadata && t.metadata.blockTimestamp) || 0).getTime() / 1000) || 0 }));
+        if (tr) claims = tr.map((t) => ({ v: t.value || 0, ts: Math.floor(new Date((t.metadata && t.metadata.blockTimestamp) || 0).getTime() / 1000) || 0 }));
       } catch (e) {}
+      if (claims == null && apiBase) {
+        try {
+          const url = `${apiBase}?module=account&action=tokentx&address=${owner}&contractaddress=${A.aero}&startblock=0&endblock=latest&sort=asc`;
+          const j = await explorerFetch(url).then((x) => x.json());
+          if (Array.isArray(j.result)) {
+            const gl = p.gaugeAddr.toLowerCase(), ol = owner.toLowerCase();
+            claims = j.result
+              .filter((t) => (t.from || "").toLowerCase() === gl && (t.to || "").toLowerCase() === ol)
+              .map((t) => ({ v: Number(t.value) / 10 ** (parseInt(t.tokenDecimal) || 18), ts: parseInt(t.timeStamp) || 0 }));
+          }
+        } catch (e) {}
+      }
+      const lkgKey = `lp:aeroclaim:${chainKey}:${p.id}`;
+      if (claims == null) {
+        try { const lkg = JSON.parse(store.getItem(lkgKey) || "null"); if (Array.isArray(lkg)) { claims = lkg; p._aeroClaimedStale = true; } } catch (e) {}
+      } else if (claims.length) {
+        try { store.setItem(lkgKey, JSON.stringify(claims)); } catch (e) {}
+      }
+      p._aeroClaimedRaw = claims || [];
     }
   }));
   return positions;
