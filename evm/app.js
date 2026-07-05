@@ -2005,15 +2005,22 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
   const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
   const isBaseMgr = /base\.blockscout\.com/i.test(apiBase || "");
   const getLogs = async (topic0) => {
-    if (isBaseMgr) {
-      // Base: thirdweb Insight (fiable) por tokenId; si falla → Blockscout (el de abajo).
-      try { return await thirdwebGetLogsByTopic1(8453, nftMgr, topic0, topic1); }
-      catch (e) { /* thirdweb caído → fallback Blockscout */ }
-    }
+    // PROXY primero (también en Base): con el almacén incremental del Worker (thirdweb →
+    // HyperSync → Blockscout de cascada) responde en ms tras la primera siembra y no
+    // depende de la lotería del thirdweb del CLIENTE (cap-2 global + timeout de 9s que,
+    // en pleno análisis, perdían el race de Aerodrome — el visor se quedaba sin eventos).
+    // El thirdweb del cliente queda de FALLBACK para Base si el proxy falla del todo.
     const url = `${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${nftMgr}&topic0=${topic0}&topic1=${topic1}&topic0_1_opr=and`;
-    const r = await explorerFetch(url);
-    const j = await r.json();
-    return Array.isArray(j.result) ? j.result : [];
+    try {
+      const r = await explorerFetch(url);
+      const j = await r.json();
+      if (Array.isArray(j.result)) return j.result;
+    } catch (e) { /* proxy caído/breaker → thirdweb directo si es Base */ }
+    if (isBaseMgr) {
+      try { return await thirdwebGetLogsByTopic1(8453, nftMgr, topic0, topic1); }
+      catch (e) { /* thirdweb también caído */ }
+    }
+    return [];
   };
   // Como mucho 2 topics en vuelo: el thirdweb del cliente (vía Base) tiene cap-2 en
   // el tier free — con los 3 a la vez, el tercero acababa 429 → fallback del proxy
