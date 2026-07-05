@@ -276,10 +276,14 @@ async function fetchThirdwebLogs(chain, search, env) {
   const address = (p.get("address") || "").toLowerCase();
   if (!cid || !/^0x[0-9a-f]{40}$/.test(address)) return null;
   const endpoint = `https://${cid}.insight.thirdweb.com/v1/events/${address}`;
+  // F-cache: si la consulta trae un fromBlock > 1 (delta incremental del almacén),
+  // se lo pasamos a thirdweb — el delta responde en ms en vez de barrer toda la historia.
+  const fromB = parseInt(p.get("fromBlock") || "0", 10) || 0;
   const result = [];
   for (let page = 0; page < 10; page++) {            // tope 10 páginas (10k eventos) de seguridad
     const q = new URLSearchParams();
     q.set("chain_id", String(cid));
+    if (fromB > 1) q.set("filter_block_number_gte", String(fromB));
     for (let i = 0; i < 4; i++) { const t = p.get("topic" + i); if (t) q.set("filter_topic_" + i, t); }
     q.set("sort_by", "block_number");
     q.set("sort_order", "asc");
@@ -308,6 +312,42 @@ async function fetchThirdwebLogs(chain, search, env) {
   return JSON.stringify({ status: "1", message: "OK", result });
 }
 
+// ═══ F-cache 1a (plan docs/PLAN_CACHE_INCREMENTAL.md, aprobado 2026-07-05) ═══
+// El histórico on-chain es append-only → los getLogs de HISTORIA COMPLETA (fromBlock≤1
+// → latest) se guardan en KV SIN caducidad con un cursor `lastBlock`; cada consulta
+// sirve el almacén + el DELTA desde el cursor (con solape anti-reorg y dedupe).
+// Subir HIST_GEN invalida TODO el almacén de golpe (resincronización global).
+const HIST_GEN = 1;
+const HIST_OVERLAP = 1000;      // bloques de solape al pedir el delta (reorgs someros)
+const HIST_MAX_BYTES = 4000000; // guard: streams anómalamente grandes → degradar a TTL
+
+// Fusiona eventos guardados + delta sin duplicados (clave única on-chain: tx+logIndex)
+// y ordenados por bloque/logIndex — el shape es el Blockscout que ya consume el cliente.
+export function mergeLogEvents(stored, delta) {
+  const k = (l) => (l.transactionHash || "") + ":" + (l.logIndex || "");
+  const seen = new Set();
+  const out = [];
+  for (const l of [...(stored || []), ...(delta || [])]) {
+    const kk = k(l);
+    if (seen.has(kk)) continue;
+    seen.add(kk);
+    out.push(l);
+  }
+  out.sort((a, b) => ((parseInt(a.blockNumber, 16) || 0) - (parseInt(b.blockNumber, 16) || 0)) || ((parseInt(a.logIndex, 16) || 0) - (parseInt(b.logIndex, 16) || 0)));
+  return out;
+}
+
+// Head INDEXADO que DECLARA un Blockscout (guardia de frescura: hyperscan nos enseñó
+// que un índice puede ir días atrasado devolviendo respuestas con buena pinta).
+async function bsIndexedHead(base) {
+  try {
+    const r = await fetchTimeout(base + "?module=block&action=eth_block_number", 5000);
+    const j = await r.json();
+    const n = parseInt(j && j.result, 16);
+    return Number.isFinite(n) ? n : null;
+  } catch (e) { return null; }
+}
+
 // /evm/{chain}/{pathTrasBase}?{query}. El cliente manda la MISMA URL que ya
 // construye para Blockscout, pero tras "/evm/{chain}/" en vez del host. Primario:
 // Blockscout con timeout 12 s; si falla/timeout o un getLogs trae result NO-array
@@ -319,8 +359,13 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
   const base = EVM_BLOCKSCOUT[chain];
   if (!base) return json({ error: "EVM chain no soportada: " + chain }, 400, cors);
   const extraPath = seg.slice(2).join("/");   // lo que va tras "{base}"
-  const search = url.search || "";            // incluye el "?"
-  const target = base + (extraPath ? "/" + extraPath : "") + search;
+  // lpresync=1 (interno F-cache): reconstruye el almacén incremental de este stream.
+  // Se QUITA antes de reenviar upstream y de calcular claves.
+  const qp = new URLSearchParams((url.search || "").replace(/^\?/, ""));
+  const resync = qp.get("lpresync") === "1";
+  qp.delete("lpresync");
+  let search = qp.toString() ? "?" + qp.toString() : "";
+  let target = base + (extraPath ? "/" + extraPath : "") + search;
 
   const isLogs = /[?&]action=getLogs(&|$)/.test(search);
   const isTransfers = /token-transfers/.test(extraPath);
@@ -337,12 +382,39 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
   const cacheTtl = (isLogs && EVM_THIRDWEB_CHAINID[chain]) ? 1800 : (isLogs || isTransfers) ? 600 : 120;
   const cacheKey = cacheable ? "evm:" + chain + ":" + (await sha256hex(extraPath + search)) : null;
 
-  // 1) Caché KV
-  if (cacheKey && env.QUOTA) {
+  // ═══ F-cache 1a: ¿este getLogs es un STREAM de historia completa? ═══
+  // Elegible: fromBlock≤1 y toBlock=latest (las consultas de histórico de la app).
+  // Con almacén previo: se REESCRIBE fromBlock al cursor−solape → la cascada de
+  // fuentes de abajo (thirdweb/HyperSync/Etherscan/Blockscout) pide SOLO el delta.
+  let stream = null; // { key, stored:{gen,lastBlock,events}|null }
+  if (isLogs && env.QUOTA) {
+    const fromB = parseInt(qp.get("fromBlock") || "0", 10) || 0;
+    const toB = qp.get("toBlock") || "latest";
+    if (fromB <= 1 && toB === "latest") {
+      const canon = [chain, (qp.get("address") || "").toLowerCase(), (qp.get("topic0") || "").toLowerCase(), (qp.get("topic1") || "").toLowerCase(), (qp.get("topic2") || "").toLowerCase(), (qp.get("topic3") || "").toLowerCase()].join("|");
+      const key = "histv1:" + (await sha256hex(canon));
+      let stored = null;
+      if (!resync) {
+        try { const raw = await env.QUOTA.get(key); if (raw) stored = JSON.parse(raw); } catch (e) {}
+        if (stored && (stored.gen !== HIST_GEN || !Array.isArray(stored.events))) stored = null;
+      }
+      stream = { key, stored };
+      if (stored) {
+        const deltaFrom = Math.max(0, (Number(stored.lastBlock) || 0) - HIST_OVERLAP);
+        qp.set("fromBlock", String(deltaFrom));
+        search = "?" + qp.toString();
+        target = base + (extraPath ? "/" + extraPath : "") + search;
+      }
+    }
+  }
+
+  // 1) Caché KV clásica con TTL (los streams tienen su propio almacén sin caducidad)
+  if (!stream && cacheKey && env.QUOTA) {
     try { const c = await env.QUOTA.get(cacheKey); if (c) return rawJson(c, cors); } catch (e) {}
   }
 
   let bodyText = null, okData = false, deferred = false, etherscanServed = false;
+  let servedBy = null, hsHead = null; // quién sirvió + head declarado (guardia de frescura F-cache)
 
   // 2a) getLogs de Base/BNB: su Blockscout va degradado y Etherscan los cobra → thirdweb
   //     Insight. Las queries CON datos responden ~1s; las VACÍAS (escaneo completo sin
@@ -355,7 +427,7 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
     const twPromise = fetchThirdwebLogs(chain, search, env).catch(() => null);
     const winner = await Promise.race([twPromise, new Promise((res) => setTimeout(() => res("__t__"), 3500))]);
     if (winner && winner !== "__t__") {
-      bodyText = winner; okData = true;                 // respondió rápido → servir (+ caché normal abajo)
+      bodyText = winner; okData = true; servedBy = "thirdweb"; // respondió rápido → servir (+ caché normal abajo)
     } else {
       if (ctx && ctx.waitUntil && cacheKey && env.QUOTA) {
         ctx.waitUntil(twPromise.then((tw) => tw && env.QUOTA.put(cacheKey, tw, { expirationTtl: cacheTtl })).catch(() => {}));
@@ -399,13 +471,14 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
           }
         }
         const next = Number(j.next_block || 0);
+        if (typeof j.archive_height === "number") hsHead = Math.max(hsHead || 0, j.archive_height); // head DECLARADO (cursor F-cache)
         const tope = toBlock != null ? toBlock : Number(j.archive_height || 0);
         if (!next || next > tope || next <= from) break;
         from = next;
       }
       // etherscanServed=true = "fuente FRESCA sirvió" → cacheable (el poison-guard de
       // abajo solo debe bloquear la caché cuando sirve el Blockscout atrasado).
-      if (hsOk) { bodyText = JSON.stringify({ status: "1", message: "OK-hypersync", result }); okData = true; etherscanServed = true; }
+      if (hsOk) { bodyText = JSON.stringify({ status: "1", message: "OK-hypersync", result }); okData = true; etherscanServed = true; servedBy = "hypersync"; }
     } catch (e) { /* HyperSync caído → 2a-bis */ }
   }
 
@@ -431,7 +504,7 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
         const r0 = await fetchTimeout(eUrl, 12000);
         if (r0.ok) {
           const t0 = await r0.text();
-          try { if (Array.isArray(JSON.parse(t0).result)) { bodyText = t0; okData = true; etherscanServed = true; } } catch (e) {}
+          try { if (Array.isArray(JSON.parse(t0).result)) { bodyText = t0; okData = true; etherscanServed = true; servedBy = "etherscan"; } } catch (e) {}
         }
       } catch (e) {}
     }
@@ -448,6 +521,7 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
         bodyText = await r.text();
         if (isLogs) { try { okData = Array.isArray(JSON.parse(bodyText).result); } catch (e) { okData = false; } }
         else okData = true;
+        if (okData) servedBy = "blockscout";
       }
     } catch (e) { /* timeout/red → failover */ }
   }
@@ -462,16 +536,54 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
       const r2 = await fetchTimeout("https://api.etherscan.io/v2/api?" + p.toString(), 12000);
       if (r2.ok) {
         const t2 = await r2.text();
-        try { if (Array.isArray(JSON.parse(t2).result)) { bodyText = t2; okData = true; } } catch (e) {}
+        try { if (Array.isArray(JSON.parse(t2).result)) { bodyText = t2; okData = true; servedBy = "etherscan"; } } catch (e) {}
       }
     } catch (e) {}
   }
 
-  if (bodyText == null) return json({ error: "explorer EVM no disponible (" + chain + ")" }, 502, cors);
-  // Cachear SOLO respuestas válidas (no errores ni getLogs vacíos/no-array). EXCEPCIÓN: en
-  // chains con Etherscan PRIMARIO (HyperEVM), si el dato NO vino de Etherscan (cayó a Blockscout
-  // por rate-limit) NO lo cacheamos — sería el índice atrasado y envenenaría 30min. Que el
-  // siguiente análisis reintente Etherscan.
+  if (bodyText == null) {
+    // Stream CON almacén: mejor servir lo guardado (histórico real hasta el cursor)
+    // que un error — degradado pero útil; el cursor no avanza y el siguiente reintenta.
+    if (stream && stream.stored) return rawJson(JSON.stringify({ status: "1", message: "OK-histcache-stale", result: stream.stored.events }), cors);
+    return json({ error: "explorer EVM no disponible (" + chain + ")" }, 502, cors);
+  }
+
+  // ═══ F-cache 1a: fusionar delta + almacén, avanzar el cursor CON GUARDIA y persistir ═══
+  if (stream) {
+    let delta = null;
+    if (okData && !deferred) { try { const jj = JSON.parse(bodyText); if (Array.isArray(jj.result)) delta = jj.result; } catch (e) {} }
+    if (delta == null) {
+      // sin datos válidos nuevos (fallo o vacío-temporal de la carrera thirdweb):
+      // servir el almacén si existe; si no, el comportamiento de siempre.
+      if (stream.stored) return rawJson(JSON.stringify({ status: "1", message: "OK-histcache-stale", result: stream.stored.events }), cors);
+      return rawJson(bodyText, cors);
+    }
+    const merged = mergeLogEvents(stream.stored ? stream.stored.events : [], delta);
+    // Guardia de frescura del CURSOR según quién sirvió:
+    //  · hypersync → su archive_height (declarado, fiable).
+    //  · blockscout → su head INDEXADO declarado (eth_block_number)… salvo en chains
+    //    donde sabemos que su índice miente atrasado (ETHERSCAN_PRIMARY, p.ej. hyperevm).
+    //  · etherscan/thirdweb → sin head fiable: avance CONSERVADOR hasta el último evento
+    //    visto (la ventana pendiente se re-pide con solape en el siguiente análisis).
+    // Los EVENTOS se persisten siempre (son reales aunque la fuente vaya atrasada);
+    // lo que nunca se hace es adelantar el cursor más allá de lo demostrado.
+    let head = null;
+    if (servedBy === "hypersync" && typeof hsHead === "number") head = hsHead;
+    else if (servedBy === "blockscout" && !EVM_LOGS_ETHERSCAN_PRIMARY[chain]) head = await bsIndexedHead(base);
+    let maxEvt = 0;
+    for (const l of merged) { const b = parseInt(l.blockNumber, 16) || 0; if (b > maxEvt) maxEvt = b; }
+    const newLast = Math.max(Number(stream.stored && stream.stored.lastBlock) || 0, maxEvt, head || 0);
+    const record = JSON.stringify({ gen: HIST_GEN, lastBlock: newLast, source: servedBy || "?", updatedAt: Date.now(), events: merged });
+    if (record.length <= HIST_MAX_BYTES) {
+      try { await env.QUOTA.put(stream.key, record); } catch (e) {}
+    }
+    return rawJson(JSON.stringify({ status: "1", message: "OK-histcache", result: merged }), cors);
+  }
+
+  // Vía clásica: cachear SOLO respuestas válidas (no errores ni getLogs vacíos/no-array).
+  // EXCEPCIÓN: en chains con Etherscan PRIMARIO (HyperEVM), si el dato NO vino de una fuente
+  // fresca (cayó a Blockscout por rate-limit) NO lo cacheamos — índice atrasado, envenenaría
+  // la caché. Que el siguiente análisis reintente.
   const poison = isLogs && EVM_LOGS_ETHERSCAN_PRIMARY[chain] && !etherscanServed;
   if (cacheKey && okData && env.QUOTA && !poison) {
     try { await env.QUOTA.put(cacheKey, bodyText, { expirationTtl: cacheTtl }); } catch (e) {}

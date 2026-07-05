@@ -146,6 +146,16 @@ async function histPriceUSD(llamaChain, addr, tsSec) {
   if (!llamaChain || !addr || !tsSec) return null;
   const key = `${llamaChain}:${String(addr).toLowerCase()}:${Math.floor(tsSec / 86400)}`;
   if (_histPxCache.has(key)) return _histPxCache.get(key);
+  // F-cache 1b (plan docs/PLAN_CACHE_INCREMENTAL.md): el precio de un DÍA CERRADO (>48h)
+  // es inmutable → memo persistente en store; se deja de re-pedir a DefiLlama para siempre.
+  // Días recientes NO se persisten (searchWidth aún puede moverlos).
+  const diaCerrado = (Date.now() / 1000 - tsSec) > 172800;
+  if (diaCerrado) {
+    try {
+      const v = store.getItem("lp:pxv1:" + key);
+      if (v != null && v !== "") { const n = Number(v); const p0 = Number.isFinite(n) ? n : null; _histPxCache.set(key, p0); return p0; }
+    } catch (e) {}
+  }
   let px = null;
   try {
     // CON TIMEOUT (6s, 1 intento): si DefiLlama va lento NO debe colgar el análisis.
@@ -157,6 +167,7 @@ async function histPriceUSD(llamaChain, addr, tsSec) {
     if (c && typeof c.price === "number") px = c.price;
   } catch (e) { /* timeout/red → null */ }
   _histPxCache.set(key, px);
+  if (diaCerrado && px != null) { try { store.setItem("lp:pxv1:" + key, String(px)); } catch (e) {} }
   return px;
 }
 const DEFAULTS_VERSION = 8; // bump cuando cambien IDs por defecto para forzar refresh
