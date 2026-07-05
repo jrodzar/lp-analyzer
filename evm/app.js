@@ -2015,7 +2015,10 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
     const j = await r.json();
     return Array.isArray(j.result) ? j.result : [];
   };
-  const [incLogs, decLogs, colLogs] = await Promise.all([getLogs(EV_INCREASE), getLogs(EV_DECREASE), getLogs(EV_COLLECT)]);
+  // Como mucho 2 topics en vuelo: el thirdweb del cliente (vía Base) tiene cap-2 en
+  // el tier free — con los 3 a la vez, el tercero acababa 429 → fallback del proxy
+  // (que en Base puede servir vacío-mentiroso por la ruta diferida del worker).
+  const [incLogs, decLogs, colLogs] = await mapLimit([EV_INCREASE, EV_DECREASE, EV_COLLECT], 2, getLogs);
 
   let inc0 = 0n, inc1 = 0n, dec0r = 0n, dec1r = 0n, col0 = 0n, col1 = 0n;
   let mintTs = null;
@@ -2039,7 +2042,11 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
     collectedFees1: bigIntToDecimal(max0(col1, dec1r), dec1),
     mintTs, events, dec0, dec1,
   };
-  _histCache.set(cacheKey, { data, ts: Date.now() });
+  // NO cachear un histórico SIN Increase: todo tokenId real tiene al menos el mint.
+  // Vacío aquí = alguna fuente mintió (fallo≠vacío: thirdweb 429, Base flaky, proxy
+  // sirviendo un vacío cacheado) → mejor reintentar fresco en el siguiente análisis
+  // que grabar la mentira 10 minutos.
+  if (incLogs.length) _histCache.set(cacheKey, { data, ts: Date.now() });
   return data;
 }
 
