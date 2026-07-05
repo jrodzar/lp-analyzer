@@ -57,7 +57,7 @@ const els = {
   settingsModal: $("settings-modal"), settingsClose: $("settings-close"),
   settingsCancel: $("settings-cancel"), settingsSave: $("settings-save"),
   settingsTest: $("settings-test"), settingsStatus: $("settings-status"),
-  setGraphKey: $("set-graph-key"), setHeliusKey: $("set-helius-key"), setBirdeyeKey: $("set-birdeye-key"), setEtherscanKey: $("set-etherscan-key"),
+  setGraphKey: $("set-graph-key"), setHeliusKey: $("set-helius-key"), setBirdeyeKey: $("set-birdeye-key"), setEtherscanKey: $("set-etherscan-key"), setHypersyncKey: $("set-hypersync-key"),
   frameEvm: $("frame-evm"), frameSol: $("frame-sol"),
   // histórico
   histEmpty: $("hist-empty"), histContent: $("hist-content"),
@@ -1219,7 +1219,7 @@ async function handleForgotPassword() {
     }, { merge: true });
     forgetKey(state.user.uid);
     _pendingEnc = null; _legacyPortfolio = null;
-    _pendingApiKeysEnc = null; _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" };
+    _pendingApiKeysEnc = null; _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "", hypersync: "" };
     crypto_.salt = crypto.getRandomValues(new Uint8Array(16));
     crypto_.key = null;
     state.portfolio = [];
@@ -1546,7 +1546,7 @@ async function onAuthChange(user) {
     els.quickContent.classList.add("hidden");
     state.portfolio = [];
     crypto_.key = null; _pendingEnc = null;
-    _pendingApiKeysEnc = null; _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" };
+    _pendingApiKeysEnc = null; _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "", hypersync: "" };
     pushKeysToEngines(); // limpiar también las claves en los engines
     setTab("quick"); // sin sesión, mostrar el tab quick con el gate
   }
@@ -1580,7 +1580,7 @@ let _legacyPortfolio = null; // datos en texto plano de cuentas antiguas (a migr
 
 async function loadPortfolio(uid) {
   _pendingEnc = null; _legacyPortfolio = null; _pendingApiKeysEnc = null; crypto_.key = null;
-  _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" };
+  _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "", hypersync: "" };
   try {
     const ref = fb.fsMod.doc(fb.db, "users", uid);
     const snap = await fb.fsMod.getDoc(ref);
@@ -3483,12 +3483,12 @@ els.modeSol.onclick = () => setMode("sol");
 // Birdeye). Se persisten CIFRADAS en Firestore (mismo AES-GCM + clave PBKDF2
 // que el portfolio) → multi-dispositivo y nunca legibles por el servidor.
 // En memoria viven en _apiKeys; el blob cifrado pendiente, en _pendingApiKeysEnc.
-let _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" };
+let _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "", hypersync: "" };
 let _pendingApiKeysEnc = null;
 
 function pushKeysToEngines() {
   const k = _apiKeys || {};
-  const msgEvm = { type: "lp-apply-keys", app: "evm", graph: k.graph || "", etherscan: k.etherscan || "" };
+  const msgEvm = { type: "lp-apply-keys", app: "evm", graph: k.graph || "", etherscan: k.etherscan || "", hypersync: k.hypersync || "" };
   const msgSol = { type: "lp-apply-keys", app: "sol", helius: k.helius || "", birdeye: k.birdeye || "" };
   if (els.frameEvm?.contentWindow) els.frameEvm.contentWindow.postMessage(msgEvm, "*");
   if (els.frameSol?.contentWindow) els.frameSol.contentWindow.postMessage(msgSol, "*");
@@ -3498,7 +3498,7 @@ function pushKeysToEngines() {
 // Si no hay blob cifrado y hay datos antiguos en localStorage, migra a Firestore.
 async function tryDecryptApiKeys(key) {
   if (!_pendingApiKeysEnc) {
-    _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" };
+    _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "", hypersync: "" };
     // Migración desde la versión anterior que guardaba en localStorage
     try {
       const legacy = JSON.parse(localStorage.getItem("lp:apiKeys") || "null");
@@ -3517,9 +3517,10 @@ async function tryDecryptApiKeys(key) {
       helius: typeof dec?.helius === "string" ? dec.helius : "",
       birdeye: typeof dec?.birdeye === "string" ? dec.birdeye : "",
       etherscan: typeof dec?.etherscan === "string" ? dec.etherscan : "",
+      hypersync: typeof dec?.hypersync === "string" ? dec.hypersync : "",
     };
     return true;
-  } catch { _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "" }; return false; }
+  } catch { _apiKeys = { graph: "", helius: "", birdeye: "", etherscan: "", hypersync: "" }; return false; }
 }
 
 async function saveApiKeysToFirestore(keys, key) {
@@ -3549,6 +3550,7 @@ function updateApiKeyStatusIndicators() {
   set("set-helius-status",  !!(els.setHeliusKey.value || "").trim());
   set("set-birdeye-status", !!(els.setBirdeyeKey.value || "").trim());
   if (els.setEtherscanKey) set("set-etherscan-status", !!(els.setEtherscanKey.value || "").trim());
+  if (els.setHypersyncKey) set("set-hypersync-status", !!(els.setHypersyncKey.value || "").trim());
 }
 
 function openSettingsModal() {
@@ -3560,6 +3562,7 @@ function openSettingsModal() {
   els.setHeliusKey.value = _apiKeys.helius || "";
   els.setBirdeyeKey.value = _apiKeys.birdeye || "";
   if (els.setEtherscanKey) els.setEtherscanKey.value = _apiKeys.etherscan || "";
+  if (els.setHypersyncKey) els.setHypersyncKey.value = _apiKeys.hypersync || "";
   updateApiKeyStatusIndicators();
   els.settingsStatus.classList.add("hidden");
   els.settingsModal.classList.remove("hidden");
@@ -3573,6 +3576,7 @@ async function saveSettingsModal() {
     helius: (els.setHeliusKey.value || "").trim(),
     birdeye: (els.setBirdeyeKey.value || "").trim(),
     etherscan: (els.setEtherscanKey?.value || "").trim(),
+    hypersync: (els.setHypersyncKey?.value || "").trim(),
   };
   els.settingsStatus.className = "text-[11px] text-slate-300";
   els.settingsStatus.textContent = "Guardando…";
@@ -3624,12 +3628,24 @@ async function testEtherscanKey(k) {
   if (String(j.status) !== "1") throw new Error(j.result || j.message || "rechazada");
   return j.result?.ethusd ? `ETH=$${Number(j.result.ethusd).toFixed(0)}` : "ok";
 }
+// HyperSync (Envío): el /height es sin token, así que para VALIDAR el token hay que
+// hacer un /query mínimo (10 bloques de HyperEVM). 200 = token bueno; 401 = malo.
+async function testHypersyncKey(k) {
+  const body = { from_block: 39622290, to_block: 39622300, logs: [{ address: ["0x6eDA206207c09e5428F281761DdC0D300851fBC8"] }], field_selection: { log: ["block_number"] } };
+  const r = await fetch("https://999.hypersync.xyz/query", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${k}` }, body: JSON.stringify(body) });
+  if (r.status === 401 || r.status === 403) throw new Error(`HTTP ${r.status} (token inválido)`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const j = await r.json();
+  if (j.error) throw new Error(String(j.error).slice(0, 60));
+  return typeof j.archive_height === "number" ? `HyperEVM al bloque ${j.archive_height.toLocaleString("en-US")}` : "ok";
+}
 async function runApiKeyTests() {
   const tests = [
     { id: "set-graph-status",   key: els.setGraphKey.value.trim(),   label: "The Graph", fn: testGraphKey },
     { id: "set-helius-status",  key: els.setHeliusKey.value.trim(),  label: "Helius",    fn: testHeliusKey },
     { id: "set-birdeye-status", key: els.setBirdeyeKey.value.trim(), label: "Birdeye",   fn: testBirdeyeKey },
     { id: "set-etherscan-status", key: (els.setEtherscanKey?.value || "").trim(), label: "Etherscan", fn: testEtherscanKey },
+    { id: "set-hypersync-status", key: (els.setHypersyncKey?.value || "").trim(), label: "HyperSync", fn: testHypersyncKey },
   ];
   // Marcar todos como "probando"
   for (const t of tests) {
@@ -3659,7 +3675,7 @@ els.settingsSave.onclick = saveSettingsModal;
 els.settingsTest.onclick = runApiKeyTests;
 els.settingsModal.addEventListener("click", (e) => { if (e.target === els.settingsModal) closeSettingsModal(); });
 // Indicador en vivo: al teclear en cualquier campo, refrescar los badges.
-for (const id of ["set-graph-key", "set-helius-key", "set-birdeye-key", "set-etherscan-key"]) {
+for (const id of ["set-graph-key", "set-helius-key", "set-birdeye-key", "set-etherscan-key", "set-hypersync-key"]) {
   const el = document.getElementById(id);
   if (el) el.addEventListener("input", updateApiKeyStatusIndicators);
 }

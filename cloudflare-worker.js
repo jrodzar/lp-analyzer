@@ -13,6 +13,8 @@
  *      GRAPH_KEY     = tu API key de The Graph
  *      HELIUS_KEY    = tu API key de Helius
  *      BIRDEYE_KEY   = tu API key de Birdeye   (opcional)
+ *      HYPERSYNC_TOKEN = token de HyperSync/Envío (opcional; getLogs AL HEAD para
+ *                        HyperEVM — crear gratis en app.envio.dev/api-tokens)
  *      ETHERSCAN_KEY = tu API key de Etherscan V2 (opcional; failover de getLogs
  *                      EVM. 1 key gratis cubre Ethereum/Arbitrum/Polygon/HyperEVM.
  *                      Base/BNB son de pago en Etherscan → usan thirdweb, ver abajo)
@@ -241,6 +243,10 @@ const EVM_ETHERSCAN_FREE = { ethereum: 1, arbitrum: 42161, polygon: 137, hyperev
 // índice ~13h por detrás). Para estas chains, getLogs usa Etherscan V2 (explorer oficial, al
 // head) como PRIMARIO y Blockscout queda solo de failover. Reusa EVM_ETHERSCAN_FREE[chain].
 const EVM_LOGS_ETHERSCAN_PRIMARY = { hyperevm: 999 };
+// HyperSync (Envío): índice de eventos AL HEAD (verificado 2026-07-05 a 2 bloques del
+// RPC, con Etherscan-999 e hyperscan congelados ~12 días). Con el secret
+// HYPERSYNC_TOKEN puesto, es el PRIMARIO de getLogs para estas chains; sin él, no-op.
+const EVM_LOGS_HYPERSYNC = { hyperevm: "https://999.hypersync.xyz" };
 // Chains que Etherscan NO cubre gratis (Base/BNB) → failover de getLogs a thirdweb Insight.
 const EVM_THIRDWEB_CHAINID = { base: 8453, bnb: 56 };
 
@@ -357,6 +363,50 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
       bodyText = JSON.stringify({ status: "1", message: "OK", result: [] }); // vacío temporal (NO se cachea)
       deferred = true;
     }
+  }
+
+  // 2a-ter) getLogs vía HyperSync (Envío) para chains con exploradores atrasados
+  //     (HyperEVM). Traduce los params Blockscout → POST /query (pagina con el cursor
+  //     next_block; cada llamada barre millones de bloques) y normaliza la respuesta
+  //     al shape {status,result:[...]} que consume el cliente. Requiere el secret
+  //     HYPERSYNC_TOKEN; sin él, o si falla, sigue 2a-bis (Etherscan) → 2b (Blockscout).
+  if (!okData && !deferred && isLogs && EVM_LOGS_HYPERSYNC[chain] && env.HYPERSYNC_TOKEN) {
+    try {
+      const p = new URLSearchParams(search.replace(/^\?/, ""));
+      const address = p.get("address");
+      const topics = [];
+      for (let i = 0; i <= 3; i++) { const t = p.get("topic" + i); topics.push(t ? [t] : []); }
+      while (topics.length && !topics[topics.length - 1].length) topics.pop();
+      const fromBlock = Math.max(0, parseInt(p.get("fromBlock") || "0", 10) || 0);
+      const tbq = p.get("toBlock");
+      const toBlock = tbq && tbq !== "latest" ? parseInt(tbq, 10) : null;
+      const sel = { topics };
+      if (address) sel.address = [address];
+      const hexv = (v) => (v == null) ? "0x0" : (typeof v === "string" ? (v.startsWith("0x") ? v : "0x" + (parseInt(v, 10) || 0).toString(16)) : "0x" + Number(v).toString(16));
+      const result = [];
+      let from = fromBlock, hsOk = true;
+      for (let page = 0; page < 10; page++) {
+        const body = { from_block: from, logs: [sel], field_selection: { log: ["address", "data", "topic0", "topic1", "topic2", "topic3", "block_number", "transaction_hash", "log_index"], block: ["number", "timestamp"] } };
+        if (toBlock != null) body.to_block = toBlock + 1; // to_block de HyperSync es EXCLUSIVO
+        const r0 = await fetchTimeout(EVM_LOGS_HYPERSYNC[chain] + "/query", 15000, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + env.HYPERSYNC_TOKEN }, body: JSON.stringify(body) });
+        if (!r0.ok) { hsOk = false; break; }
+        const j = await r0.json();
+        for (const batch of (j.data || [])) {
+          const ts = new Map();
+          for (const b of (batch.blocks || [])) ts.set(Number(b.number), hexv(b.timestamp));
+          for (const l of (batch.logs || [])) {
+            result.push({ address: l.address, topics: [l.topic0, l.topic1, l.topic2, l.topic3].filter((t) => t != null), data: l.data || "0x", blockNumber: hexv(l.block_number), timeStamp: ts.get(Number(l.block_number)) || "0x0", transactionHash: l.transaction_hash, logIndex: hexv(l.log_index) });
+          }
+        }
+        const next = Number(j.next_block || 0);
+        const tope = toBlock != null ? toBlock : Number(j.archive_height || 0);
+        if (!next || next > tope || next <= from) break;
+        from = next;
+      }
+      // etherscanServed=true = "fuente FRESCA sirvió" → cacheable (el poison-guard de
+      // abajo solo debe bloquear la caché cuando sirve el Blockscout atrasado).
+      if (hsOk) { bodyText = JSON.stringify({ status: "1", message: "OK-hypersync", result }); okData = true; etherscanServed = true; }
+    } catch (e) { /* HyperSync caído → 2a-bis */ }
   }
 
   // 2a-bis) getLogs en chains con índice Blockscout MUY retrasado (HyperEVM): Etherscan V2

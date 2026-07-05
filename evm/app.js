@@ -168,6 +168,7 @@ const DEFAULTS_VERSION = 8; // bump cuando cambien IDs por defecto para forzar r
 const state = {
   apiKey: store.getItem("lp:apiKey") || "",
   etherscanKey: "", // key propia Etherscan V2 (la inyecta el shell vía lp-apply-keys, cifrada en Firestore; failover client-side de getLogs)
+  hypersyncKey: "", // token propio de HyperSync/Envío (Settings): getLogs AL HEAD para chains con exploradores atrasados (HyperEVM)
   chains: loadChainConfig(),
   selectedChains: JSON.parse(store.getItem("lp:selectedChains") || "null") || Object.keys(DEFAULT_CHAINS),
   address: "",
@@ -607,7 +608,86 @@ const EVM_ETHERSCAN_CHAINID = { ethereum: 1, arbitrum: 42161, polygon: 137, hype
 // sin esto se acumularían 9s × N wallets en calls que degradan igual. chainKey → ts (ms).
 const EXPLORER_GETLOGS_DOWN = {};
 
+// ── HyperSync (Envío): fuente de eventos AL HEAD para chains cuyos exploradores van
+// atrasados (HyperEVM: hyperscan ~13h crónico; incidente jul-2026: hyperscan Y
+// Etherscan-999 congelados ~12 días a la vez). Traduce el getLogs estilo Blockscout
+// (address + topic0..3 + fromBlock/toBlock) al POST /query de HyperSync, pagina con
+// su cursor `next_block` (cada llamada barre millones de bloques) y normaliza la
+// respuesta al shape {status,result:[...]} que ya consume fetchPositionHistory.
+// El MISMO traductor vive en el Worker (secret compartido); aquí corre con el token
+// PROPIO del usuario (Settings → cifrado E2E), sin pasar por el proxy.
+const HYPERSYNC_NETS = { hyperevm: "https://999.hypersync.xyz" };
+
+async function hypersyncGetLogs(chainKey, fullUrl) {
+  const hs = HYPERSYNC_NETS[chainKey];
+  const p = new URLSearchParams(fullUrl.slice(fullUrl.indexOf("?") + 1));
+  const address = p.get("address");
+  const topics = [];
+  for (let i = 0; i <= 3; i++) { const t = p.get("topic" + i); topics.push(t ? [t] : []); }
+  while (topics.length && !topics[topics.length - 1].length) topics.pop();
+  const fromBlock = Math.max(0, parseInt(p.get("fromBlock") || "0", 10) || 0);
+  const tb = p.get("toBlock");
+  const toBlock = tb && tb !== "latest" ? parseInt(tb, 10) : null;
+  const sel = { topics };
+  if (address) sel.address = [address];
+  const hex = (v) => {
+    if (v == null) return "0x0";
+    if (typeof v === "string") return v.startsWith("0x") ? v : "0x" + (parseInt(v, 10) || 0).toString(16);
+    return "0x" + Number(v).toString(16);
+  };
+  const result = [];
+  let from = fromBlock;
+  for (let page = 0; page < 10; page++) {
+    const body = {
+      from_block: from,
+      ...(toBlock != null ? { to_block: toBlock + 1 } : {}), // to_block de HyperSync es EXCLUSIVO
+      logs: [sel],
+      field_selection: {
+        log: ["address", "data", "topic0", "topic1", "topic2", "topic3", "block_number", "transaction_hash", "log_index"],
+        block: ["number", "timestamp"],
+      },
+    };
+    const r = await fetchWithTimeout(hs + "/query", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.hypersyncKey}` }, body: JSON.stringify(body) }, { timeoutMs: 15000, tries: 1 });
+    if (!r.ok) throw new Error(`HyperSync HTTP ${r.status}`);
+    const j = await r.json();
+    for (const batch of (j.data || [])) {
+      const ts = new Map();
+      for (const b of (batch.blocks || [])) ts.set(Number(b.number), hex(b.timestamp));
+      for (const l of (batch.logs || [])) {
+        result.push({
+          address: l.address,
+          topics: [l.topic0, l.topic1, l.topic2, l.topic3].filter((t) => t != null),
+          data: l.data || "0x",
+          blockNumber: hex(l.block_number),
+          timeStamp: ts.get(Number(l.block_number)) || "0x0",
+          transactionHash: l.transaction_hash,
+          logIndex: hex(l.log_index),
+        });
+      }
+    }
+    const next = Number(j.next_block || 0);
+    const tope = toBlock != null ? toBlock : Number(j.archive_height || 0);
+    if (!next || next > tope || next <= from) break;
+    from = next;
+  }
+  return { status: "1", message: "OK-hypersync", result };
+}
+
 async function explorerFetch(fullUrl) {
+  // 0) HyperSync con token PROPIO (Settings): la fuente más fresca para estas chains.
+  //    Si falla (token malo, cuota, caída), sigue el flujo normal (proxy → directo).
+  if (state.hypersyncKey && /[?&]action=getLogs(&|$)/.test(fullUrl)) {
+    for (const hk in HYPERSYNC_NETS) {
+      const b = state.chains[hk] && state.chains[hk].blockscoutApi;
+      if (b && fullUrl.startsWith(b)) {
+        try {
+          const shaped = await hypersyncGetLogs(hk, fullUrl);
+          return new Response(JSON.stringify(shaped), { status: 200, headers: { "Content-Type": "application/json" } });
+        } catch (e) { console.warn("[hypersync] caída a proxy/directo:", e && e.message); }
+        break;
+      }
+    }
+  }
   // 1) PROXY (sesión): caché + failover server-side con la key del owner.
   if (PROXY_BASE && proxyToken) {
     for (const k in state.chains) {
@@ -4635,6 +4715,7 @@ if (HAS_DOM) document.addEventListener("DOMContentLoaded", init);
         try { store.setItem("lp:apiKey", d.graph); } catch (e) {}
       }
       if (typeof d.etherscan === "string") state.etherscanKey = d.etherscan; // failover client-side (cifrada en Firestore por el shell)
+      if (typeof d.hypersync === "string") state.hypersyncKey = d.hypersync; // HyperSync directo client-side (getLogs al head en HyperEVM)
     } else if (d.type === "lp-analyze" && typeof d.address === "string") {
       const input = document.getElementById("addr-input");
       if (input) input.value = d.address;

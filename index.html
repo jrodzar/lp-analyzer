@@ -24,7 +24,7 @@
   <title>Booster Crypto PRO</title>
   <!-- Versión única de cache-busting: súbela aquí y se propaga a shell.js, iframes,
        common.js y los app.js de cada motor. No hay que tocar más sitios. -->
-  <script>window.APP_VERSION = "344";</script>
+  <script>window.APP_VERSION = "345";</script>
   <!-- Modo incógnito: difumina SOLO los importes (.lp-blur) cuando el body tiene
        .lp-private. user-select:none evita copiar el valor real. Los gráficos NO
        se difuminan (sus etiquetas $ se enmascaran como texto "$•••"). -->
@@ -221,6 +221,14 @@
           </div>
           <input id="set-etherscan-key" type="text" placeholder="api key de Etherscan (opcional)" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono" />
           <div id="set-etherscan-status" class="text-[10px] mt-1"></div>
+        </div>
+        <div>
+          <div class="flex items-baseline justify-between gap-2 mb-1">
+            <label class="text-xs text-slate-300">HyperSync API token <span class="text-slate-500">(HyperEVM · histórico de eventos al día — opcional)</span></label>
+            <a href="https://app.envio.dev/api-tokens" target="_blank" rel="noopener" class="text-[10px] text-fuchsia-400 hover:underline">Obtener clave ↗</a>
+          </div>
+          <input id="set-hypersync-key" type="text" placeholder="api token de HyperSync/Envío (opcional)" class="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm font-mono" />
+          <div id="set-hypersync-status" class="text-[10px] mt-1"></div>
         </div>
       </div>
       <div id="settings-status" class="text-[11px] hidden"></div>
