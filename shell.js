@@ -1312,6 +1312,9 @@ async function tryDecryptPortfolio(key) {
     // descifrar (o migrar desde localStorage) las API keys y pushear a los engines
     await tryDecryptApiKeys(key);
     pushKeysToEngines();
+    // F-cache fase 3: hidratar los almacenes cifrados de la nube (y pintar el último
+    // resultado conocido) SIN bloquear el desbloqueo — es mejora progresiva.
+    hydrateCachesDown(key).catch(() => {});
   }
   return ok;
 }
@@ -1653,6 +1656,155 @@ async function savePortfolio() {
     setPfStatus(`No se pudo guardar: ${e.message}`, "err");
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// F-cache fase 3: caché multi-dispositivo CIFRADA + pintado instantáneo.
+// Los almacenes del navegador (txs de Solana, inmutables, precios de días
+// cerrados, últimos-buenos) viajan cifrados con el MISMO AES-GCM del portfolio,
+// como CAMPOS del doc del usuario (misma superficie de reglas que portfolioEnc:
+// nada nuevo que abrir en Firestore). gzip ANTES de cifrar (el JSON de caché
+// comprime ~4-6×) → todo cabe de sobra bajo el límite de 1MB del doc. El
+// servidor sigue sin poder leer nada. Sin sesión (o navegador sin
+// CompressionStream) esto es un no-op y la app queda como antes de la fase 3.
+// ═══════════════════════════════════════════════════════════════════════════
+const CACHE_SYNC_KINDS = {
+  imm:   ["lp:imm1:"],                      // inmutables (tokens/pools/gauges/cerradas congeladas)
+  px:    ["lp:pxv1:", "be:p:"],             // precios históricos de días cerrados (EVM + Solana)
+  misc:  ["lp:aeroclaim:", "lp:lendhist:"], // últimos-buenos (cobros AERO, lending)
+  soltx: ["lp:soltx1:"],                    // transacciones de Solana (cursor por firma)
+};
+const CACHE_FIELD = { imm: "cacheImmEnc", px: "cachePxEnc", misc: "cacheMiscEnc", soltx: "cacheSolTxEnc" };
+const CACHE_MAX_FIELD = 300000; // techo del ciphertext por campo; por encima se omite ese kind (log)
+
+async function gzipB64(str) {
+  const cs = new CompressionStream("gzip");
+  const buf = await new Response(new Blob([new TextEncoder().encode(str)]).stream().pipeThrough(cs)).arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+async function gunzipB64(b64s) {
+  const bin = atob(b64s);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const ds = new DecompressionStream("gzip");
+  const buf = await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer();
+  return new TextDecoder().decode(buf);
+}
+function collectCacheKind(kind) {
+  const map = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && CACHE_SYNC_KINDS[kind].some((p) => k.startsWith(p))) map[k] = localStorage.getItem(k);
+  }
+  return map;
+}
+async function cacheHash(str) {
+  const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+const _cacheUpHash = {}; // kind → hash de lo último subido (dirty-check: sin cambios, sin escritura)
+let _cacheUpTimer = null, _cacheUpBusy = false;
+
+async function syncCachesUp() {
+  if (!state.user || !fb.db || !crypto_.key || typeof CompressionStream === "undefined") return;
+  if (_cacheUpBusy) return;
+  _cacheUpBusy = true;
+  try {
+    const patch = {};
+    for (const kind of Object.keys(CACHE_SYNC_KINDS)) {
+      const plain = JSON.stringify(collectCacheKind(kind));
+      if (plain === "{}") continue;
+      const hash = await cacheHash(plain);
+      if (_cacheUpHash[kind] === hash) continue;
+      const enc = await encryptJSON(await gzipB64(plain), crypto_.key);
+      if ((enc.ct || "").length > CACHE_MAX_FIELD) { console.warn(`[cache-sync] ${kind} supera el techo (${enc.ct.length}) — omitido`); continue; }
+      const ts = Date.now();
+      patch[CACHE_FIELD[kind]] = enc;
+      patch["cacheTs_" + kind] = ts;
+      _cacheUpHash[kind] = hash;
+      try { localStorage.setItem("lp:cachesync:" + kind, String(ts)); } catch (e) {}
+    }
+    // Último RESULTADO del análisis (pintado instantáneo al abrir en otro dispositivo):
+    // items sin cardHTML ni timeline (pesados y regenerables; el render del portfolio ya
+    // tolera cardHTML ausente con la ficha simple). Se refresca en cada análisis.
+    if (state.results && state.results.length) {
+      const light = state.results.map((r) => ({
+        entry: r.entry, status: r.status, analysisStatus: r.analysisStatus,
+        feesRealizableUSD: r.feesRealizableUSD, idleTokens: r.idleTokens,
+        items: (r.items || []).map((it) => { const { cardHTML, ...rest } = it; return rest; }),
+      }));
+      const plainR = JSON.stringify({ ts: Date.now(), results: light });
+      const hashR = await cacheHash(plainR);
+      if (_cacheUpHash.lastres !== hashR) {
+        const encR = await encryptJSON(await gzipB64(plainR), crypto_.key);
+        if ((encR.ct || "").length <= CACHE_MAX_FIELD) { patch.cacheLastResEnc = encR; _cacheUpHash.lastres = hashR; }
+      }
+    }
+    if (!Object.keys(patch).length) return;
+    await fb.fsMod.setDoc(fb.fsMod.doc(fb.db, "users", state.user.uid), patch, { merge: true });
+  } catch (e) {
+    console.warn("[cache-sync] subida:", e);
+  } finally {
+    _cacheUpBusy = false;
+  }
+}
+
+// Hidratación al desbloquear: baja los almacenes cifrados y los aplica SOLO si el
+// remoto es más nuevo que lo aplicado/subido por este dispositivo (last-write-wins
+// por kind; empate/viejo → se respeta lo local). Merge ADITIVO: nunca borra claves
+// locales que el remoto no tenga (peor caso de conflicto = re-bajar un delta).
+async function hydrateCachesDown(key) {
+  if (!state.user || !fb.db || typeof DecompressionStream === "undefined") return;
+  try {
+    const snap = await fb.fsMod.getDoc(fb.fsMod.doc(fb.db, "users", state.user.uid));
+    if (!snap.exists()) return;
+    const d = snap.data();
+    for (const kind of Object.keys(CACHE_SYNC_KINDS)) {
+      const enc = d[CACHE_FIELD[kind]];
+      const remoteTs = Number(d["cacheTs_" + kind] || 0);
+      if (!enc || !remoteTs) continue;
+      const localTs = Number(localStorage.getItem("lp:cachesync:" + kind) || 0);
+      if (remoteTs <= localTs) continue;
+      try {
+        const map = JSON.parse(await gunzipB64(await decryptJSON(enc, key)));
+        let n = 0;
+        for (const [k, v] of Object.entries(map)) {
+          if (typeof v !== "string") continue;
+          try { localStorage.setItem(k, v); n++; } catch (e) { /* cuota llena → lo que quepa */ }
+        }
+        try { localStorage.setItem("lp:cachesync:" + kind, String(remoteTs)); } catch (e) {}
+        if (n) console.log(`[cache-sync] ${kind}: ${n} claves hidratadas de la nube`);
+      } catch (e) { /* blob de otra clave o corrupto → se ignora este kind */ }
+    }
+    // Pintado instantáneo: si aún no hay resultados en pantalla, pintar los últimos
+    // conocidos (cifrados) con aviso de antigüedad y disparar el análisis real detrás.
+    if (d.cacheLastResEnc && (!state.results || !state.results.length)) {
+      try {
+        const { ts, results } = JSON.parse(await gunzipB64(await decryptJSON(d.cacheLastResEnc, key)));
+        if (Array.isArray(results) && results.length) {
+          state.results = results;
+          renderPortfolio();
+          const mins = Math.max(1, Math.round((Date.now() - (ts || 0)) / 60000));
+          setPfStatus(`Mostrando datos de hace ${mins} min — actualizando…`, "info");
+          setTimeout(() => {
+            try { if (els.analyzeAll && !els.analyzeAll.disabled) analyzeAll({ silent: true }); } catch (e) {}
+          }, 1200);
+        }
+      } catch (e) { /* clave distinta → sin pintado instantáneo, sin drama */ }
+    }
+  } catch (e) {
+    console.warn("[cache-sync] hidratación:", e);
+  }
+}
+
+// Subida tras cada análisis (evento que ya emite analyzeAll), con debounce: los
+// almacenes acaban de recibir lo nuevo → es el momento natural de sincronizar.
+window.addEventListener("lp-portfolio-analyzed", () => {
+  clearTimeout(_cacheUpTimer);
+  _cacheUpTimer = setTimeout(() => { syncCachesUp().catch(() => {}); }, 4000);
+});
 
 // ============================================================================
 // Portfolio CRUD UI
