@@ -1937,23 +1937,83 @@ const SOL_STABLES = new Set([
 ]);
 // Descarga (y cachea) las transacciones enriquecidas de Helius para un owner.
 const TX_CACHE_TTL = 10 * 60 * 1000; // el histórico de transacciones casi no cambia → cache 10 min
+
+// ── F-cache fase 2: almacén PERSISTENTE por wallet con cursor por FIRMA ──
+// Las transacciones son historia inmutable y solo-añade → se guardan en localStorage
+// y cada análisis baja SOLO el tramo nuevo (páginas desde el head hasta encontrar la
+// última firma vista). Antes: historia completa (hasta 10 páginas de Helius) en cada
+// análisis frío. SOLTX_VER invalida el almacén entero si cambia el shape.
+const SOLTX_VER = 1;
+// Se persisten ADELGAZADAS a los campos que los parsers usan de verdad (auditado:
+// firma/fecha/fuente + transfers + instrucciones con data/cuentas para los
+// discriminadores CLMM y la atribución por posición). accountData/nativeTransfers/
+// events/description no se usan en ningún sitio y son el ~80% del peso (~8KB→~1,5KB).
+function slimTx(tx) {
+  const slimIx = (ix) => ({
+    programId: ix.programId,
+    data: ix.data,
+    accounts: ix.accounts,
+    innerInstructions: (ix.innerInstructions || []).map((i) => ({ programId: i.programId, data: i.data, accounts: i.accounts })),
+  });
+  return {
+    signature: tx.signature,
+    timestamp: tx.timestamp,
+    source: tx.source,
+    tokenTransfers: (tx.tokenTransfers || []).map((t) => ({
+      fromUserAccount: t.fromUserAccount, toUserAccount: t.toUserAccount,
+      fromTokenAccount: t.fromTokenAccount, toTokenAccount: t.toTokenAccount,
+      mint: t.mint, tokenAmount: t.tokenAmount,
+    })),
+    instructions: (tx.instructions || []).map(slimIx),
+  };
+}
+// Decide qué lista servir según cómo acabó la bajada del delta. Pura → testeable:
+//  · red caída con almacén → almacén (stale, mejor que nada; el cursor no avanza)
+//  · almacén alcanzado (o nada nuevo) → nuevos + almacén
+//  · sin almacén, o hueco (>1000 txs nuevas sin alcanzarlo) → solo lo bajado (reset
+//    limpio: mismo tope que el comportamiento histórico, sin agujeros en medio)
+function mergeSolTxs(stored, nuevos, alcanzado, redOk) {
+  if (!redOk && stored) return stored.txs;
+  if (stored && (alcanzado || !nuevos.length)) return nuevos.concat(stored.txs);
+  return nuevos;
+}
 async function fetchEnhancedTxs(owner) {
   if ((!state.heliusKey && !PROXY_BASE) || !owner) return [];
   // Reutiliza el histórico reciente (no se re-pide en cada auto-refresco)
   if (state._txCache && state._txCache.owner === owner && (Date.now() - state._txCache.ts) < TX_CACHE_TTL) return state._txCache.txs;
-  const txs = [];
-  let before = "";
-  for (let page = 0; page < 10; page++) {
+  const storeKey = `lp:soltx${SOLTX_VER}:${owner}`;
+  let stored = null;
+  try { const raw = localStorage.getItem(storeKey); if (raw) stored = JSON.parse(raw); } catch (e) {}
+  if (stored && !Array.isArray(stored.txs)) stored = null;
+  const lastSig = stored && stored.txs.length ? stored.txs[0].signature : null;
+  const nuevos = [];
+  let before = "", alcanzado = false, redOk = true;
+  for (let page = 0; page < 10 && !alcanzado; page++) {
     const bef = before ? "&before=" + before : "";
     const url = state.heliusKey
       ? `https://api.helius.xyz/v0/addresses/${owner}/transactions?api-key=${state.heliusKey}&limit=100${bef}`
       : `${PROXY_BASE}/helius-tx/${owner}?limit=100${bef}`;
     let arr;
-    try { const r = await fetch(url, { headers: { ...proxyAuth(url) } }); arr = await r.json(); } catch { break; }
-    if (!Array.isArray(arr) || !arr.length) break;
-    txs.push(...arr);
+    try { const r = await fetch(url, { headers: { ...proxyAuth(url) } }); arr = await r.json(); } catch { redOk = false; break; }
+    if (!Array.isArray(arr)) { redOk = false; break; }
+    if (!arr.length) break;
+    for (const tx of arr) {
+      if (lastSig && tx.signature === lastSig) { alcanzado = true; break; }
+      nuevos.push(slimTx(tx));
+    }
     before = arr[arr.length - 1].signature;
     if (arr.length < 100) break;
+  }
+  // dedupe defensivo por firma (una firma es única on-chain; el solape no duplica)
+  const seen = new Set();
+  const txs = mergeSolTxs(stored, nuevos, alcanzado, redOk).filter((t) => t && t.signature && !seen.has(t.signature) && seen.add(t.signature));
+  // Persistir solo bajadas SANAS y con guard de tamaño (localStorage ~5MB compartidos);
+  // si excede, se sigue funcionando como siempre (sin persistir, memoria 10 min).
+  if (redOk && txs.length) {
+    try {
+      const rec = JSON.stringify({ ver: SOLTX_VER, updatedAt: Date.now(), txs });
+      if (rec.length <= 1500000) localStorage.setItem(storeKey, rec);
+    } catch (e) { /* cuota llena → sin persistencia, sin drama */ }
   }
   state._txCache = { owner, txs, ts: Date.now() };
   return txs;
