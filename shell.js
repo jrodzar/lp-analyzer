@@ -1865,7 +1865,9 @@ async function pushTokenToEngines() {
   try {
     if (!fb.auth || !fb.auth.currentUser) return;
     const token = await fb.auth.currentUser.getIdToken();
-    [els.frameEvm, els.frameSol].forEach((f) => { if (f && f.contentWindow) f.contentWindow.postMessage({ type: "lp-set-token", token }, "*"); });
+    // F-flota: el token va también a los clones del pool (usan el mismo proxy)
+    const frames = [els.frameEvm, els.frameSol, ..._pool.evm.map((w) => w.frame), ..._pool.sol.map((w) => w.frame)];
+    frames.forEach((f) => { if (f && f.contentWindow) f.contentWindow.postMessage({ type: "lp-set-token", token }, "*"); });
   } catch (e) { console.warn("pushTokenToEngines", e); }
 }
 
@@ -1998,24 +2000,61 @@ function closeAnalyzingModal() {
 }
 
 // ============================================================================
-// Portfolio analysis (orquesta los engines en headless, secuencial)
+// Portfolio analysis (orquesta los engines en headless)
+// F-flota: además del frame principal de cada tipo, un pool de iframes OCULTOS
+// clonados del mismo engine → las wallets del mismo tipo se analizan EN PARALELO
+// (antes en serie: el Portfolio pagaba la SUMA de las wallets; ahora, la más lenta).
+// Los clones son solo-portfolio (nunca Quick): no tocan iframeOwnedBy ni emiten
+// lp-summary/lp-analyze-done (eso es del modo Quick), así el shell no se confunde.
 // ============================================================================
 
-function analyzeAddressHeadless(address, type) {
+// Cap del pool: frame principal + (POOL_MAX−1) clones. En dispositivos con poca
+// memoria (móvil) limitamos a 2 en total — cada clon es un engine completo.
+const POOL_MAX = (typeof navigator !== "undefined" && navigator.deviceMemory && navigator.deviceMemory <= 4) ? 2 : 4;
+const _pool = { evm: [], sol: [] }; // [{ frame, ready }]
+
+// Crea (si hacen falta) hasta `extra` clones del engine `type` y espera su lp-ready
+// (tope 8s). Devuelve SOLO los frames listos: si ninguno llega, el portfolio degrada
+// solo al frame principal (comportamiento de siempre) — falla suave por construcción.
+async function poolEnsure(type, extra) {
+  const arr = _pool[type];
+  const mainFrame = type === "evm" ? els.frameEvm : els.frameSol;
+  if (!mainFrame || !mainFrame.src) return [];
+  while (arr.length < extra) {
+    try {
+      const f = document.createElement("iframe");
+      f.className = "hidden";
+      f.setAttribute("aria-hidden", "true");
+      f.setAttribute("title", `motor ${type} auxiliar ${arr.length + 1}`);
+      f.src = mainFrame.src; // URL idéntica al principal → mismos assets ya cacheados
+      document.body.appendChild(f);
+      arr.push({ frame: f, ready: false });
+    } catch (e) { console.warn("[flota] no se pudo crear clon", type, e); break; }
+  }
+  const want = arr.slice(0, extra);
+  const t0 = Date.now();
+  while (Date.now() - t0 < 8000 && want.some((w) => !w.ready)) await new Promise((r) => setTimeout(r, 150));
+  return want.filter((w) => w.ready).map((w) => w.frame);
+}
+
+function analyzeAddressHeadless(address, type, frame) {
   return new Promise((resolve) => {
     const reqId = "r" + Math.random().toString(36).slice(2);
     pendingReqs.set(reqId, resolve);
-    const frame = type === "evm" ? els.frameEvm : els.frameSol;
+    const f = frame || (type === "evm" ? els.frameEvm : els.frameSol);
+    const isMain = f === els.frameEvm || f === els.frameSol;
     const send = async () => {
       await pushTokenToEngines(); // token fresco para que el engine use el proxy
       // fijar redes/protocolos según prefs antes de analizar (entrega ordenada por target)
-      if (type === "evm") frame.contentWindow.postMessage({ type: "lp-set-chains", chains: state.prefs.chains }, "*");
-      else frame.contentWindow.postMessage({ type: "lp-set-protocols", protocols: state.prefs.protocols }, "*");
-      frame.contentWindow.postMessage({ type: "lp-portfolio-analyze", reqId, address }, "*");
-      // El iframe se está pintando con datos del Portfolio; al cambiar a Quick habrá que limpiar
-      state.iframeOwnedBy[type] = "portfolio";
+      if (type === "evm") f.contentWindow.postMessage({ type: "lp-set-chains", chains: state.prefs.chains }, "*");
+      else f.contentWindow.postMessage({ type: "lp-set-protocols", protocols: state.prefs.protocols }, "*");
+      f.contentWindow.postMessage({ type: "lp-portfolio-analyze", reqId, address }, "*");
+      // El iframe PRINCIPAL se está pintando con datos del Portfolio; al cambiar a
+      // Quick habrá que limpiar. Los clones del pool nunca se enseñan → no aplica.
+      if (isMain) state.iframeOwnedBy[type] = "portfolio";
     };
-    if (state.ready[type]) send(); else setTimeout(send, 1200);
+    // Los clones llegan de poolEnsure ya listos; el principal usa el ready global.
+    if (!isMain || state.ready[type]) send(); else setTimeout(send, 1200);
     setTimeout(() => {
       if (pendingReqs.has(reqId)) { pendingReqs.delete(reqId); resolve({ address, items: [], status: "timeout" }); }
     }, 90000);
@@ -2031,32 +2070,39 @@ async function analyzeAll(opts = {}) {
   const results = new Array(n); // indexado por posición del portfolio → conserva el orden
   if (!silent) { openAnalyzingModal(`Analizando direcciones (0/${n})…`); if (!state.results.length) renderPortfolioSkeleton(); }
   let done = 0;
-  // Dos "carriles" en paralelo: EVM y Solana usan iframes distintos (sin colisión de
-  // estado). Dentro de cada carril es secuencial (mismo iframe, estado compartido).
-  const runLane = async (type) => {
-    let firstInLane = true;
-    for (let i = 0; i < n; i++) {
-      const entry = state.portfolio[i];
-      if (entry.type !== type) continue;
-      // Pequeña pausa entre direcciones consecutivas del mismo carril para no
-      // saturar el rate limit del proxy (429). La primera no espera. Con el
-      // Worker a 1000/60s podemos ser más agresivos que el 400 ms inicial.
-      if (!firstInLane) await new Promise((r) => setTimeout(r, 250));
-      firstInLane = false;
-      // Marcar "en curso" antes del await: la lista del modal muestra spinner.
-      if (!silent) setAnalyzeStatus(i, "running");
-      const r = await analyzeAddressHeadless(entry.address, entry.type);
-      results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [], analysisStatus: r.analysisStatus || null, idleTokens: r.idleTokens || [], feesRealizableUSD: r.feesRealizableUSD != null ? r.feesRealizableUSD : null };
-      // Estado final: error si timeout o status problemático; done en otro caso.
-      const isError = (r.status || "").toLowerCase().includes("timeout") || (r.status || "").toLowerCase().includes("error");
-      if (!silent) setAnalyzeStatus(i, isError ? "error" : "done");
-      done++;
-      const msg = `Analizando direcciones (${done}/${n})…`;
-      if (!silent) { setPfStatus(msg); updateAnalyzingModal(msg, done, n); state.results = results.filter(Boolean); renderPortfolio(); }
-    }
+  // F-flota: por cada tipo, el frame principal + clones ocultos del pool trabajan
+  // una COLA COMPARTIDA de direcciones → wallets del mismo tipo en paralelo. Los
+  // resultados van a results[i] (indexado por posición del portfolio) → el orden
+  // del render es determinista aunque terminen desordenadas. Arranques escalonados
+  // (400ms) para no golpear a la vez los mismos rate limits.
+  const runType = async (type) => {
+    const idxs = [];
+    for (let i = 0; i < n; i++) if (state.portfolio[i].type === type) idxs.push(i);
+    if (!idxs.length) return;
+    const mainFrame = type === "evm" ? els.frameEvm : els.frameSol;
+    const clones = idxs.length > 1 ? await poolEnsure(type, Math.min(idxs.length, POOL_MAX) - 1) : [];
+    const workers = [mainFrame, ...clones];
+    let next = 0;
+    await Promise.all(workers.map(async (frame, wi) => {
+      if (wi) await new Promise((r) => setTimeout(r, 400 * wi));
+      while (next < idxs.length) {
+        const i = idxs[next++];
+        const entry = state.portfolio[i];
+        // Marcar "en curso" antes del await: la lista del modal muestra spinner.
+        if (!silent) setAnalyzeStatus(i, "running");
+        const r = await analyzeAddressHeadless(entry.address, entry.type, frame);
+        results[i] = { entry, items: r.items || [], status: r.status || "", timeline: r.timeline || [], analysisStatus: r.analysisStatus || null, idleTokens: r.idleTokens || [], feesRealizableUSD: r.feesRealizableUSD != null ? r.feesRealizableUSD : null };
+        // Estado final: error si timeout o status problemático; done en otro caso.
+        const isError = (r.status || "").toLowerCase().includes("timeout") || (r.status || "").toLowerCase().includes("error");
+        if (!silent) setAnalyzeStatus(i, isError ? "error" : "done");
+        done++;
+        const msg = `Analizando direcciones (${done}/${n})…`;
+        if (!silent) { setPfStatus(msg); updateAnalyzingModal(msg, done, n); state.results = results.filter(Boolean); renderPortfolio(); }
+      }
+    }));
   };
   try {
-    await Promise.all([runLane("evm"), runLane("sol")]);
+    await Promise.all([runType("evm"), runType("sol")]);
     state.results = results.filter(Boolean);
     renderPortfolio();
     if (state.tab === "projection") renderHistorico(); // mantener Histórico sincronizado
@@ -3171,6 +3217,8 @@ window.addEventListener("message", (e) => {
   const d = e.data || {};
   if (d.type === "lp-ready" && (d.app === "evm" || d.app === "sol")) {
     state.ready[d.app] = true;
+    // F-flota: si el lp-ready viene de un clon del pool, marcarlo listo (por e.source)
+    for (const w of (_pool[d.app] || [])) { if (w.frame.contentWindow === e.source) w.ready = true; }
     pushTokenToEngines(); // dar al engine recién listo el token actual (si hay sesión)
     if (crypto_.key) pushKeysToEngines(); // y las API keys descifradas, si ya las tenemos
   } else if (d.type === "lp-result" && pendingReqs.has(d.reqId)) {
@@ -3492,6 +3540,9 @@ function pushKeysToEngines() {
   const msgSol = { type: "lp-apply-keys", app: "sol", helius: k.helius || "", birdeye: k.birdeye || "" };
   if (els.frameEvm?.contentWindow) els.frameEvm.contentWindow.postMessage(msgEvm, "*");
   if (els.frameSol?.contentWindow) els.frameSol.contentWindow.postMessage(msgSol, "*");
+  // F-flota: los clones del pool necesitan las mismas keys que el principal
+  for (const w of _pool.evm) { try { w.frame.contentWindow.postMessage(msgEvm, "*"); } catch (e) {} }
+  for (const w of _pool.sol) { try { w.frame.contentWindow.postMessage(msgSol, "*"); } catch (e) {} }
 }
 
 // Descifrar las API keys con la clave del usuario (la misma que descifra el portfolio).
