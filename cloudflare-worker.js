@@ -287,7 +287,9 @@ async function fetchThirdwebLogs(chain, search, env) {
     for (let i = 0; i < 4; i++) { const t = p.get("topic" + i); if (t) q.set("filter_topic_" + i, t); }
     q.set("sort_by", "block_number");
     q.set("sort_order", "asc");
-    q.set("limit", "1000");
+    // 500, no 1000: medido en vivo — con 1000 thirdweb tarda 5-15s o devuelve 500
+    // "Failed to fetch contract events"; con 500 la misma consulta baja a ~200ms.
+    q.set("limit", "500");
     q.set("page", String(page));
     const r = await fetchTimeout(`${endpoint}?${q.toString()}`, 10000, { headers: { "x-client-id": env.THIRDWEB_CLIENT_ID } });
     if (!r.ok) return null;
@@ -307,7 +309,7 @@ async function fetchThirdwebLogs(chain, search, env) {
         gasPrice: "0x0", gasUsed: "0x0",
       });
     }
-    if (items.length < 1000) break;                  // última página (devolvió menos del límite)
+    if (items.length < 500) break;                   // última página (devolvió menos del límite)
   }
   return JSON.stringify({ status: "1", message: "OK", result });
 }
@@ -425,16 +427,25 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
   //     instantáneo. UNA sola petición a thirdweb (se reutiliza la misma promesa).
   if (isLogs && EVM_THIRDWEB_CHAINID[chain] && env.THIRDWEB_CLIENT_ID) {
     const twPromise = fetchThirdwebLogs(chain, search, env).catch(() => null);
-    const winner = await Promise.race([twPromise, new Promise((res) => setTimeout(() => res("__t__"), 3500))]);
+    // F-cache: las consultas de STREAM no se difieren NUNCA. El defer devolvía un vacío
+    // temporal y dejaba el resultado tardío en la caché CLÁSICA… que los streams no leen
+    // → el cliente veía "OK" vacío PARA SIEMPRE (cazado en vivo con los eventos de
+    // Aerodrome por tokenId). El stream espera a thirdweb entero (5-15s solo la 1ª vez;
+    // después el almacén sirve y el delta va con filter_block_number_gte en ms) y si
+    // thirdweb falla, SIGUE LA CASCADA (Blockscout/Etherscan) en vez de rendirse.
+    const winner = stream
+      ? await twPromise
+      : await Promise.race([twPromise, new Promise((res) => setTimeout(() => res("__t__"), 3500))]);
     if (winner && winner !== "__t__") {
-      bodyText = winner; okData = true; servedBy = "thirdweb"; // respondió rápido → servir (+ caché normal abajo)
-    } else {
+      bodyText = winner; okData = true; servedBy = "thirdweb"; // respondió → servir (+ caché/almacén abajo)
+    } else if (!stream) {
       if (ctx && ctx.waitUntil && cacheKey && env.QUOTA) {
         ctx.waitUntil(twPromise.then((tw) => tw && env.QUOTA.put(cacheKey, tw, { expirationTtl: cacheTtl })).catch(() => {}));
       }
       bodyText = JSON.stringify({ status: "1", message: "OK", result: [] }); // vacío temporal (NO se cachea)
       deferred = true;
     }
+    // stream con thirdweb caído → bodyText sigue null y la cascada continúa (2b/2c)
   }
 
   // 2a-ter) getLogs vía HyperSync (Envío) para chains con exploradores atrasados
@@ -574,7 +585,10 @@ async function handleEvmExplorer(seg, url, cors, env, ctx) {
     for (const l of merged) { const b = parseInt(l.blockNumber, 16) || 0; if (b > maxEvt) maxEvt = b; }
     const newLast = Math.max(Number(stream.stored && stream.stored.lastBlock) || 0, maxEvt, head || 0);
     const record = JSON.stringify({ gen: HIST_GEN, lastBlock: newLast, source: servedBy || "?", updatedAt: Date.now(), events: merged });
-    if (record.length <= HIST_MAX_BYTES) {
+    // Nunca CREAR un almacén vacío: un stream sin eventos no sirve nada y, si la fuente
+    // mintió (falso-vacío de Blockscout/thirdweb), grabaría la mentira con cursor al head
+    // — la posición perdería su historia para siempre. Vacío ⇒ reintento completo la próxima.
+    if (merged.length && record.length <= HIST_MAX_BYTES) {
       try { await env.QUOTA.put(stream.key, record); } catch (e) {}
     }
     return rawJson(JSON.stringify({ status: "1", message: "OK-histcache", result: merged }), cors);
