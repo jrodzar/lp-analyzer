@@ -2727,6 +2727,14 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
         // Cerrada → la EDAD se congela a su vida real (apertura→cierre), no sigue creciendo
         ageDays: durDays != null ? durDays : (hist.mintTs ? Math.max(0, (Date.now() / 1000 - hist.mintTs) / 86400) : 0),
         openedAt: hist.mintTs || 0, closedAt: closeTs || null, _rpcOnly: true,
+        // `raw` mínimo con el shape del subgraph: la FICHA COMPLETA lo lee en "▾ detalles"
+        // (depositado/retirado/fees por token). Sin él, positionCard revienta.
+        raw: {
+          depositedToken0: String(hist.deposited0), depositedToken1: String(hist.deposited1),
+          withdrawnToken0: String(hist.withdrawn0), withdrawnToken1: String(hist.withdrawn1),
+          collectedFeesToken0: String(hist.collectedFees0), collectedFeesToken1: String(hist.collectedFees1),
+          transaction: { timestamp: String(hist.mintTs || 0) },
+        },
       });
     } catch (e) { /* best-effort: omitir esta candidata */ }
   }
