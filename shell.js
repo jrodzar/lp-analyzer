@@ -2314,6 +2314,7 @@ function summarizeItems(items, extra = {}) {
     totalValue, totalCollected, totalPending, totalFees: totalCollected + totalPending,
     idleTotalUSD, totalCombined: totalValue + idleTotalUSD,
     lpCount: lp.length, lendingCount: lending.length, closedCount: closed.length,
+    lendingOpenCount: lending.filter((it) => !it.closed).length,
     inRange, outRange: lpOpen.length - inRange, count: items.length,
     ilSum, ilN, pnlSum, pnlN,
     aprAnual, aprMensual: aprAnual != null ? aprAnual * 30 / 365 : null, aprN,
@@ -2348,11 +2349,15 @@ function fillSummary(prefix, items, extra = {}) {
     if ($i("pnl-sub")) $i("pnl-sub").textContent = a.pnlN ? `${a.pnlN}/${a.count} posiciones con dato` : "requiere histórico (EVM / Birdeye en Solana)";
   }
   if ($i("positions")) {
-    $i("positions").textContent = a.count;
+    // El número gordo son las posiciones VIVAS; las cerradas van como apunte
+    // "(+N cerradas)" (petición del usuario: no contarlas como importantes).
+    // En DINERO siguen contando igual en todos los totales (lo aclara closed-note).
+    $i("positions").innerHTML = a.closedCount
+      ? `${a.count - a.closedCount} <span class="text-sm font-normal text-slate-400">(+${a.closedCount} cerrada${a.closedCount > 1 ? "s" : ""})</span>`
+      : String(a.count);
     if ($i("positions-sub")) $i("positions-sub").textContent =
       `${a.inRange} en rango · ${a.outRange} fuera` +
-      (a.lendingCount ? ` · ${a.lendingCount} préstamo${a.lendingCount > 1 ? "s" : ""}` : "") +
-      (a.closedCount ? ` · ${a.closedCount} cerrada${a.closedCount > 1 ? "s" : ""}` : "");
+      (a.lendingOpenCount ? ` · ${a.lendingOpenCount} préstamo${a.lendingOpenCount > 1 ? "s" : ""}` : "");
   }
   // Rentabilidad fees: APR anual ponderado por valor. Mensual = anual × 30/365.
   if ($i("yield")) {
