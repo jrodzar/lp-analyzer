@@ -1134,14 +1134,18 @@ async function fetchIdleTokensEVM(chainKey, address) {
     }
   } catch (e) { /* best-effort */ }
 
-  // ── HyperEVM: el índice de Hyperscan da saldos POCO FIABLES (verificado en vivo:
-  // USDC 120.92 indexado vs 88.31 on-chain; USD₮0 0.32 vs 0.73 — falla en AMBOS
-  // sentidos y no es retraso del índice: 10 días sin una sola transferencia). El
-  // `balanceOf` por RPC es la verdad → re-leemos y CORREGIMOS el saldo de cada
+  // ── El índice de tokens del explorer MIENTE (en TODAS las chains, no solo una):
+  //   · HyperEVM/Hyperscan: USDC 120.92 indexado vs 88.31 on-chain; USD₮0 0.32 vs 0.73
+  //     — falla en AMBOS sentidos y sin transferencias de por medio (no es retraso).
+  //   · Arbitrum/Blockscout (2026-07-31, cazado en vivo): tras convertir UNI/AAVE/LINK
+  //     a USDC, su índice seguía sirviendo los saldos VIEJOS (UNI 0.2858…) mientras
+  //     balanceOf devolvía 0 → el usuario veía tokens que ya no tenía.
+  // El `balanceOf` por RPC es la verdad → re-leemos y CORREGIMOS el saldo de cada
   // ERC-20 (el fallback de arriba solo AÑADE los que faltan; esto arregla los que
-  // vienen con un valor equivocado). Read-only, paralelo, gated a hyperevm.
-  if (chainKey === "hyperevm" && tokens.length) {
-    await Promise.all(tokens.map(async (t) => {
+  // vienen con un valor equivocado). Read-only; concurrencia acotada para no
+  // castigar los RPC públicos cuando la wallet tiene muchos tokens.
+  if (tokens.length && (c.rpcUrls || c.rpcUrl)) {
+    await mapLimit(tokens, 6, async (t) => {
       if (t.native || !t.address || t.address === "0x0000000000000000000000000000000000000000") return;
       let hex;
       try { hex = await rpcEthCall(c.rpcUrls || c.rpcUrl, t.address, SEL_BALANCE_OF + encodeAddr32(address)); }
@@ -1151,7 +1155,7 @@ async function fetchIdleTokensEVM(chainKey, address) {
       t.balance = bigIntToDecimal(raw, t.decimals);
       if (t.priceUSD != null) t.valueUSD = t.balance * t.priceUSD; // sin precio aún → lo fija el fallback de precios con el balance YA corregido
       t._rpcZero = raw === 0n;
-    }));
+    });
     // balanceOf == 0 (y la llamada tuvo éxito) → el índice lo mostraba obsoleto: fuera.
     for (let i = tokens.length - 1; i >= 0; i--) if (tokens[i]._rpcZero) tokens.splice(i, 1);
     for (const t of tokens) delete t._rpcZero;
