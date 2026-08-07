@@ -2827,7 +2827,11 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       // lo vivo: precios de los tokens (valor realizable) y tick actual de la pool.
       // Ahorra por cerrada: ~6 getLogs + recibo + ~10 idas RPC → 2 idas.
       const memoPos = immGet("recon", `${chainKey}:${tokenId}`);
-      if (memoPos && memoPos.poolId && memoPos.token0 && memoPos.token1) {
+      // Guarda de sanidad al LEER: una posición cerrada SIEMPRE retiró algo. Un memo con
+      // withdrawnUSD 0 se grabó con el histórico INCOMPLETO (típico: se reconstruyó en el
+      // mismo análisis en que se cerró, antes de que el explorer indexara el Decrease) y
+      // pintaba IL −100% / PnL catastrófico. Se ignora y se rehace; si sale bien, se regraba.
+      if (memoPos && memoPos.poolId && memoPos.token0 && memoPos.token1 && memoPos.withdrawnUSD > 0) {
         try {
           const [prices, s0H] = await Promise.all([
             priceTokensViaPool(rpc, chain.factoryAddress, {
@@ -2990,7 +2994,11 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       // Un burn es definitivo → memo persistente de la cerrada ENTERA, pero SOLO si la
       // reconstrucción quedó completa (pool + cierre + eventos); una parcial (explorer
       // caído a mitad) debe re-intentarse en el siguiente análisis, no quedar grabada.
-      if (closeTs && hist.mintTs && (hist.events || []).length) immSet("recon", `${chainKey}:${tokenId}`, pos);
+      // Solo se congela una reconstrucción COMPLETA: con evento de retirada real y
+      // valor retirado > 0 (además de apertura y cierre). Sin eso, el histórico aún
+      // no está entero → mejor rehacerla en el siguiente análisis que grabar la mentira.
+      const huboRetirada = (hist.events || []).some((e) => e.type === "dec");
+      if (closeTs && hist.mintTs && huboRetirada && withdrawnUSD > 0) immSet("recon", `${chainKey}:${tokenId}`, pos);
       return pos;
     } catch (e) { return null; /* best-effort: omitir esta candidata */ }
   });
