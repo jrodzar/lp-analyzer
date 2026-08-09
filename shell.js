@@ -2911,7 +2911,7 @@ function idleTokensBlock(tokens, opts = {}) {
   wrap.appendChild(head);
 
   const body = document.createElement("div");
-  body.className = "mt-2 space-y-1 text-xs";
+  body.className = "mt-2 space-y-2 text-xs";
   const rowFor = (t) => {
     const valStr = t.valueUSD != null ? fmtUSD(t.valueUSD) : `<span class="text-slate-600">sin precio</span>`;
     const bal0 = t.balance >= 1 ? t.balance.toFixed(4) : fmtTiny(t.balance, 4);
@@ -2967,8 +2967,12 @@ function idleTokensBlock(tokens, opts = {}) {
     //   - Mobile (< sm): dos filas compactas porque ~432px de columnas no caben en 375px
     //     Fila 1: [SYMBOL] [chain]                            [USD]
     //     Fila 2: [name compacto]                             [BALANCE mono]
+    // Contorno + hover por token: en [pro]/[pilot] los módulos active/ inyectan botones
+    // (Convertir / → USDC / mover) a la DERECHA de esta fila y el indicador cae en una
+    // línea propia debajo → sin un borde que cierre el bloque costaba ver a qué token
+    // pertenecía cada botón (reporte del usuario). El hover ilumina la fila entera.
     return `
-      <div class="bg-slate-950/40 rounded-md px-2 py-1.5">
+      <div class="bg-slate-950/40 rounded-md px-2 py-1.5 border border-slate-800/70 hover:bg-slate-800/30 hover:border-slate-600 transition-colors">
         <!-- Desktop -->
         <div class="hidden sm:flex sm:items-center sm:gap-3">
           <span class="font-semibold text-slate-100 w-20 shrink-0 truncate">${t.symbol || "?"}</span>
@@ -3004,7 +3008,7 @@ function idleTokensBlock(tokens, opts = {}) {
     toggle.className = "text-[11px] text-slate-500 hover:text-slate-300";
     toggle.textContent = `▾ Mostrar ${dust.length + noPrice.length} tokens de bajo valor / sin precio`;
     const dustWrap = document.createElement("div");
-    dustWrap.className = "hidden space-y-1 mt-2";
+    dustWrap.className = "hidden space-y-2 mt-2";
     dustWrap.innerHTML = [...dust, ...noPrice].map(rowFor).join("");
     toggle.onclick = () => {
       const hidden = dustWrap.classList.toggle("hidden");
