@@ -607,6 +607,23 @@ async function rpcCallFallback(rpcs, to, data, blockTag) {
   }
   throw lastErr || new Error("todos los RPC fallaron");
 }
+// Llamada RPC cruda (eth_getLogs / eth_blockNumber / eth_getBlockByNumber) probando
+// la lista de endpoints. Misma resiliencia que rpcEthCall, sin el molde de eth_call.
+async function rpcAny(rpcs, method, params) {
+  const list = Array.isArray(rpcs) ? rpcs.filter(Boolean) : [rpcs].filter(Boolean);
+  const body = JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 });
+  let lastErr;
+  for (const rpc of list) {
+    try {
+      const res = await fetch(rpc, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      if (!res.ok) { lastErr = new Error(`RPC HTTP ${res.status}`); continue; }
+      const json = await res.json();
+      if (json.error) { lastErr = new Error(`RPC ${json.error.code}: ${json.error.message}`); continue; }
+      return json.result;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("todos los RPC fallaron");
+}
 const EV_4626_DEPOSIT  = "0xdcbc1c05240f31ff3ad067ef1ee35ce4997762752e3a095284754544f4c709d7"; // Deposit(address,address,uint256,uint256)
 const EV_4626_WITHDRAW = "0xfbde797d201c681b91056529119e0b02407c7bb96a4a2c75c01fc9667232c8db"; // Withdraw(address,address,address,uint256,uint256)
 
@@ -820,7 +837,7 @@ async function lendingTokenTx(apiBase, owner, vault, dec, assetAddr) {
       if (a && String(t.contractAddress || "").toLowerCase() !== a) continue;
       const from = String(t.from || "").toLowerCase(), to = String(t.to || "").toLowerCase();
       const decT = Number(t.tokenDecimal != null ? t.tokenDecimal : dec) || dec;
-      const rec = { amt: Number(t.value || 0) / 10 ** decT, ts: Number(t.timeStamp) || 0 };
+      const rec = { amt: Number(t.value || 0) / 10 ** decT, ts: Number(t.timeStamp) || 0, hash: String(t.hash || "").toLowerCase() };
       if (from === o && to === v) dep.push(rec);
       else if (from === v && to === o) wth.push(rec);
     }
@@ -829,7 +846,78 @@ async function lendingTokenTx(apiBase, owner, vault, dec, assetAddr) {
   return { dep, wth };
 }
 
-async function fetchLendingHistory(apiBase, vault, owner, dec, force = false, assetAddr = null) {
+const EV_ERC20_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"; // Transfer(address,address,uint256)
+
+// LA CADENA MANDA. Los índices (Alchemy, Blockscout) tardan minutos en ver una tx recién
+// firmada. Justo después de "➕ Añadir liquidez" el VALOR ya sube (se lee on-chain) pero el
+// histórico todavía no tiene el depósito → la diferencia se contaba como INTERÉS. Visto en
+// vivo: 9,71 USDC depositados salían como ganancia (APR 12,9% en vez del 4,6% real).
+// Esto lee las últimas ~9.000 blocks por RPC —tiempo real, sin índice de por medio— y
+// devuelve los movimientos owner↔vault del activo. null = no se pudo (fallo ≠ vacío):
+// entonces el histórico se queda como estaba, nunca se inventa nada.
+async function lendingTailChain(rpcs, assetAddr, owner, vault, dec) {
+  if (!rpcs || !assetAddr) return null;
+  const pad = (a) => "0x" + String(a).toLowerCase().replace("0x", "").padStart(64, "0");
+  try {
+    const head = parseInt(await rpcAny(rpcs, "eth_blockNumber", []), 16);
+    if (!head) return null;
+    const fromBlock = "0x" + Math.max(0, head - 9000).toString(16); // el tope de muchos RPC es 10.000
+    const [entradas, salidas] = await Promise.all([
+      rpcAny(rpcs, "eth_getLogs", [{ fromBlock, toBlock: "latest", address: assetAddr, topics: [EV_ERC20_TRANSFER, pad(owner), pad(vault)] }]),
+      rpcAny(rpcs, "eth_getLogs", [{ fromBlock, toBlock: "latest", address: assetAddr, topics: [EV_ERC20_TRANSFER, pad(vault), pad(owner)] }]),
+    ]);
+    const out = [], tsPorBloque = new Map();
+    for (const [tipo, logs] of [["dep", entradas], ["wth", salidas]]) {
+      for (const l of (logs || [])) {
+        out.push({ type: tipo, amt: Number(BigInt(l.data || "0x0")) / 10 ** dec, hash: String(l.transactionHash || "").toLowerCase(), bn: l.blockNumber, ts: 0 });
+        tsPorBloque.set(l.blockNumber, 0);
+      }
+    }
+    if (!out.length) return [];
+    for (const bn of tsPorBloque.keys()) {
+      try { const b = await rpcAny(rpcs, "eth_getBlockByNumber", [bn, false]); tsPorBloque.set(bn, parseInt(b.timestamp, 16) || 0); } catch (e) {}
+    }
+    for (const e of out) e.ts = tsPorBloque.get(e.bn) || Math.floor(Date.now() / 1000);
+    return out;
+  } catch (e) { return null; }
+}
+
+// Une el histórico indexado con lo que la cadena ya ve y el índice aún no. Dedup por hash
+// de tx; para eventos viejos sin hash (LKG de versiones anteriores), por tipo+importe+hora.
+function mergeLendingTail(data, tail) {
+  if (!data || !tail || !tail.length) return data;
+  const yaEsta = (t) => (data.events || []).some((e) => (e.hash && t.hash)
+    ? e.hash === t.hash
+    : (e.type === t.type && Math.abs(e.amt - t.amt) < 1e-6 && Math.abs((e.ts || 0) - t.ts) < 600));
+  const nuevos = tail.filter((t) => !yaEsta(t));
+  if (!nuevos.length) return data;
+  const events = (data.events || []).concat(nuevos.map((t) => ({ ts: t.ts, type: t.type, amt: t.amt, hash: t.hash })));
+  let d = 0, w = 0, firstTs = null;
+  for (const e of events) {
+    if (e.type === "dep") { d += e.amt; if (firstTs === null || e.ts < firstTs) firstTs = e.ts; } else w += e.amt;
+  }
+  return { deposited: d, withdrawn: w, firstTs: firstTs != null ? firstTs : data.firstTs, events, stale: data.stale, staleTs: data.staleTs, tailMerged: nuevos.length };
+}
+
+// Histórico indexado + cola on-chain. `openNow` (shares > 0) fuerza la cola aunque el índice
+// no vea todavía NINGÚN depósito — el caso del primer depósito en un vault nuevo.
+async function fetchLendingHistory(apiBase, vault, owner, dec, force = false, assetAddr = null, rpcs = null, openNow = false) {
+  const data = await fetchLendingHistoryIdx(apiBase, vault, owner, dec, force, assetAddr);
+  if (!rpcs || !assetAddr || !(openNow || (data && data.deposited > 0))) return data;
+  const merged = mergeLendingTail(data, await lendingTailChain(rpcs, assetAddr, owner, vault, dec));
+  if (merged && merged !== data) {
+    // El merge es la verdad: que lo hereden también el caché en memoria (TTL 10 min — era
+    // justo el que servía el histórico viejo tras depositar) y el LKG persistido.
+    _histCache.set(`${apiBase}:lend:${vault}:${owner.toLowerCase()}`, { data: merged, ts: Date.now() });
+    if (!merged.stale) {
+      try { store.setItem("lp:lendhist:" + vault.toLowerCase() + ":" + owner.toLowerCase(), JSON.stringify({ deposited: merged.deposited, withdrawn: merged.withdrawn, firstTs: merged.firstTs, events: merged.events, savedAt: Date.now() })); } catch (e) {}
+    }
+    console.info(`[lending] ${merged.tailMerged} movimiento(s) recién firmados: los ve la cadena pero aún no el índice → sumados al histórico`);
+  }
+  return merged;
+}
+
+async function fetchLendingHistoryIdx(apiBase, vault, owner, dec, force = false, assetAddr = null) {
   const cacheKey = `${apiBase}:lend:${vault}:${owner.toLowerCase()}`;
   const cached = _histCache.get(cacheKey);
   if (!force && cached && (Date.now() - cached.ts) < HIST_CACHE_TTL) return cached.data;
@@ -843,8 +931,8 @@ async function fetchLendingHistory(apiBase, vault, owner, dec, force = false, as
     const toTs = (t) => Math.floor(new Date((t.metadata && t.metadata.blockTimestamp) || 0).getTime() / 1000) || 0;
     const dep = await alchemyTransfers("base", { fromAddress: owner, toAddress: vault, category: ["erc20"] });
     const wth = (dep && dep.length) ? await alchemyTransfers("base", { fromAddress: vault, toAddress: owner, category: ["erc20"] }) : (dep ? [] : null);
-    if (dep) depList = dep.map((t) => ({ amt: t.value || 0, ts: toTs(t) }));
-    if (wth) wthList = wth.map((t) => ({ amt: t.value || 0, ts: toTs(t) }));
+    if (dep) depList = dep.map((t) => ({ amt: t.value || 0, ts: toTs(t), hash: String(t.hash || "").toLowerCase() }));
+    if (wth) wthList = wth.map((t) => ({ amt: t.value || 0, ts: toTs(t), hash: String(t.hash || "").toLowerCase() }));
   } else {
     // Otras chains: getLogs por Blockscout (Deposit owner=topic2 / Withdraw owner=topic3).
     const ownerTopic = "0x" + owner.toLowerCase().replace("0x", "").padStart(64, "0");
@@ -858,8 +946,8 @@ async function fetchLendingHistory(apiBase, vault, owner, dec, force = false, as
     };
     const dep = await get(`topic0=${EV_4626_DEPOSIT}&topic2=${ownerTopic}&topic0_2_opr=and`);
     const wth = (dep && dep.length) ? await get(`topic0=${EV_4626_WITHDRAW}&topic3=${ownerTopic}&topic0_3_opr=and`) : (dep ? [] : null);
-    if (dep) depList = dep.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16) }));
-    if (wth) wthList = wth.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16) }));
+    if (dep) depList = dep.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16), hash: String(l.transactionHash || "").toLowerCase() }));
+    if (wth) wthList = wth.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16), hash: String(l.transactionHash || "").toLowerCase() }));
   }
   // Primario caído → fallback por OTRA ruta del explorer (tokentx por address).
   if (depList === null || wthList === null) {
@@ -885,8 +973,8 @@ async function fetchLendingHistory(apiBase, vault, owner, dec, force = false, as
   }
   let d = 0, w = 0, firstTs = null;
   const events = [];
-  for (const e of depList) { d += e.amt; if (firstTs === null || e.ts < firstTs) firstTs = e.ts; events.push({ ts: e.ts, type: "dep", amt: e.amt }); }
-  for (const e of wthList) { w += e.amt; events.push({ ts: e.ts, type: "wth", amt: e.amt }); }
+  for (const e of depList) { d += e.amt; if (firstTs === null || e.ts < firstTs) firstTs = e.ts; events.push({ ts: e.ts, type: "dep", amt: e.amt, hash: e.hash }); }
+  for (const e of wthList) { w += e.amt; events.push({ ts: e.ts, type: "wth", amt: e.amt, hash: e.hash }); }
   const data = { deposited: d, withdrawn: w, firstTs, events };
   _histCache.set(cacheKey, { data, ts: Date.now() });
   if (events.length) { try { store.setItem(lkgKey, JSON.stringify({ deposited: d, withdrawn: w, firstTs, events, savedAt: Date.now() })); } catch (e) {} }
@@ -1274,7 +1362,7 @@ async function fetchRevertLending(owner) {
       // si nunca depositó → barato en vaults nunca tocados.
       let h = null;
       if (c.explorerApi) {
-        try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, false, assetAddr); } catch (e) {}
+        try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, false, assetAddr, c.rpcs, open); } catch (e) {}
         // Una posición ABIERTA (shares>0) SIEMPRE tiene un Deposit en su histórico. Si vino
         // null/vacío es que TODAS las fuentes fallaron a la vez (Alchemy 429 + tokentx caído
         // y sin LKG persistido — raro tras el fix por capas). ANTES: 3 reintentos BLOQUEANTES
@@ -1287,7 +1375,7 @@ async function fetchRevertLending(owner) {
         // solo deja de RETENER el análisis entero.
         if (open && !(h && h.deposited > 0)) {
           await new Promise((res) => setTimeout(res, 1500));
-          try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true, assetAddr); } catch (e) {}
+          try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true, assetAddr, c.rpcs, open); } catch (e) {}
         }
         if (HAS_DOM && open && !(h && h.deposited > 0)) {
           const vaultLc = c.vault.toLowerCase();
@@ -1295,7 +1383,7 @@ async function fetchRevertLending(owner) {
             for (let r = 0; r < 2; r++) {
               await new Promise((res) => setTimeout(res, 5000 * (r + 1)));
               let h2 = null;
-              try { h2 = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true, assetAddr); } catch (e) {}
+              try { h2 = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true, assetAddr, c.rpcs, open); } catch (e) {}
               if (!(h2 && h2.deposited > 0)) continue;
               const p = (state.positions || []).find((x) => x._lending && x.vault && x.vault.toLowerCase() === vaultLc && String(x.owner).toLowerCase() === owner.toLowerCase());
               if (!p || p.depositedUSD != null) break; // ya no está en pantalla o ya se completó
