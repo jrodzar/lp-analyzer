@@ -4198,7 +4198,7 @@ function lendingLogHTML(p) {
     if (dentro < 1e-9) dentro = 0;
     return `
       <tr class="border-t border-slate-800">
-        <td class="px-2 py-1 text-slate-400 whitespace-nowrap">${fmtDate(e.ts)}</td>
+        <td class="px-2 py-1 text-slate-400">${fmtDate(e.ts)}</td>
         <td class="px-2 py-1 whitespace-nowrap">${esDep
           ? `<span class="text-emerald-300 font-semibold">Depósito</span>`
           : `<span class="text-rose-300 font-semibold">Retiro</span>`}</td>
@@ -4212,13 +4212,13 @@ function lendingLogHTML(p) {
       <summary class="text-slate-400 hover:text-slate-200">📜 logs (${evs.length})</summary>
       <div class="mt-2">
         <div class="overflow-x-auto -mx-1 mt-1">
-          <table class="text-[11px] w-full min-w-[420px]">
+          <table class="text-[11px] w-full min-w-[340px]">
             <thead>
-              <tr class="text-slate-500 text-left">
-                <th class="px-2 py-1 font-medium whitespace-nowrap">Fecha</th>
+              <tr class="text-slate-500 text-left align-bottom">
+                <th class="px-2 py-1 font-medium">Fecha</th>
                 <th class="px-2 py-1 font-medium">Tipo</th>
                 <th class="px-2 py-1 font-medium text-right">${p.asset}</th>
-                <th class="px-2 py-1 font-medium text-right whitespace-nowrap">Capital dentro</th>
+                <th class="px-2 py-1 font-medium text-right">Capital dentro</th>
                 <th class="px-2 py-1 font-medium text-right">Tx</th>
               </tr>
             </thead>
