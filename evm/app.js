@@ -1396,6 +1396,7 @@ async function fetchRevertLending(owner) {
               p.feesUSD = p.gainsUSD || 0;
               p.pnlUSD = p.gainsUSD == null ? 0 : p.gainsUSD;
               p.hodlUSD = p.depositedUSD || p.currentValueUSD;
+              p._lendEvents = h2.events || null;
               try { p.timelineSeries = await buildLendingTimelineExact(chainKey, c.rpcs, c.vault, owner, dec, h2.events, priceUSD, p.gainsUSD, nowBg); } catch (e) {}
               try { renderAll(); } catch (e) {}
               break;
@@ -1437,6 +1438,7 @@ async function fetchRevertLending(owner) {
         hodlUSD: depositedUSD || currentValueUSD,
         closed, reconstructed: closed, inRange: !closed,
         timelineSeries,
+        _lendEvents: (h && h.events) || null, // visor 📜 de la ficha (depósitos/retiros)
       };
     } catch (e) { return null; }
   }));
@@ -4169,6 +4171,65 @@ function managementFooterHTML(link) {
     </div>`;
 }
 
+// Visor 📜 del LENDING: depósitos y retiros del vault, como el de las LP. Aquí NO hay
+// eventos de "cobro" — el interés no se cobra, se acumula en el VALOR de tus shares —,
+// así que la tabla lleva el CAPITAL DENTRO tras cada movimiento (lo que de verdad varía)
+// y una nota que lo explica. Fuente: los mismos eventos con los que se calcula el coste
+// (índice + cola on-chain), o sea que lo que se ve aquí es lo que cuadra la ficha.
+function lendingLogHTML(p) {
+  const evs = (p._lendEvents || []).filter((e) => e && isFinite(e.amt) && e.amt > 0).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  if (!evs.length) return "";
+  const chain = state.chains[p.chainKey] || {};
+  const explorer = chain.explorer || "";
+  const fmtDate = (ts) => {
+    if (!ts) return "—";
+    const d = new Date(ts * 1000);
+    return d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" })
+      + " " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", hour12: false });
+  };
+  const fmtAmt = (n) => (n >= 1 ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : n.toFixed(6));
+  const fmtTx = (h) => (h && explorer)
+    ? `<a href="${explorer}/tx/${h}" target="_blank" class="font-mono text-fuchsia-300 hover:underline">${h.slice(0, 6)}…${h.slice(-4)}</a>`
+    : `<span class="text-slate-600">—</span>`;
+  let dentro = 0;
+  const rows = evs.map((e) => {
+    const esDep = e.type === "dep";
+    dentro += esDep ? e.amt : -e.amt;
+    if (dentro < 1e-9) dentro = 0;
+    return `
+      <tr class="border-t border-slate-800">
+        <td class="px-2 py-1 text-slate-400 whitespace-nowrap">${fmtDate(e.ts)}</td>
+        <td class="px-2 py-1 whitespace-nowrap">${esDep
+          ? `<span class="text-emerald-300 font-semibold">Depósito</span>`
+          : `<span class="text-rose-300 font-semibold">Retiro</span>`}</td>
+        <td class="px-2 py-1 font-mono text-right ${esDep ? "text-emerald-300" : "text-rose-300"}"><span class="lp-blur">${esDep ? "+" : "−"}${fmtAmt(e.amt)}</span></td>
+        <td class="px-2 py-1 font-mono text-slate-300 text-right"><span class="lp-blur">${fmtAmt(dentro)}</span></td>
+        <td class="px-2 py-1 text-right">${fmtTx(e.hash)}</td>
+      </tr>`;
+  }).join("");
+  return `
+    <details class="text-xs">
+      <summary class="text-slate-400 hover:text-slate-200">📜 logs (${evs.length})</summary>
+      <div class="mt-2">
+        <div class="overflow-x-auto -mx-1 mt-1">
+          <table class="text-[11px] w-full min-w-[420px]">
+            <thead>
+              <tr class="text-slate-500 text-left">
+                <th class="px-2 py-1 font-medium whitespace-nowrap">Fecha</th>
+                <th class="px-2 py-1 font-medium">Tipo</th>
+                <th class="px-2 py-1 font-medium text-right">${p.asset}</th>
+                <th class="px-2 py-1 font-medium text-right whitespace-nowrap">Capital dentro</th>
+                <th class="px-2 py-1 font-medium text-right">Tx</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+          <div class="text-[10px] text-slate-500 italic px-2 pt-1">Tus movimientos de capital en el vault. El interés no aparece como movimiento: no se cobra, se va acumulando en el valor de tus participaciones (por eso el valor actual es mayor que el capital dentro).</div>
+        </div>
+      </div>
+    </details>`;
+}
+
 function lendingCard(p) {
   const chain = state.chains[p.chainKey] || { name: p.chainName, explorer: "" };
   const el = document.createElement("article");
@@ -4220,6 +4281,7 @@ function lendingCard(p) {
         <div>Activo: ${p.asset}</div>
       </div>
     </details>
+    ${lendingLogHTML(p)}
     ${managementFooterHTML(managementLinkEVM(p))}`;
   return el;
 }
