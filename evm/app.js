@@ -1026,6 +1026,17 @@ const IDLE_RPC_FALLBACK = {
   optimism: [{ address: "0x0b2c639c533813f4aa9d7837caf62653d097ff85", symbol: "USDC", decimals: 6 }],
   polygon:  [{ address: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", symbol: "USDC", decimals: 6 }],
   base:     [{ address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", symbol: "USDC", decimals: 6 }],
+  // HyperEVM: hyperscan se cae con frecuencia y sin él la wallet aparecía SIN idle
+  // (visto en vivo: ~$9,6 invisibles). Estos 5 son los tokens del ecosistema que el
+  // usuario usa en sus pools → se leen por balanceOf y salen aunque el explorer falle.
+  // Direcciones verificadas on-chain leyendo token0()/token1() de las pools.
+  hyperevm: [
+    { address: "0xb88339cb7199b77e23db6e890353e22632ba630f", symbol: "USDC", decimals: 6 },
+    { address: "0xb8ce59fc3717ada4c02eadf9682a9e934f625ebb", symbol: "USD₮0", decimals: 6 },
+    { address: "0x5555555555555555555555555555555555555555", symbol: "WHYPE", decimals: 18 },
+    { address: "0xbe6727b535545c67d5caa73dea54865b92cf7907", symbol: "UETH", decimals: 18 },
+    { address: "0x9fdbda0a5e284c32744d2f17ee5c74b284993463", symbol: "UBTC", decimals: 8 },
+  ],
 };
 async function fetchIdleTokensEVM(chainKey, address) {
   const c = state.chains[chainKey];
@@ -1056,9 +1067,14 @@ async function fetchIdleTokensEVM(chainKey, address) {
       try { const ai = await res[1].json(); if (ai && ai.coin_balance) nativeRaw = BigInt(ai.coin_balance); } catch (e) {}
     }
   } catch (e) {
-    // CORS o red caída → marcar la chain para no volver a intentar en esta sesión.
-    c._noIdleSupport = true;
-    return [];
+    // FALLO ≠ VACÍO. Antes esto devolvía [] y marcaba la chain como "sin idle" para
+    // TODA la sesión → con hyperscan caído, la wallet de HyperEVM aparecía sin un solo
+    // token idle aunque el RPC respondía perfectamente (visto en vivo: WHYPE 0,0518
+    // desaparecido). Ahora seguimos SIN los items del explorer: el nativo ya está leído
+    // por RPC y abajo se rescatan por `balanceOf` los tokens conocidos de la chain
+    // (IDLE_RPC_FALLBACK) y los de tus propias posiciones. Nada de marcas permanentes.
+    console.warn(`[idle] explorer de ${chainKey} no responde → solo RPC (nativo + tokens conocidos)`);
+    items = [];
   }
 
   // Procesar y filtrar tokens sin balance
@@ -1118,8 +1134,22 @@ async function fetchIdleTokensEVM(chainKey, address) {
   // Fallback RPC para stables clave: Blockscout a veces NO indexa el saldo de un token
   // aunque esté en cadena (USDC recién puenteado a Base → su índice se lo salta, no es
   // retraso). Leemos balanceOf por RPC de la lista corta y añadimos lo que falte.
+  // Se suman los tokens de TUS PROPIAS POSICIONES en esa chain: son los que de verdad
+  // te importan (los de tus pools) y así siguen apareciendo aunque el explorer esté
+  // caído — el caso de HyperEVM con hyperscan fuera de servicio.
   try {
-    const keyToks = IDLE_RPC_FALLBACK[chainKey] || [];
+    const dePosiciones = [];
+    const vistos = new Set();
+    for (const p of (state.positions || [])) {
+      if (p.chainKey !== chainKey) continue;
+      for (const t of [p.token0, p.token1]) {
+        const a = t && t.id && String(t.id).toLowerCase();
+        if (!a || !/^0x[0-9a-f]{40}$/.test(a) || vistos.has(a)) continue;
+        vistos.add(a);
+        dePosiciones.push({ address: a, symbol: t.symbol || "?", decimals: Number(t.decimals) || 18 });
+      }
+    }
+    const keyToks = (IDLE_RPC_FALLBACK[chainKey] || []).concat(dePosiciones);
     if (keyToks.length) {
       const have = new Set(tokens.map((t) => t.address));
       await Promise.all(keyToks.map(async (kt) => {
