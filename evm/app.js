@@ -4187,7 +4187,7 @@ function lendingLogHTML(p) {
     return d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" })
       + " " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", hour12: false });
   };
-  const fmtAmt = (n) => (n >= 1 ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : n.toFixed(6));
+  const fmtAmt = (n) => (!(n > 0) ? "0" : n >= 1 ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : n.toFixed(6));
   const fmtTx = (h) => (h && explorer)
     ? `<a href="${explorer}/tx/${h}" target="_blank" class="font-mono text-fuchsia-300 hover:underline">${h.slice(0, 6)}…${h.slice(-4)}</a>`
     : `<span class="text-slate-600">—</span>`;
