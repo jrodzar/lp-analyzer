@@ -1392,6 +1392,64 @@ function managementFooterHTML(link) {
     </div>`;
 }
 
+// Visor 📜 del LENDING de Solana (Jupiter Lend) — gemelo del de Revert Lend en EVM.
+// Aquí tampoco hay eventos de cobro: el interés se acumula en el precio de la share,
+// así que la columna útil es el CAPITAL DENTRO (neto tras cada movimiento). El valor
+// en dólares del momento va en el tooltip del importe (los subyacentes no siempre son
+// estables: en jlSOL las cantidades son SOL y el USD de entonces no es el de hoy).
+function solLendingLogHTML(p) {
+  const evs = (p._lendEvents || []).filter((e) => e && isFinite(e.amt) && e.amt > 0);
+  if (!evs.length) return "";
+  const fmtDate = (ts) => {
+    if (!ts) return "—";
+    const d = new Date(ts * 1000);
+    return d.toLocaleDateString("es-ES", { day: "2-digit", month: "2-digit", year: "numeric" })
+      + " " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", hour12: false });
+  };
+  const fmtAmt = (n) => (n >= 1 ? n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : n.toFixed(6));
+  const fmtTx = (sig) => sig
+    ? `<a href="https://solscan.io/tx/${sig}" target="_blank" class="font-mono text-fuchsia-300 hover:underline">${sig.slice(0, 6)}…${sig.slice(-4)}</a>`
+    : `<span class="text-slate-600">—</span>`;
+  let dentro = 0;
+  const rows = evs.map((e) => {
+    const esDep = e.type === "dep";
+    dentro += esDep ? e.amt : -e.amt;
+    if (dentro < 1e-9) dentro = 0;
+    const tip = (e.usd != null && isFinite(e.usd)) ? ` title="≈ ${fmtUSD(e.usd)} en ese momento"` : "";
+    return `
+      <tr class="border-t border-slate-800">
+        <td class="px-2 py-1 text-slate-400">${fmtDate(e.ts)}</td>
+        <td class="px-2 py-1 whitespace-nowrap">${esDep
+          ? `<span class="text-emerald-300 font-semibold">Depósito</span>`
+          : `<span class="text-rose-300 font-semibold">Retiro</span>`}</td>
+        <td class="px-2 py-1 font-mono text-right ${esDep ? "text-emerald-300" : "text-rose-300"}"${tip}><span class="lp-blur">${esDep ? "+" : "−"}${fmtAmt(e.amt)}</span></td>
+        <td class="px-2 py-1 font-mono text-slate-300 text-right"><span class="lp-blur">${fmtAmt(dentro)}</span></td>
+        <td class="px-2 py-1 text-right">${fmtTx(e.sig)}</td>
+      </tr>`;
+  }).join("");
+  return `
+    <details class="text-xs">
+      <summary class="text-slate-400 hover:text-slate-200 cursor-pointer select-none">📜 logs (${evs.length})</summary>
+      <div class="mt-2">
+        <div class="overflow-x-auto -mx-1 mt-1">
+          <table class="text-[11px] w-full min-w-[340px]">
+            <thead>
+              <tr class="text-slate-500 text-left align-bottom">
+                <th class="px-2 py-1 font-medium">Fecha</th>
+                <th class="px-2 py-1 font-medium">Tipo</th>
+                <th class="px-2 py-1 font-medium text-right">${p.asset}</th>
+                <th class="px-2 py-1 font-medium text-right">Capital dentro</th>
+                <th class="px-2 py-1 font-medium text-right">Tx</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+          <div class="text-[10px] text-slate-500 italic px-2 pt-1">Tus movimientos de capital en el vault. El interés no aparece como movimiento: no se cobra, se va acumulando en el valor de tus participaciones${p.closed ? " (por eso retiraste más de lo que metiste)" : " (por eso el valor actual es mayor que el capital dentro)"}.</div>
+        </div>
+      </div>
+    </details>`;
+}
+
 // Card de lending (Jupiter Lend en Solana). Mismo layout que la de Revert Lend
 // del lado EVM para que la vista Portfolio sea consistente entre cadenas.
 function lendingCard(p) {
@@ -1452,6 +1510,7 @@ function lendingCard(p) {
             : "Histórico de depósitos no disponible (sin Helius). Valor actual = shares × precio Jupiter."}</div>
       </div>
     </details>
+    ${solLendingLogHTML(p)}
     ${managementFooterHTML(managementLinkSol(p))}`;
   return el;
 }
@@ -3031,6 +3090,16 @@ async function applyRealizableFeesSol(owner) {
 //   - underlying = stable (USDC/USDT) → precio = $1, sin Birdeye.
 //   - underlying = non-stable (SOL, etc.) → Birdeye histórico si está, si no
 //     fallback al precio actual (puede ser inexacto en depósitos antiguos).
+// Normaliza los buckets dep/wd de Jupiter Lend al shape del visor 📜 de la ficha:
+// [{ts, type:"dep"|"wth", amt (subyacente), usd, sig}] ordenados. Mismo campo
+// `_lendEvents` que usa el lending EVM, para que las dos fichas se lean igual.
+function lendEventsFrom(dep, wd) {
+  const evs = [];
+  for (const e of (dep || [])) evs.push({ ts: e.ts, type: "dep", amt: e.amt != null ? e.amt : e.usd, usd: e.usd, sig: e.sig || "" });
+  for (const e of (wd || [])) evs.push({ ts: e.ts, type: "wth", amt: e.amt != null ? e.amt : e.usd, usd: e.usd, sig: e.sig || "" });
+  return evs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+}
+
 async function enrichJupiterLendCost(owner) {
   const jl = (state.positions || []).filter((p) => p._lending && p.protocol === "jupiter-lend");
   if (!jl.length || (!state.heliusKey && !PROXY_BASE) || !owner) return;
@@ -3079,8 +3148,9 @@ async function enrichJupiterLendCost(owner) {
       const usd = underlying.amount * priceUSD;
       const jlAmt = t.tokenAmount || 0; // shares jl movidas en este mismo tx
       const bucket = events.get(t.mint);
-      if (isIn) bucket.dep.push({ ts, usd, jl: jlAmt });
-      else      bucket.wd.push({ ts, usd, jl: jlAmt });
+      // `amt`/`sig` no entran en el cálculo: alimentan el visor 📜 de la ficha.
+      if (isIn) bucket.dep.push({ ts, usd, jl: jlAmt, amt: underlying.amount, sig: tx.signature || "" });
+      else      bucket.wd.push({ ts, usd, jl: jlAmt, amt: underlying.amount, sig: tx.signature || "" });
     }
   }
 
@@ -3173,6 +3243,7 @@ async function enrichJupiterLendCost(owner) {
     p.apr = apr;
     p._aprTooEarly = (netInvested > 0 && ageDays < 1); // para la card
     p.pnlBasis = "tx-scan";
+    p._lendEvents = lendEventsFrom(dep, wd); // visor 📜 (depósitos/retiros del vault)
   }
 }
 
@@ -3221,7 +3292,7 @@ async function reconstructClosedJupiterLend(owner) {
       if (priceUSD == null) continue;
       const usd = underlying.amount * priceUSD;
       if (!events.has(mint)) events.set(mint, { dep: [], wd: [] });
-      (isIn ? events.get(mint).dep : events.get(mint).wd).push({ ts, usd });
+      (isIn ? events.get(mint).dep : events.get(mint).wd).push({ ts, usd, amt: underlying.amount, sig: tx.signature || "" });
     }
   }
 
@@ -3254,6 +3325,7 @@ async function reconstructClosedJupiterLend(owner) {
       ilUSD: 0, pnlUSD: gainsUSD, pnlBasis: "tx-scan",
       inRange: false, closed: true, reconstructed: true,
       ageDays, openedAt,
+      _lendEvents: lendEventsFrom(dep, wd), // visor 📜 (depósitos/retiros del vault)
       color: hexToColorObj(JUPITER_LEND_COLOR_HEX),
       token0: { symbol: asset, decimals: 0, priceUSD: null },
       token1: { symbol: "lending", decimals: 0, priceUSD: null },
