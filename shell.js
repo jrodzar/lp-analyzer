@@ -2971,8 +2971,14 @@ function idleTokensBlock(tokens, opts = {}) {
     // (Convertir / → USDC / mover) a la DERECHA de esta fila y el indicador cae en una
     // línea propia debajo → sin un borde que cierre el bloque costaba ver a qué token
     // pertenecía cada botón (reporte del usuario). El hover ilumina la fila entera.
+    // Identidad del token EN EL DOM: los módulos active/ de [pro]/[pilot] emparejaban
+    // fila↔token por SÍMBOLO (+ chip de chain), y eso confunde a dos tokens con el mismo
+    // símbolo. Caso real: SOL nativo y Wrapped SOL comparten símbolo Y dirección (el
+    // engine da a ambos el mint de WSOL) → los botones de una fila actuaban sobre el otro
+    // token. Con dirección + chain + native el emparejamiento es exacto. Inerte en [main].
+    const idAttrs = `data-idle-addr="${(t.address || "").toLowerCase()}" data-idle-chain="${t.chain || ""}"${t.native ? ' data-idle-native="1"' : ""}`;
     return `
-      <div class="bg-slate-950/40 rounded-md px-2 py-1.5 border border-slate-800/70 hover:bg-slate-800/30 hover:border-slate-600 transition-colors">
+      <div ${idAttrs} class="bg-slate-950/40 rounded-md px-2 py-1.5 border border-slate-800/70 hover:bg-slate-800/30 hover:border-slate-600 transition-colors">
         <!-- Desktop -->
         <div class="hidden sm:flex sm:items-center sm:gap-3">
           <span class="font-semibold text-slate-100 w-20 shrink-0 truncate">${t.symbol || "?"}</span>
