@@ -1889,6 +1889,7 @@ const SEL_SLOT0          = "0x3850c7bd"; // slot0()
 const SEL_FEE_GROWTH_0   = "0xf3058399"; // feeGrowthGlobal0X128()
 const SEL_FEE_GROWTH_1   = "0x46141319"; // feeGrowthGlobal1X128()
 const SEL_TOKEN0_POOL    = "0x0dfe1681"; // token0() en pool
+const SEL_LIQUIDITY_POOL = "0x1a686502"; // liquidity() en pool
 const SEL_TOKEN1_POOL    = "0xd21220a7"; // token1() en pool
 const SEL_SYMBOL         = "0x95d89b41"; // symbol()
 const SEL_DECIMALS       = "0x313ce567"; // decimals()
@@ -1967,40 +1968,61 @@ async function priceTokensViaPool(rpc, factoryAddr, tokenInfos, chainScope) {
           const decTok = tokenInfos[addr]?.decimals ?? 18;
           const decStb = memo.decStb ?? 6;
           const sq = Number(sqrtP) / 2 ** 96;
-          prices[addr] = (memo.pt0 === addr)
+          const px = (memo.pt0 === addr)
             ? sq * sq * 10 ** (decTok - decStb)
             : 1 / (sq * sq * 10 ** (decStb - decTok));
-          return;
+          // Guarda de cordura: si la pool memoizada se vació desde la última vez, su
+          // slot0 se va al extremo y devuelve precios imposibles (se vieron 3,4e40).
+          // Un precio así no se cachea ni se usa: se vuelve a descubrir.
+          if (px > 0 && isFinite(px) && px < 1e9) { prices[addr] = px; return; }
         }
       } catch (e) { /* memo inválido en vivo → descubrimiento completo */ }
     }
+    // Se miran TODAS las combinaciones (estable × fee) y gana la de MÁS LIQUIDEZ.
+    // Antes valía la primera que respondiera, y eso rompía de dos maneras:
+    //   · Una pool VACÍA no es una fuente de precio. Existe (alguien la creó) pero su
+    //     slot0 está clavado en el extremo → precios imposibles. Caso real (23-ago-2026):
+    //     UBTC/USDC 0,3% en HyperEVM, liquidity 0, devolvía 3,4e40 $/UBTC y la posición
+    //     UBTC/USD₮0 pasaba a valer 3,5e37 → el Vigía avisaba de "−100% vs baseline".
+    //   · Y era INTERMITENTE (1 de cada 8 análisis): el orden de `stables` depende de
+    //     cómo se hayan descubierto los tokens, que va en paralelo. Con la pool buena
+    //     primero salía bien; con la vacía primero, no. Elegir por liquidez lo hace
+    //     determinista.
+    //   · Ojo: una pool vacía puede dar un precio PLAUSIBLE pero falso (la de fee 500
+    //     daba $118k por UBTC cuando vale $77k) — por eso el filtro es la liquidez, no
+    //     un umbral de "parece razonable".
+    let mejor = null;
     for (const stable of stables) {
-      let found = false;
       for (const fee of [3000, 500, 10000, 100]) {
         try {
           const [tA, tB] = addr < stable ? [addr, stable] : [stable, addr];
           const ph = await rpcEthCall(rpc, factoryAddr, SEL_GET_POOL + encodeAddr32(tA) + encodeAddr32(tB) + encodeU32(fee));
           const pool = "0x" + ph.slice(-40);
           if (/^0x0+$/.test(pool)) continue;
-          const [s0h, pt0h] = await Promise.all([
+          const [s0h, pt0h, lh] = await Promise.all([
             rpcEthCall(rpc, pool, SEL_SLOT0),
             rpcEthCall(rpc, pool, SEL_TOKEN0_POOL),
+            rpcEthCall(rpc, pool, SEL_LIQUIDITY_POOL),
           ]);
+          const L = decU(lh, 0);
+          if (!L) continue;                 // pool vacía → no precia
           const sqrtP = decU(s0h, 0);
           if (!sqrtP) continue;
           const pt0 = decAddr(pt0h, 0);
           const decTok = tokenInfos[addr]?.decimals ?? 18;
           const decStb = tokenInfos[stable]?.decimals ?? 6;
           const sq = Number(sqrtP) / 2 ** 96;
-          prices[addr] = (pt0 === addr)
+          const px = (pt0 === addr)
             ? sq * sq * 10 ** (decTok - decStb)        // token = token0, stable = token1
             : 1 / (sq * sq * 10 ** (decStb - decTok)); // stable = token0, token = token1
-          immSet("pxpool", mk, { pool, pt0, stable, decStb });
-          found = true;
-          break;
+          if (!(px > 0) || !isFinite(px)) continue;
+          if (!mejor || L > mejor.L) mejor = { L, px, pool, pt0, stable, decStb };
         } catch {}
       }
-      if (found) break;
+    }
+    if (mejor) {
+      prices[addr] = mejor.px;
+      immSet("pxpool", mk, { pool: mejor.pool, pt0: mejor.pt0, stable: mejor.stable, decStb: mejor.decStb });
     }
   }));
   return prices;
