@@ -1113,7 +1113,14 @@ const IDLE_RPC_FALLBACK = {
   arbitrum: [{ address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831", symbol: "USDC", decimals: 6 }, { address: "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", symbol: "USD₮0", decimals: 6 }],
   optimism: [{ address: "0x0b2c639c533813f4aa9d7837caf62653d097ff85", symbol: "USDC", decimals: 6 }],
   polygon:  [{ address: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", symbol: "USDC", decimals: 6 }],
-  base:     [{ address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", symbol: "USDC", decimals: 6 }],
+  // Base: USDC + AERO. El AERO entra porque es lo que COBRAS de las pools stakeadas en
+  // Aerodrome y el índice de Blockscout tarda en listarlo. Visto en vivo (2026-08-23):
+  // 0,2621 AERO recién reclamados, ausentes del índice —que sí listaba 21 tokens de
+  // airdrop— mientras el RPC los devolvía sin problema.
+  base:     [
+    { address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", symbol: "USDC", decimals: 6 },
+    { address: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", symbol: "AERO", decimals: 18 },
+  ],
   // HyperEVM: hyperscan se cae con frecuencia y sin él la wallet aparecía SIN idle
   // (visto en vivo: ~$9,6 invisibles). Estos 5 son los tokens del ecosistema que el
   // usuario usa en sus pools → se leen por balanceOf y salen aunque el explorer falle.
@@ -1228,14 +1235,21 @@ async function fetchIdleTokensEVM(chainKey, address) {
   try {
     const dePosiciones = [];
     const vistos = new Set();
+    const anota = (a, symbol, decimals) => {
+      const k = String(a || "").toLowerCase();
+      if (!/^0x[0-9a-f]{40}$/.test(k) || vistos.has(k)) return;
+      vistos.add(k);
+      dePosiciones.push({ address: k, symbol: symbol || "?", decimals: Number(decimals) || 18 });
+    };
+    // Token de RECOMPENSA por tipo: es JUSTO lo que acabas de cobrar, o sea lo más
+    // recién llegado a la wallet — y por tanto lo peor indexado. Sin esto, el AERO
+    // reclamado no salía por ningún lado.
+    const TOKEN_RECOMPENSA = { AERO: { chain: "base", address: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", symbol: "AERO", decimals: 18 } };
     for (const p of (state.positions || [])) {
       if (p.chainKey !== chainKey) continue;
-      for (const t of [p.token0, p.token1]) {
-        const a = t && t.id && String(t.id).toLowerCase();
-        if (!a || !/^0x[0-9a-f]{40}$/.test(a) || vistos.has(a)) continue;
-        vistos.add(a);
-        dePosiciones.push({ address: a, symbol: t.symbol || "?", decimals: Number(t.decimals) || 18 });
-      }
+      for (const t of [p.token0, p.token1]) if (t && t.id) anota(t.id, t.symbol, t.decimals);
+      const rec = TOKEN_RECOMPENSA[p.rewardKind];
+      if (rec && rec.chain === chainKey) anota(rec.address, rec.symbol, rec.decimals);
     }
     const keyToks = (IDLE_RPC_FALLBACK[chainKey] || []).concat(dePosiciones);
     if (keyToks.length) {
