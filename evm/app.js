@@ -1308,7 +1308,12 @@ async function fetchIdleTokensEVM(chainKey, address) {
       balance, priceUSD, valueUSD, logo: t.icon_url || null,
     };
     tokens.push(obj);
-    if (priceUSD == null && obj.address) missingPrice.push(obj);
+    // TODOS los ERC-20 pasan por DefiLlama, no solo los que llegan sin precio. El
+    // `exchange_rate` del explorer NO es fiable: Blockscout-Arbitrum daba WETH a
+    // $1.911,21 con ETH a $2.470 — el MISMO activo con un 22% de diferencia (lo cazó
+    // el usuario al ver "−16% vs entrada" en WETH y "+8%" en ETH, 2026-08-25). Su
+    // precio queda solo como respaldo si DefiLlama no conoce el token.
+    if (obj.address) missingPrice.push(obj);
   }
 
   // Fallback RPC para stables clave: Blockscout a veces NO indexa el saldo de un token
