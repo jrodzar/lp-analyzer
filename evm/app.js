@@ -1120,6 +1120,7 @@ const IDLE_RPC_FALLBACK = {
   base:     [
     { address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", symbol: "USDC", decimals: 6 },
     { address: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", symbol: "AERO", decimals: 18 },
+    { address: "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2", symbol: "USDT", decimals: 6 },
   ],
   // HyperEVM: hyperscan se cae con frecuencia y sin él la wallet aparecía SIN idle
   // (visto en vivo: ~$9,6 invisibles). Estos 5 son los tokens del ecosistema que el
@@ -1251,6 +1252,18 @@ async function fetchIdleTokensEVM(chainKey, address) {
       const rec = TOKEN_RECOMPENSA[p.rewardKind];
       if (rec && rec.chain === chainKey) anota(rec.address, rec.symbol, rec.decimals);
     }
+    // MEMORIA de los tokens que han pasado por las posiciones de ESTA wallet. Hace
+    // falta por dos motivos, y los dos se dieron a la vez al retirar del pool de
+    // Aerodrome (2026-08-24): (a) al retirar, la posición se CIERRA y sus tokens
+    // dejan de estar en state.positions justo cuando acaban de llegar a la wallet;
+    // (b) el idle y las posiciones se analizan EN PARALELO desde v349, así que
+    // state.positions puede estar vacío todavía. Con la memoria, el rescate por
+    // balanceOf sigue mirando esos tokens para siempre. Se guarda solo la identidad
+    // (dirección/símbolo/decimales), nunca saldos.
+    const memoKey = `${chainKey}:${String(address).toLowerCase()}`;
+    const recordados = immGet("idletok", memoKey) || [];
+    for (const t of recordados) anota(t.address, t.symbol, t.decimals);
+    if (dePosiciones.length && dePosiciones.length !== recordados.length) immSet("idletok", memoKey, dePosiciones);
     const keyToks = (IDLE_RPC_FALLBACK[chainKey] || []).concat(dePosiciones);
     if (keyToks.length) {
       const have = new Set(tokens.map((t) => t.address));
