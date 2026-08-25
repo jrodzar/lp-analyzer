@@ -1456,6 +1456,13 @@ function lendingCard(p) {
   const el = document.createElement("article");
   el.className = "rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-3 hover:border-slate-700 transition";
   if (p.color) el.style.borderLeft = `3px solid ${p.color.line}`;
+  // Datos inertes (solo lectura) para que el active-management de [pro] inyecte los
+  // botones Añadir/Quitar de Jupiter Lend. [main] no los usa: nunca firma. Solo en
+  // posiciones ABIERTAS — una cerrada no admite depósito ni retiro.
+  if (!p.closed && p.protocol === "jupiter-lend" && p.mint) {
+    el.setAttribute("data-jup-lend-mint", p.mint);       // mint de la participación (jlUSDC…)
+    el.setAttribute("data-jup-lend-asset", p.asset || ""); // símbolo del subyacente
+  }
   const gain = p.gainsUSD;
   const protoLabel = p.protocol === "jupiter-lend" ? "Jupiter Lend" : (p.protocol || "Lending");
   const shareSymbol = p.protocol === "jupiter-lend" ? `jl${p.asset}` : "shares";
