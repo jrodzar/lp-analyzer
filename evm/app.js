@@ -1108,6 +1108,11 @@ const _revertVaultsLower = new Set(
 // saldo de un token aunque esté en cadena (visto: USDC recién puenteado a Base, su
 // índice de tokens se lo salta indefinidamente — no es retraso). USDC nativa (Circle)
 // por red + USDT0 de Arbitrum. El precio lo resuelve DefiLlama después.
+// Token de RECOMPENSA por tipo de posición: es JUSTO lo que acabas de cobrar, o sea
+// lo más recién llegado a la wallet — y por tanto lo peor indexado. Sin esto, el AERO
+// reclamado no salía por ningún lado.
+const TOKEN_RECOMPENSA = { AERO: { chain: "base", address: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", symbol: "AERO", decimals: 18 } };
+
 const IDLE_RPC_FALLBACK = {
   ethereum: [{ address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", symbol: "USDC", decimals: 6 }],
   arbitrum: [{ address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831", symbol: "USDC", decimals: 6 }, { address: "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", symbol: "USD₮0", decimals: 6 }],
@@ -1134,6 +1139,69 @@ const IDLE_RPC_FALLBACK = {
     { address: "0x9fdbda0a5e284c32744d2f17ee5c74b284993463", symbol: "UBTC", decimals: 8 },
   ],
 };
+// SEGUNDA PASADA del saldo idle, con las posiciones YA cargadas.
+//
+// Por qué hace falta: el idle y las posiciones se analizan EN PARALELO (v349), así que
+// cuando `fetchIdleTokensEVM` hace su rescate por `balanceOf`, `state.positions` está
+// todavía vacío — el rescate "por tus posiciones" y el memo que lo alimenta nunca
+// llegaban a funcionar (verificado en vivo: 0 claves `idletok` guardadas).
+//
+// Y es justo el caso de después de RETIRAR de un pool: el token acaba de llegar a la
+// wallet, el índice del explorer aún no lo tiene, y encima la posición puede haberse
+// cerrado. Caso real (2026-08-25): 0,0548 WETH retirados de WETH/USDC en Arbitrum,
+// invisibles en la app aunque el explorer sí los listaba ya.
+//
+// Hace dos cosas: escribe el memo `idletok` (para los análisis siguientes y para cuando
+// la posición desaparezca) y rescata AHORA lo que falte, usando el precio que la propia
+// posición ya trae — sin pedir precios otra vez.
+async function rescatarTokensDePosicionesEVM(address) {
+  const porChain = new Map();
+  const anota = (chainKey, addr, symbol, decimals, priceUSD) => {
+    const a = String(addr || "").toLowerCase();
+    if (!chainKey || !/^0x[0-9a-f]{40}$/.test(a)) return;
+    if (!porChain.has(chainKey)) porChain.set(chainKey, new Map());
+    const m = porChain.get(chainKey);
+    const prev = m.get(a);
+    if (prev && prev.priceUSD != null) return;
+    m.set(a, { address: a, symbol: symbol || "?", decimals: Number(decimals) || 18, priceUSD: priceUSD != null ? priceUSD : null });
+  };
+  for (const p of (state.positions || [])) {
+    if (!p.chainKey) continue;
+    for (const t of [p.token0, p.token1]) if (t && t.id) anota(p.chainKey, t.id, t.symbol, t.decimals, t.priceUSD);
+    const rec = TOKEN_RECOMPENSA[p.rewardKind];
+    if (rec) anota(rec.chain, rec.address, rec.symbol, rec.decimals, null);
+  }
+  if (!porChain.size) return;
+  const own = String(address).toLowerCase();
+  for (const [chainKey, m] of porChain) immSet("idletok", `${chainKey}:${own}`, [...m.values()]);
+
+  const yaEsta = new Set((state.idleTokens || []).map((t) => `${t.chain}:${String(t.address || "").toLowerCase()}`));
+  const nuevos = [];
+  await Promise.all([...porChain].map(async ([chainKey, m]) => {
+    const c = state.chains[chainKey];
+    if (!c || !(c.rpcUrls || c.rpcUrl)) return;
+    await mapLimit([...m.values()], 6, async (t) => {
+      if (yaEsta.has(`${chainKey}:${t.address}`) || _revertVaultsLower.has(t.address) || _curveTokensLower.has(t.address)) return;
+      let raw = 0n;
+      try {
+        const hex = await rpcEthCall(c.rpcUrls || c.rpcUrl, t.address, SEL_BALANCE_OF + encodeAddr32(address));
+        if (hex && hex !== "0x") raw = BigInt(hex);
+      } catch (e) { return; } // RPC caído → sin invento
+      if (raw <= 0n) return;
+      const balance = bigIntToDecimal(raw, t.decimals);
+      nuevos.push({
+        chain: chainKey, symbol: t.symbol, name: t.symbol, address: t.address, decimals: t.decimals,
+        balance, priceUSD: t.priceUSD != null ? t.priceUSD : null,
+        valueUSD: t.priceUSD != null ? balance * t.priceUSD : null, logo: null,
+      });
+    });
+  }));
+  if (nuevos.length) {
+    state.idleTokens = (state.idleTokens || []).concat(nuevos).sort((a, b) => (b.valueUSD || 0) - (a.valueUSD || 0));
+    console.info(`[idle] ${nuevos.length} token(s) de tus posiciones rescatados por balanceOf: ${nuevos.map((t) => t.symbol).join(", ")}`);
+  }
+}
+
 async function fetchIdleTokensEVM(chainKey, address) {
   const c = state.chains[chainKey];
   if (!c || !c.blockscoutApi) return []; // chain sin soporte (p. ej. BNB / Optimism)
@@ -1242,10 +1310,6 @@ async function fetchIdleTokensEVM(chainKey, address) {
       vistos.add(k);
       dePosiciones.push({ address: k, symbol: symbol || "?", decimals: Number(decimals) || 18 });
     };
-    // Token de RECOMPENSA por tipo: es JUSTO lo que acabas de cobrar, o sea lo más
-    // recién llegado a la wallet — y por tanto lo peor indexado. Sin esto, el AERO
-    // reclamado no salía por ningún lado.
-    const TOKEN_RECOMPENSA = { AERO: { chain: "base", address: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", symbol: "AERO", decimals: 18 } };
     for (const p of (state.positions || [])) {
       if (p.chainKey !== chainKey) continue;
       for (const t of [p.token0, p.token1]) if (t && t.id) anota(t.id, t.symbol, t.decimals);
@@ -5122,6 +5186,9 @@ async function analyzeAddressCore(addr, opts = {}) {
   if (aeroRes && aeroRes.length) state.positions.push(...aeroRes);
   assignColors(state.positions);
   state.idleTokens = idleRes;
+  // Con las posiciones ya en la mano: memo + rescate de lo que el idle no pudo ver
+  // (corre en paralelo con ellas, así que antes no las tenía). Best-effort.
+  try { await rescatarTokensDePosicionesEVM(addr); } catch (e) { console.warn("[idle] rescate por posiciones:", e); }
 
   // Indicador idle "¿buen momento para pasar a USDC?" (entrada + rango 30d).
   // best-effort: nunca rompe el análisis si DefiLlama / histórico fallan.
