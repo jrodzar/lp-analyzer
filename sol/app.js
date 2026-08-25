@@ -1758,6 +1758,18 @@ function positionCard(p) {
       </div>
       ${p.pnlBasis === "birdeye" ? (() => {
         const src = p.pnlUsedYahoo ? "DefiLlama + Yahoo Finance (fallback xStocks)" : "DefiLlama";
+        // Movimiento recién firmado que el registro aún no ve: el valor YA está
+        // actualizado pero el retiro/depósito no está contado, así que el PnL y el IL
+        // saldrían mal. Se dicen en espera en vez de enseñar un número que no toca.
+        if (p._sinIndexar) {
+          const hace = Math.max(1, Math.round((Date.now() / 1000 - p._sinIndexar.ts) / 60));
+          const enlace = p._sinIndexar.sig ? ` <a href="https://solscan.io/tx/${p._sinIndexar.sig}" target="_blank" class="underline text-amber-200/80">ver la tx</a>` : "";
+          return `
+      <div class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2 col-span-2">
+        <div class="text-[11px] text-amber-200 leading-snug">⏳ <b>Movimiento reciente sin indexar</b> (hace ~${hace} min).${enlace}</div>
+        <div class="text-[10px] text-amber-200/70 mt-0.5">El valor de arriba ya es el bueno —se lee de la cadena—, pero el movimiento todavía no está en el registro, así que el PnL y el IL saldrían mal. Vuelve a analizar en unos minutos.</div>
+      </div>`;
+        }
         return `
       <div class="bg-slate-950/40 rounded-lg p-2">
         ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL</span>`, `Valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Estimación con precios históricos de ${src}; no incluye gas.`)}
@@ -1908,6 +1920,8 @@ async function analyze() {
     if (all.length && (state.birdeyeKey || PROXY_BASE)) {
       setStatus("Calculando PnL e IL con históricos (DefiLlama)…", "info");
       try { await enrichSolanaPnL(addr); } catch (e) { console.warn("enrichSolanaPnL:", e); }
+      // ¿Se movió algo que el registro todavía no ve? (retiro/depósito recién firmado)
+      try { await marcarMovimientosSinIndexar(); } catch (e) { console.warn("sin-indexar:", e); }
       const st = state._beStats || {};
       if (st.ok === 0 && (st.denied > 0)) {
         beWarn = " ⚠ Tu plan de Birdeye no permite precios históricos (o la key es inválida): PnL/IL no disponible.";
@@ -3077,6 +3091,36 @@ async function applyRealizableFeesSol(owner) {
       }
     }
   } catch (e) { console.warn("[fees-realizable]", e); state._feesRealizableUSD = null; }
+}
+
+// ¿Hay movimientos en la posición que el registro todavía no ha visto?
+//
+// La liquidez y el valor se leen ON-CHAIN (instantáneo); el registro de movimientos
+// (_eventLog) viene de Helius, que tarda unos minutos en indexar. En esa ventana el
+// PnL sale MAL: el valor ya bajó por el retiro pero el retiro aún no está contado, así
+// que parece una pérdida. Caso real 2026-08-25: retiro del 20% de SOL/USDC — valor
+// actualizado al instante, movimiento ausente del registro hasta el análisis siguiente.
+//
+// Detección barata y exacta: la última firma que TOCÓ la cuenta de la posición (una
+// llamada `getSignaturesForAddress` por posición) contra el último evento del registro.
+// Si la cadena es más nueva, hay algo sin contar. Margen de 90 s para no chillar por
+// desajustes de reloj ni por el propio retardo normal.
+const _MARGEN_SIN_INDEXAR = 90;
+async function marcarMovimientosSinIndexar() {
+  const abiertas = (state.positions || []).filter((p) => p && p.id && !p.closed && !p._lending && Array.isArray(p._eventLog));
+  if (!abiertas.length) return;
+  await Promise.all(abiertas.map(async (p) => {
+    try {
+      const sigs = await rpc("getSignaturesForAddress", [p.id, { limit: 1 }]);
+      const ultimaCadena = Array.isArray(sigs) && sigs[0] && sigs[0].blockTime;
+      if (!ultimaCadena) return;
+      const ultimoEvento = (p._eventLog || []).reduce((m, e) => Math.max(m, e.ts || 0), 0);
+      if (ultimaCadena > ultimoEvento + _MARGEN_SIN_INDEXAR) {
+        p._sinIndexar = { ts: ultimaCadena, sig: sigs[0].signature || null };
+        console.warn(`[sol] ${p.pair || p.id}: hay actividad on-chain (${new Date(ultimaCadena * 1000).toISOString()}) que el registro aún no tiene → PnL en espera`);
+      }
+    } catch (e) { /* si no se puede comprobar, no se avisa: mejor callar que asustar */ }
+  }));
 }
 
 // Reconstruye coste base / interés / APR de posiciones Jupiter Lend a partir
