@@ -1189,14 +1189,30 @@ async function rescatarTokensDePosicionesEVM(address) {
       } catch (e) { return; } // RPC caído → sin invento
       if (raw <= 0n) return;
       const balance = bigIntToDecimal(raw, t.decimals);
+      // SIN precio aquí: el de la posición NO es precio de mercado. Se probó y salía
+      // WETH a $1.911 con ETH a $2.469 — el mismo activo con un 22% de diferencia, que
+      // es justo lo que cantó el usuario al ver "-16% vs entrada" en WETH y "+8%" en
+      // ETH. El precio se pide abajo a DefiLlama, la misma fuente que el resto del idle.
       nuevos.push({
         chain: chainKey, symbol: t.symbol, name: t.symbol, address: t.address, decimals: t.decimals,
-        balance, priceUSD: t.priceUSD != null ? t.priceUSD : null,
-        valueUSD: t.priceUSD != null ? balance * t.priceUSD : null, logo: null,
+        balance, priceUSD: null, valueUSD: null, logo: null,
       });
     });
   }));
   if (nuevos.length) {
+    // Precio por la MISMA vía que el resto del idle (DefiLlama por dirección). Si no
+    // lo tiene, se queda sin precio: mejor "sin precio" que un número inventado.
+    try {
+      const claves = nuevos.map((t) => `${DEFILLAMA_CHAIN_PREFIX[t.chain] || t.chain}:${t.address}`);
+      const r = await fetch(`https://coins.llama.fi/prices/current/${claves.join(",")}`);
+      if (r.ok) {
+        const coins = (await r.json()).coins || {};
+        nuevos.forEach((t, i) => {
+          const px = coins[claves[i]] && coins[claves[i]].price;
+          if (px > 0) { t.priceUSD = px; t.valueUSD = t.balance * px; }
+        });
+      }
+    } catch (e) { /* sin precio: la ficha lo dirá */ }
     state.idleTokens = (state.idleTokens || []).concat(nuevos).sort((a, b) => (b.valueUSD || 0) - (a.valueUSD || 0));
     console.info(`[idle] ${nuevos.length} token(s) de tus posiciones rescatados por balanceOf: ${nuevos.map((t) => t.symbol).join(", ")}`);
   }
