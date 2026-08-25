@@ -1213,8 +1213,28 @@ async function rescatarTokensDePosicionesEVM(address) {
         });
       }
     } catch (e) { /* sin precio: la ficha lo dirá */ }
-    state.idleTokens = (state.idleTokens || []).concat(nuevos).sort((a, b) => (b.valueUSD || 0) - (a.valueUSD || 0));
+    state.idleTokens = (state.idleTokens || []).concat(nuevos);
     console.info(`[idle] ${nuevos.length} token(s) de tus posiciones rescatados por balanceOf: ${nuevos.map((t) => t.symbol).join(", ")}`);
+  }
+  // IDEMPOTENTE: la función escribe en un estado COMPARTIDO, así que no puede
+  // depender de correr una sola vez. Se vieron UETH/UBTC/USD₮0 duplicados en P4 tras
+  // v377 (mismo saldo dos veces, sumando doble en el total). Se deduplica siempre por
+  // red+dirección+nativo, quedándose con la entrada más completa (la que trae nombre
+  // o logo del explorer manda sobre la rescatada a pelo).
+  if ((state.idleTokens || []).length) {
+    const porClave = new Map();
+    for (const t of state.idleTokens) {
+      const k = `${t.chain}|${String(t.address || "").toLowerCase()}|${t.native ? "n" : "t"}`;
+      const prev = porClave.get(k);
+      if (!prev) { porClave.set(k, t); continue; }
+      const mejor = (x) => (x.logo ? 2 : 0) + (x.name && x.name !== x.symbol ? 1 : 0) + (x.priceUSD != null ? 1 : 0);
+      if (mejor(t) > mejor(prev)) porClave.set(k, t);
+    }
+    if (porClave.size !== state.idleTokens.length) {
+      console.info(`[idle] ${state.idleTokens.length - porClave.size} duplicado(s) fuera`);
+      state.idleTokens = [...porClave.values()];
+    }
+    state.idleTokens.sort((a, b) => (b.valueUSD || 0) - (a.valueUSD || 0));
   }
 }
 
