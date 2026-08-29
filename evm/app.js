@@ -3684,19 +3684,21 @@ async function fetchOwnerSwapsEVM(chainKey, owner, feeTokenSet) {
 // veAERO → la app no las puede leer, salían n/d). Metemos el AERO reclamable (pendientes) y el ya
 // reclamado DESDE que se abrió la posición (cobradas) en las métricas de fees → APR/MPR/PnL reflejan
 // el rendimiento real. Corre DESPUÉS de enrichRealizableFeesEVM (que reescribe feesUSD) para no ser pisado.
-// Capital MEDIO PONDERADO POR TIEMPO de una posición de liquidez.
+// Factor de TIEMPO del capital de una LP: capital medio / capital final.
 //
-// Mismo problema que en el lending: el APR dividía las fees entre el capital de HOY, así
-// que añadir liquidez hundía el número sin que el pool hubiera cambiado de ritmo. (El
-// comentario original del cálculo ya decía "/ valor promedio" — la intención estaba; la
-// implementación usaba el valor actual.)
+// El APR dividía las fees entre el capital de HOY, así que añadir liquidez hundía el
+// número sin que el pool hubiera cambiado de ritmo. (El comentario original del cálculo
+// ya decía "/ valor promedio" — la intención estaba; la implementación usaba el actual.)
 //
-// Aquí el capital son DOS tokens, y se valoran con el precio de HOY a propósito: así el
-// denominador se mueve solo por CUÁNTO capital hubo y CUÁNTO tiempo, no por lo que haya
-// hecho el precio — que es lo que se quiere medir al preguntar "¿qué rinden mis fees?".
-// Los eventos son los mismos que pinta el visor de la ficha (cash flows), así que lo que
-// sale aquí cuadra con lo que se puede leer ahí.
-function capitalMedioLP(p, hastaTs) {
+// Se devuelve un FACTOR sin unidades a propósito, no un importe: multiplicando la base que
+// ya usaba cada cálculo se corrige el reparto en el tiempo SIN cambiar lo que esa base
+// significa. Con un solo depósito el factor es 1 y el APR no se mueve ni un decimal; si
+// hoy triplicas el capital, el factor es ~1/3 y el APR deja de estar diluido.
+//
+// Los dos términos se miden con la misma vara (los tokens de cada movimiento al precio de
+// hoy), así que la vara se cancela en la división. Los movimientos son los mismos que pinta
+// el visor de la ficha (cash flows: nunca los cobros de fees).
+function factorCapitalMedioLP(p, hastaTs) {
   if (!p || p._lending) return null;
   const dec0 = Number(p.token0 && p.token0.decimals), dec1 = Number(p.token1 && p.token1.decimals);
   let evs = null;
@@ -3707,11 +3709,11 @@ function capitalMedioLP(p, hastaTs) {
   } catch (e) { return null; }
   const flujos = (evs || []).filter((e) => e && (e.type === "deposit" || e.type === "withdraw") && e.ts > 0)
     .slice().sort((a, b) => a.ts - b.ts);
-  if (!flujos.length) return null;
+  if (flujos.length < 2) return 1; // un solo movimiento: no hay nada que ponderar
   const px0 = Number(p.token0 && p.token0.priceUSD) || 0;
   const px1 = Number(p.token1 && p.token1.priceUSD) || 0;
   if (!(px0 > 0) && !(px1 > 0)) return null;
-  const desde = (p.openedAt && p.openedAt < flujos[0].ts) ? p.openedAt : flujos[0].ts;
+  const desde = flujos[0].ts;
   const total = hastaTs - desde;
   if (!(total > 0)) return null;
   let dentro = 0, area = 0, prev = desde;
@@ -3724,28 +3726,28 @@ function capitalMedioLP(p, hastaTs) {
     if (dentro < 0) dentro = 0; // históricos incompletos: no hay capital negativo
   }
   area += dentro * Math.max(0, hastaTs - prev);
-  const medio = area / total;
-  return medio > 0 ? medio : null;
+  if (!(dentro > 0)) return null;          // acabó a cero (cerrada): no hay factor que aplicar
+  const f = (area / total) / dentro;
+  return (f > 0 && isFinite(f)) ? f : null;
 }
 
-// Repaso final: reescala el APR de las LP al capital medio. Se hace al FINAL —y no en cada
-// sitio donde se calcula— porque los eventos y las fees realizables se rellenan en pasadas
-// posteriores; aquí ya está todo. Reescalar es exacto sin tocar el numerador:
-// apr = num / base, luego apr_nuevo = apr_viejo × (base_vieja / base_nueva).
+// Repaso final: corrige el APR de las LP por el reparto del capital en el tiempo. Se hace
+// al FINAL —y no en cada sitio donde se calcula— porque los eventos y las fees realizables
+// se rellenan en pasadas posteriores; aquí ya está todo. Multiplicar la base es exacto sin
+// tocar el numerador: apr = num / base, luego apr_nuevo = apr_viejo / factor.
 function recomputeAprLP(positions, nowTs) {
   const now = nowTs || Math.floor(Date.now() / 1000);
   let n = 0;
   for (const p of positions || []) {
-    if (!p || p._lending || p.apr == null || !(p.aprBaseUSD > 0)) continue;
-    const hasta = (p.closed && p.closedAt) ? p.closedAt : now;
-    const medio = capitalMedioLP(p, hasta);
-    if (!(medio > 0)) continue;              // sin eventos utilizables -> se queda como estaba
-    p.apr = p.apr * (p.aprBaseUSD / medio);
-    p.aprBaseUSD = medio;
-    p._aprCapMedio = true;                   // la ficha lo cuenta en el tooltip
+    if (!p || p._lending || p.closed || p.apr == null || !(p.aprBaseUSD > 0)) continue;
+    const f = factorCapitalMedioLP(p, now);
+    if (!(f > 0) || Math.abs(f - 1) < 0.005) continue;   // sin datos o sin efecto: se queda igual
+    p.aprBaseUSD = p.aprBaseUSD * f;
+    p.apr = p.apr / f;
+    p._aprCapMedio = true;                               // la ficha lo cuenta en el tooltip
     n++;
   }
-  if (n) console.log(`[apr-medio] ${n} posicion(es) con APR sobre capital medio`);
+  if (n) console.log(`[apr-medio] ${n} posicion(es) de liquidez con APR corregido por capital medio`);
 }
 
 function applyAerodromeAeroAsFees(positions) {

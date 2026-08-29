@@ -2931,10 +2931,10 @@ async function enrichSolanaPnL(owner) {
     p.pnlUSD = (p.currentValueUSD || 0) + withdrawnUSD + feesCollectedUSD + pendFees - costBasisUSD;
     p.openedAt = openedAt;
     p.ageDays = ageDays;
-    // Sobre el capital MEDIO del periodo, no sobre el coste total: añadir liquidez no
-    // debe hundir el APR (el capital nuevo aún no ha generado esas fees).
-    const _cmLP = capitalMedioLPSol(p, Math.floor(Date.now() / 1000));
-    const _baseLP = (_cmLP > 0) ? _cmLP : costBasisUSD;
+    // Corregido por el reparto del capital en el tiempo: añadir liquidez no debe hundir
+    // el APR (el capital nuevo aún no ha generado esas fees). Factor 1 = no cambia nada.
+    const _fLP = p.closed ? null : factorCapitalMedioLPSol(p, Math.floor(Date.now() / 1000));
+    const _baseLP = costBasisUSD * ((_fLP > 0) ? _fLP : 1);
     p.aprBaseUSD = _baseLP || null;
     p.apr = (ageDays && _baseLP > 0) ? ((feesCollectedUSD + pendFees) / _baseLP) * (365 / ageDays) * 100 : null;
     p.pnlBasis = "birdeye";
@@ -3139,24 +3139,24 @@ async function marcarMovimientosSinIndexar() {
   }));
 }
 
-// Capital MEDIO PONDERADO POR TIEMPO de una LP de Solana, en USD.
+// Factor de TIEMPO del capital de una LP de Solana: capital medio / capital final.
 //
-// Gemelo de capitalMedioLP() de evm/app.js, pero aquí los eventos del registro ya traen su
-// USD del día (`usd`), así que no hay que reprecificar nada. Solo cuentan los movimientos
-// de CAPITAL: los cobros de fees (`fee`) no son capital que entre o salga, y el reembolso
-// de un rebalance (`refund (mixed)`) sí resta coste.
-function capitalMedioLPSol(p, hastaTs) {
+// Gemelo de factorCapitalMedioLP() de evm/app.js. Devuelve un factor sin unidades para
+// multiplicar la base que ya usaba el cálculo: así se corrige el reparto en el tiempo sin
+// cambiar lo que la base significa (con un solo depósito el factor es 1 y no se mueve nada).
+// Solo cuentan los movimientos de CAPITAL: un cobro de fees (`fee`) no entra ni sale.
+function factorCapitalMedioLPSol(p, hastaTs) {
   const evs = (p && p._eventLog) || null;
   if (!Array.isArray(evs) || !evs.length) return null;
   const signo = (cls) => {
     if (cls === "deposit") return 1;
     if (cls === "withdraw" || cls === "withdraw (mixed)" || cls === "refund (mixed)") return -1;
-    return 0; // fee / ? -> no mueve capital
+    return 0;
   };
   const flujos = evs.filter((e) => e && e.ts > 0 && isFinite(e.usd) && signo(e.cls) !== 0)
     .slice().sort((a, b) => a.ts - b.ts);
-  if (!flujos.length) return null;
-  const desde = (p.openedAt && p.openedAt < flujos[0].ts) ? p.openedAt : flujos[0].ts;
+  if (flujos.length < 2) return 1;
+  const desde = flujos[0].ts;
   const total = hastaTs - desde;
   if (!(total > 0)) return null;
   let dentro = 0, area = 0, prev = desde;
@@ -3165,11 +3165,12 @@ function capitalMedioLPSol(p, hastaTs) {
     area += dentro * Math.max(0, t - prev);
     prev = t;
     dentro += signo(e.cls) * Math.abs(Number(e.usd) || 0);
-    if (dentro < 0) dentro = 0; // históricos incompletos: no hay capital negativo
+    if (dentro < 0) dentro = 0;
   }
   area += dentro * Math.max(0, hastaTs - prev);
-  const medio = area / total;
-  return medio > 0 ? medio : null;
+  if (!(dentro > 0)) return null;
+  const f = (area / total) / dentro;
+  return (f > 0 && isFinite(f)) ? f : null;
 }
 
 // Capital MEDIO PONDERADO POR TIEMPO del lending, en USD (los eventos ya traen el USD
