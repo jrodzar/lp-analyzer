@@ -2000,6 +2000,7 @@ async function backfillUncollectedFromRPC(positions, onProgress) {
           p.pnlUSD = p.currentValueUSD + p.withdrawnUSD + p.feesUSD + p.uncollectedUSD - p.depositedUSD;
           const aprBase = p.currentValueUSD > 0 ? p.currentValueUSD : p.depositedUSD;
           p.apr = aprBase > 0 ? (p.feesTotalUSD / aprBase) * (365 / p.ageDays) * 100 : 0;
+          p.aprBaseUSD = aprBase || null; // lo reescala recomputeAprLP() al capital medio
         }
       } catch (e) {
         console.warn(`[${p.chainKey}] RPC backfill ticks falló para ${p.id}:`, e.message || e);
@@ -2934,6 +2935,7 @@ function enrichPosition(raw, ethPriceUSD, chainKey) {
   const ageDays = Math.max(ageSec / 86400, 1 / 24);
   const aprBase = currentValueUSD > 0 ? currentValueUSD : depositedUSD;
   const apr = aprBase > 0 ? (feesTotalUSD / aprBase) * (365 / ageDays) * 100 : 0;
+  const aprBaseUSD = aprBase || null; // recomputeAprLP() lo reescala al capital medio
 
   return {
     id: raw.id,
@@ -2960,6 +2962,7 @@ function enrichPosition(raw, ethPriceUSD, chainKey) {
     ilUSD,
     ilPct,
     apr,
+    aprBaseUSD,
     ageDays,
     openedAt: Number(raw.transaction.timestamp),
     deposited0,
@@ -3681,6 +3684,70 @@ async function fetchOwnerSwapsEVM(chainKey, owner, feeTokenSet) {
 // veAERO → la app no las puede leer, salían n/d). Metemos el AERO reclamable (pendientes) y el ya
 // reclamado DESDE que se abrió la posición (cobradas) en las métricas de fees → APR/MPR/PnL reflejan
 // el rendimiento real. Corre DESPUÉS de enrichRealizableFeesEVM (que reescribe feesUSD) para no ser pisado.
+// Capital MEDIO PONDERADO POR TIEMPO de una posición de liquidez.
+//
+// Mismo problema que en el lending: el APR dividía las fees entre el capital de HOY, así
+// que añadir liquidez hundía el número sin que el pool hubiera cambiado de ritmo. (El
+// comentario original del cálculo ya decía "/ valor promedio" — la intención estaba; la
+// implementación usaba el valor actual.)
+//
+// Aquí el capital son DOS tokens, y se valoran con el precio de HOY a propósito: así el
+// denominador se mueve solo por CUÁNTO capital hubo y CUÁNTO tiempo, no por lo que haya
+// hecho el precio — que es lo que se quiere medir al preguntar "¿qué rinden mis fees?".
+// Los eventos son los mismos que pinta el visor de la ficha (cash flows), así que lo que
+// sale aquí cuadra con lo que se puede leer ahí.
+function capitalMedioLP(p, hastaTs) {
+  if (!p || p._lending) return null;
+  const dec0 = Number(p.token0 && p.token0.decimals), dec1 = Number(p.token1 && p.token1.decimals);
+  let evs = null;
+  try {
+    evs = (p._snapshots && p._snapshots.length)
+      ? classifyEvents(p._snapshots)
+      : ((p._rpcEvents && p._rpcEvents.length) ? classifyRpcEvents(p._rpcEvents, dec0, dec1) : null);
+  } catch (e) { return null; }
+  const flujos = (evs || []).filter((e) => e && (e.type === "deposit" || e.type === "withdraw") && e.ts > 0)
+    .slice().sort((a, b) => a.ts - b.ts);
+  if (!flujos.length) return null;
+  const px0 = Number(p.token0 && p.token0.priceUSD) || 0;
+  const px1 = Number(p.token1 && p.token1.priceUSD) || 0;
+  if (!(px0 > 0) && !(px1 > 0)) return null;
+  const desde = (p.openedAt && p.openedAt < flujos[0].ts) ? p.openedAt : flujos[0].ts;
+  const total = hastaTs - desde;
+  if (!(total > 0)) return null;
+  let dentro = 0, area = 0, prev = desde;
+  for (const e of flujos) {
+    const t = Math.min(e.ts, hastaTs);
+    area += dentro * Math.max(0, t - prev);
+    prev = t;
+    const usd = (Number(e.amount0) || 0) * px0 + (Number(e.amount1) || 0) * px1;
+    dentro += (e.type === "deposit" ? usd : -usd);
+    if (dentro < 0) dentro = 0; // históricos incompletos: no hay capital negativo
+  }
+  area += dentro * Math.max(0, hastaTs - prev);
+  const medio = area / total;
+  return medio > 0 ? medio : null;
+}
+
+// Repaso final: reescala el APR de las LP al capital medio. Se hace al FINAL —y no en cada
+// sitio donde se calcula— porque los eventos y las fees realizables se rellenan en pasadas
+// posteriores; aquí ya está todo. Reescalar es exacto sin tocar el numerador:
+// apr = num / base, luego apr_nuevo = apr_viejo × (base_vieja / base_nueva).
+function recomputeAprLP(positions, nowTs) {
+  const now = nowTs || Math.floor(Date.now() / 1000);
+  let n = 0;
+  for (const p of positions || []) {
+    if (!p || p._lending || p.apr == null || !(p.aprBaseUSD > 0)) continue;
+    const hasta = (p.closed && p.closedAt) ? p.closedAt : now;
+    const medio = capitalMedioLP(p, hasta);
+    if (!(medio > 0)) continue;              // sin eventos utilizables -> se queda como estaba
+    p.apr = p.apr * (p.aprBaseUSD / medio);
+    p.aprBaseUSD = medio;
+    p._aprCapMedio = true;                   // la ficha lo cuenta en el tooltip
+    n++;
+  }
+  if (n) console.log(`[apr-medio] ${n} posicion(es) con APR sobre capital medio`);
+}
+
 function applyAerodromeAeroAsFees(positions) {
   for (const p of positions || []) {
     if (!p._aerodrome || !p.staked || p._aeroPx == null) continue;
@@ -3693,6 +3760,7 @@ function applyAerodromeAeroAsFees(positions) {
     p.pnlUSD = (p.currentValueUSD || 0) + (p.withdrawnUSD || 0) + claimed + pend - (p.depositedUSD || 0);
     const base = (p.currentValueUSD || 0) > 0 ? p.currentValueUSD : (p.depositedUSD || 0);
     p.apr = base > 0 && p.ageDays > 0 ? (p.feesTotalUSD / base) * (365 / p.ageDays) * 100 : 0;
+    p.aprBaseUSD = base || null;
     p.rewardKind = "AERO";                        // la ficha etiqueta las fees como AERO
   }
 }
@@ -3826,7 +3894,7 @@ async function enrichRealizableFeesEVM(owner) {
     if (p.pnlUSD != null) {
       p.pnlUSD = (p.currentValueUSD || 0) + (p.withdrawnUSD || 0) + rf + pend - (p.depositedUSD || 0);
       const aprBase = p.depositedUSD > 0 ? p.depositedUSD : (p.currentValueUSD || 0);
-      if (p.ageDays && aprBase > 0) p.apr = ((rf + pend) / aprBase) * (365 / p.ageDays) * 100;
+      if (p.ageDays && aprBase > 0) { p.apr = ((rf + pend) / aprBase) * (365 / p.ageDays) * 100; p.aprBaseUSD = aprBase; }
     }
   }
   // 6) Total wallet = Σ fees (realizable donde se pudo, original donde no)
@@ -4919,7 +4987,9 @@ function positionCard(p) {
         )}
         <div class="font-semibold text-emerald-400 leading-tight"${p._feesRealizable ? ` title="Valor ACTUAL de las fees cobradas (retenidas a precio de hoy + vendidas a USDC al precio del swap)${p._feesAtCollectUSD != null ? ` · al cobrar: ${fmtUSD(p._feesAtCollectUSD)}` : ""}"` : ""}>${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400">cobradas${p.rewardKind === "AERO" ? " AERO" : ""}</span></div>
         <div class="text-amber-300 font-semibold leading-tight">${p.uncollectedUSD === null ? "n/d" : fmtUSD(p.uncollectedUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes${p.rewardKind === "AERO" ? " AERO" : ""}</span></div>
-        <div class="text-[10px] text-slate-400 mt-0.5">APR ${p.rewardKind === "AERO" ? "AERO" : "fees"} ~ ${isFinite(p.apr) ? p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%" : "—"}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">${!isFinite(p.apr) ? `APR ${p.rewardKind === "AERO" ? "AERO" : "fees"} ~ —` : infoToggle(
+          `APR ${p.rewardKind === "AERO" ? "AERO" : "fees"} ~ ${p.apr.toFixed(1)}% · MPR ~ ${(p.apr / 12).toFixed(2)}%`,
+          `Anualizado sobre el <b>capital medio</b> del periodo${p.aprBaseUSD ? " (" + fmtUSD(p.aprBaseUSD) + ")" : ""}, no sobre el de hoy. Si no fuera así, añadir liquidez hundiría el APR sin que el pool hubiera cambiado de ritmo: las fees viejas se repartirían entre un capital que aún no las ha generado.`)}</div>
       </div>
       <div class="bg-slate-950/40 rounded-lg p-2">
         ${infoToggle(`<span class="text-[10px] uppercase tracking-wide text-slate-500">IL vs HODL</span>`, `Valor actual del LP frente a haber mantenido (HODL) los tokens depositados. Estimación; no incluye gas.`)}
@@ -5343,6 +5413,7 @@ async function analyzeAddressHeadless(addr, opts = {}) {
   // que corre el flujo del shell tras el análisis; ambos sin DOM).
   try { await enrichRealizableFeesEVM(addr); } catch (e) { console.warn("[realizable-evm]", e); }
   try { applyAerodromeAeroAsFees(state.positions); } catch (e) {}
+  try { recomputeAprLP(state.positions); } catch (e) { console.warn("[apr-medio]", e); }
   return { ...r, items: toPortfolioItems(), idleTokens: state.idleTokens || [], analysisStatus: state.analysisStatus, feesRealizableUSD: state._feesRealizableUSD };
 }
 
@@ -5550,6 +5621,7 @@ if (HAS_DOM) document.addEventListener("DOMContentLoaded", init);
           // que es quien fija feesUSD por posición. best-effort: nunca rompe.
           try { await enrichRealizableFeesEVM(d.address); } catch (e) { console.warn("[realizable-evm]", e); }
           try { applyAerodromeAeroAsFees(state.positions); } catch (e) {}
+          try { recomputeAprLP(state.positions); } catch (e) { console.warn("[apr-medio]", e); }
           const status = (document.getElementById("status-msg") || {}).textContent || "";
           const analysisStatus = state.analysisStatus || { ok: true, errors: [] };
           const idleTokens = state.idleTokens || [];
