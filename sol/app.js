@@ -1492,9 +1492,10 @@ function lendingCard(p) {
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Ganancias (interés)</div>
         <div class="font-semibold ${gain == null ? "" : pnlColor(gain)}">${gain == null ? "—" : fmtUSD(gain)}</div>
-        <div class="text-[10px] text-slate-400 mt-0.5">APR ~ ${p.apr == null
-          ? (p._aprTooEarly ? `— <span class="text-slate-500">(esperando ≥ 1 día)</span>` : "—")
-          : p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%"}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">${p.apr == null
+          ? (p._aprTooEarly ? `APR — <span class="text-slate-500">(esperando ≥ 1 día)</span>` : "APR —")
+          : infoToggle(`APR ~ ${p.apr.toFixed(1)}% · MPR ~ ${(p.apr / 12).toFixed(2)}%`,
+              `Anualizado sobre el <b>capital medio</b> del periodo${p.aprBaseUSD ? " (" + fmtUSD(p.aprBaseUSD) + ")" : ""}, no sobre el de hoy. Si no fuera así, meter dinero nuevo hundiría el APR sin que el vault hubiera cambiado de tasa: el interés viejo se repartiría entre un capital que aún no lo ha generado.`)}</div>
       </div>
     </div>
     <details class="text-xs">
@@ -3130,6 +3131,34 @@ async function marcarMovimientosSinIndexar() {
   }));
 }
 
+// Capital MEDIO PONDERADO POR TIEMPO del lending, en USD (los eventos ya traen el USD
+// del día, así que aquí no hace falta reprecificar nada).
+//
+// Sin esto, meter capital nuevo hunde el APR: el interés viejo —generado por el capital
+// viejo durante semanas— se repartiría entre un capital que aún no lo ha generado. Con
+// esto, un depósito de hoy pesa ~0 y va ganando peso con los días. Mismo criterio que
+// `capitalMedioPonderado` de evm/app.js (Revert Lend).
+function capitalMedioLendSol(dep, wd, hastaTs) {
+  const evs = [
+    ...(dep || []).map((e) => ({ ts: e.ts, v: +e.usd })),
+    ...(wd || []).map((e) => ({ ts: e.ts, v: -e.usd })),
+  ].filter((e) => e.ts > 0 && isFinite(e.v) && e.v !== 0).sort((a, b) => a.ts - b.ts);
+  if (!evs.length) return null;
+  const desde = evs[0].ts;
+  const total = hastaTs - desde;
+  if (!(total > 0)) return null;
+  let dentro = 0, area = 0, prev = desde;
+  for (const e of evs) {
+    const t = Math.min(e.ts, hastaTs);
+    area += dentro * Math.max(0, t - prev);
+    prev = t;
+    dentro += e.v;
+    if (dentro < 0) dentro = 0; // retiros sin su depósito: no hay capital negativo
+  }
+  area += dentro * Math.max(0, hastaTs - prev);
+  return area / total;
+}
+
 // Reconstruye coste base / interés / APR de posiciones Jupiter Lend a partir
 // de las txs del owner. Estrategia: por cada transferencia de un mint jl-* en
 // el que el owner es origen o destino, busca en el mismo tx la transferencia
@@ -3280,8 +3309,11 @@ async function enrichJupiterLendCost(owner) {
     // Sanity guard: extrapolar APR sobre ventanas < 1 día da ruido absurdo
     // (cualquier $1 de ganancia × 365 días se vuelve cientos de %). Marcamos
     // null y la card lo muestra como "— (esperando ≥ 1 día)".
-    const apr = (netInvested > 0 && ageDays >= 1)
-      ? (gainsUSD / netInvested) * (365 / ageDays) * 100
+    // Sobre el capital MEDIO del periodo, no sobre el de hoy (ver capitalMedioLendSol).
+    const capMedio = capitalMedioLendSol(dep, wd, now);
+    const aprBaseUSD = (capMedio > 0) ? capMedio : netInvested;
+    const apr = (aprBaseUSD > 0 && ageDays >= 1)
+      ? (gainsUSD / aprBaseUSD) * (365 / ageDays) * 100
       : null;
     p.depositedUSD = depositedUSD;
     p.withdrawnUSD = withdrawnUSD;
@@ -3292,6 +3324,7 @@ async function enrichJupiterLendCost(owner) {
     p.openedAt = openedAt;
     p.ageDays = ageDays;
     p.apr = apr;
+    p.aprBaseUSD = aprBaseUSD || null;
     p._aprTooEarly = (netInvested > 0 && ageDays < 1); // para la card
     p.pnlBasis = "tx-scan";
     p._lendEvents = lendEventsFrom(dep, wd); // visor 📜 (depósitos/retiros del vault)
@@ -3515,8 +3548,9 @@ async function enrichJupiterLendFromVault() {
       p.pnlUSD = p.gainsUSD;
       const ageDays = p.ageDays || 0;
       const netInvested = Math.max(p.depositedUSD - withdrawn, 0);
-      p.apr = (netInvested > 0 && ageDays >= 1)
-        ? (p.gainsUSD / netInvested) * (365 / ageDays) * 100
+      const baseApr = (p.aprBaseUSD > 0) ? p.aprBaseUSD : netInvested;
+      p.apr = (baseApr > 0 && ageDays >= 1)
+        ? (p.gainsUSD / baseApr) * (365 / ageDays) * 100
         : null;
       p._aprTooEarly = (netInvested > 0 && ageDays < 1);
     }

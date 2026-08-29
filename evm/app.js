@@ -1524,7 +1524,8 @@ async function fetchRevertLending(owner) {
               p.gainsUSD = p.currentValueUSD - p.depositedUSD;
               p.openedAt = h2.firstTs || p.openedAt;
               p.ageDays = h2.firstTs ? Math.max((nowBg - h2.firstTs) / 86400, 1 / 24) : p.ageDays;
-              p.apr = (p.depositedUSD > 0 && p.ageDays) ? (p.gainsUSD / p.depositedUSD) * (365 / p.ageDays) * 100 : null;
+              const _ap = aprLending(p.gainsUSD, p.depositedUSD, p.ageDays, h2.events, nowBg, priceUSD);
+              p.apr = _ap.apr; p.aprBaseUSD = _ap.base;
               p.feesUSD = p.gainsUSD || 0;
               p.pnlUSD = p.gainsUSD == null ? 0 : p.gainsUSD;
               p.hodlUSD = p.depositedUSD || p.currentValueUSD;
@@ -1542,7 +1543,7 @@ async function fetchRevertLending(owner) {
       // wallet, no un cierre → no se puede computar interés realizado → omitir).
       if (!open && !(everDeposited && h.withdrawn > 0)) return null;
 
-      let depositedUSD = null, gainsUSD = null, openedAt = null, ageDays = null, apr = null, timelineSeries = null;
+      let depositedUSD = null, gainsUSD = null, openedAt = null, ageDays = null, apr = null, timelineSeries = null, aprBaseUSD = null;
       const closed = !open;
       // Si el histórico vino VACÍO en una ABIERTA (Blockscout degradado), dejamos interés
       // null → card "—" y el total no se infla (guard de inflación). En CERRADA siempre hay
@@ -1557,12 +1558,13 @@ async function fetchRevertLending(owner) {
         }
         openedAt = h.firstTs;
         ageDays = openedAt ? Math.max((now - openedAt) / 86400, 1 / 24) : null;
-        apr = (depositedUSD > 0 && ageDays) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
+        // Sobre el capital MEDIO, no el de hoy: un depósito reciente no debe hundir el APR.
+        ({ apr, base: aprBaseUSD } = aprLending(gainsUSD, depositedUSD, ageDays, h.events, now, priceUSD));
         timelineSeries = await buildLendingTimelineExact(chainKey, c.rpcs, c.vault, owner, dec, h.events, priceUSD, gainsUSD, now);
       }
       return {
         _lending: true, chainKey, chainName: c.name, vault: c.vault, asset: symbol, assetAddr, decimals: dec, owner,
-        currentValueUSD, depositedUSD, gainsUSD, apr,
+        currentValueUSD, depositedUSD, gainsUSD, apr, aprBaseUSD,
         ageDays: ageDays || 0, openedAt: openedAt || now,
         // campos compatibles con aggregate()/orden/portfolio
         feesUSD: gainsUSD || 0, uncollectedUSD: 0, ilUSD: 0,
@@ -4330,6 +4332,44 @@ function managementFooterHTML(link) {
 // así que la tabla lleva el CAPITAL DENTRO tras cada movimiento (lo que de verdad varía)
 // y una nota que lo explica. Fuente: los mismos eventos con los que se calcula el coste
 // (índice + cola on-chain), o sea que lo que se ve aquí es lo que cuadra la ficha.
+// Capital MEDIO PONDERADO POR TIEMPO del lending (Dietz simplificado).
+//
+// El APR ingenuo reparte el interés entre el capital de HOY. Si hoy doblas el capital,
+// el interés —que lo generó el capital VIEJO durante semanas— se divide entre el nuevo
+// y el APR se desploma sin que el vault haya cambiado de tasa. Caso real (2026-08-29,
+// Revert Arbitrum): 632 → 1.457 USDC en un depósito, APR 2,9% → 1,2% el mismo día.
+//
+// Lo correcto es dividir entre el capital que ESTUVO DENTRO ponderado por el tiempo que
+// estuvo: ∫capital·dt / tiempo total. Un depósito de hoy pesa ~0 y no diluye nada; dentro
+// de una semana pesará lo que le toque. Devuelve unidades del activo (no USD).
+function capitalMedioPonderado(events, hastaTs) {
+  const evs = (events || []).filter((e) => e && isFinite(e.amt) && e.amt > 0 && e.ts > 0)
+    .slice().sort((a, b) => a.ts - b.ts);
+  if (!evs.length) return null;
+  const desde = evs[0].ts;
+  const total = hastaTs - desde;
+  if (!(total > 0)) return null;
+  let dentro = 0, area = 0, prev = desde;
+  for (const e of evs) {
+    const t = Math.min(e.ts, hastaTs);
+    area += dentro * Math.max(0, t - prev);
+    prev = t;
+    dentro += (e.type === "dep" ? e.amt : -e.amt);
+    if (dentro < 0) dentro = 0; // el índice puede traer retiros sin su depósito: no hay capital negativo
+  }
+  area += dentro * Math.max(0, hastaTs - prev);
+  return area / total;
+}
+
+// APR del lending sobre el capital medio. Si no hay eventos utilizables cae al capital
+// actual (el comportamiento de antes), así que nunca empeora respecto a lo que había.
+function aprLending(gainsUSD, depositedUSD, ageDays, events, hastaTs, priceUSD) {
+  const cm = capitalMedioPonderado(events, hastaTs);
+  const base = (cm > 0 && priceUSD > 0) ? cm * priceUSD : depositedUSD;
+  if (!(base > 0) || !(ageDays > 0) || gainsUSD == null) return { apr: null, base: base || null };
+  return { apr: (gainsUSD / base) * (365 / ageDays) * 100, base };
+}
+
 function lendingLogHTML(p) {
   const evs = (p._lendEvents || []).filter((e) => e && isFinite(e.amt) && e.amt > 0).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
   if (!evs.length) return "";
@@ -4425,7 +4465,9 @@ function lendingCard(p) {
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Ganancias (interés)</div>
         <div class="font-semibold ${pnlColor(gain)}">${gain == null ? "—" : fmtUSD(gain)}</div>
-        <div class="text-[10px] text-slate-400 mt-0.5">APR ~ ${p.apr == null ? "—" : p.apr.toFixed(1) + "% · MPR ~ " + (p.apr / 12).toFixed(2) + "%"}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">${p.apr == null ? "APR —" : infoToggle(
+          `APR ~ ${p.apr.toFixed(1)}% · MPR ~ ${(p.apr / 12).toFixed(2)}%`,
+          `Anualizado sobre el <b>capital medio</b> del periodo${p.aprBaseUSD ? " (" + fmtUSD(p.aprBaseUSD) + ")" : ""}, no sobre el de hoy${p.aprBaseUSD && p.depositedUSD && Math.abs(p.aprBaseUSD - p.depositedUSD) / p.depositedUSD > 0.05 ? " (" + fmtUSD(p.depositedUSD) + ")" : ""}. Si no fuera así, meter dinero nuevo hundiría el APR sin que el vault hubiera cambiado de tasa: el interés viejo se repartiría entre un capital que aún no lo ha generado.`)}</div>
       </div>
     </div>
     <details class="text-xs">
