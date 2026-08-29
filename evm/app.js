@@ -2083,6 +2083,21 @@ async function priceTokensViaPool(rpc, factoryAddr, tokenInfos, chainScope) {
   const addrs = Object.keys(tokenInfos);
   const stables = addrs.filter((a) => isStable(tokenInfos[a].symbol));
   for (const s of stables) prices[s] = 1.0;
+  // Antes: `if (!stables.length) return prices;` — sin un estable ENTRE LOS TOKENS DE
+  // TUS POSICIONES no se preciaba nada. Una wallet de pares volatil/volatil (WETH/AAVE,
+  // WETH/UNI, WETH/LINK) salía entera a $0. En el navegador no se veía porque los
+  // precios los ponía el subgraph; el vigía, que corre sin token del proxy, SIEMPRE cae
+  // a este camino → ~$729 invisibles para él desde siempre (y descartados como polvo
+  // por `valorMinPosicionUSD`). Ahora se siembra el estable canónico de la red aunque no
+  // esté en la cartera: la referencia de precio la pone la red, no lo que tengas tú.
+  const semilla = (IDLE_RPC_FALLBACK[chainScope] || []).filter((t) => isStable(t.symbol));
+  for (const t of semilla) {
+    const a = t.address.toLowerCase();
+    if (prices[a] != null) continue;
+    stables.push(a);
+    prices[a] = 1.0;
+    if (!tokenInfos[a]) tokenInfos[a] = { symbol: t.symbol, decimals: t.decimals };
+  }
   if (!stables.length) return prices;
   // ámbito del memo: el MISMO factory address existe en varias chains (Uniswap V3
   // despliega con la misma dirección) → la clave necesita la chain. Fallback: host del RPC.
@@ -2160,6 +2175,28 @@ async function priceTokensViaPool(rpc, factoryAddr, tokenInfos, chainScope) {
       immSet("pxpool", mk, { pool: mejor.pool, pt0: mejor.pt0, stable: mejor.stable, decStb: mejor.decStb });
     }
   }));
+
+  // Red de seguridad: lo que no tenga pool contra un estable (token nuevo, liquidez
+  // repartida en otra red, pool de otro DEX…) se pregunta a DefiLlama, la misma fuente
+  // con la que se precian los saldos sueltos. Primero la cadena, luego el índice: si la
+  // pool on-chain dio precio, ese manda y esto ni se llama. Una sola petición para todos.
+  const sinPrecio = addrs.filter((a) => !(prices[a] > 0));
+  if (sinPrecio.length) {
+    try {
+      const pref = DEFILLAMA_CHAIN_PREFIX[chainScope] || chainScope;
+      const claves = sinPrecio.map((a) => `${pref}:${a}`);
+      const r = await fetchWithTimeout(`https://coins.llama.fi/prices/current/${claves.join(",")}`, {}, { timeoutMs: 8000, tries: 2 });
+      if (r && r.ok) {
+        const coins = (await r.json()).coins || {};
+        let n = 0;
+        sinPrecio.forEach((a, i) => {
+          const px = coins[claves[i]] && coins[claves[i]].price;
+          if (px > 0 && isFinite(px)) { prices[a] = px; n++; }
+        });
+        if (n) console.info(`[precio] ${n}/${sinPrecio.length} token(s) sin pool contra estable, preciados por DefiLlama`);
+      }
+    } catch (e) { /* sin precio: mejor "no sé" que un número inventado */ }
+  }
   return prices;
 }
 
