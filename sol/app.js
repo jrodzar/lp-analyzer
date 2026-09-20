@@ -3222,6 +3222,57 @@ function lendEventsFrom(dep, wd) {
   return evs.sort((a, b) => (a.ts || 0) - (b.ts || 0));
 }
 
+// Cola ON-CHAIN del lending de Jupiter: los depositos/retiros que el indice de Helius
+// todavia no ha visto.
+//
+// Sin esto se mezclan dos relojes: el valor actual se lee de la cadena (al instante) y el
+// coste del indice (minutos de retraso), asi que el dinero recien metido aparece como
+// INTERES. Caso real (2026-09-20): deposito de 10,35 USDC -> "ganancias $11,79" y APR
+// 38,6% sobre un vault que da el 5%. Mismo fallo y mismo remedio que en EVM (v368).
+//
+// Solo mira las firmas MAS NUEVAS que el ultimo evento ya indexado, asi que en el caso
+// normal no pide ni una transaccion.
+async function colaJupiterLendOnChain(owner, jlMints, desdeTs) {
+  const out = [];
+  let sigs = [];
+  try { sigs = (await rpc("getSignaturesForAddress", [owner, { limit: 15 }])) || []; }
+  catch (e) { return out; }
+  const nuevas = sigs.filter((x) => x && !x.err && (x.blockTime || 0) > desdeTs).slice(0, 8);
+  for (const x of nuevas) {
+    let t = null;
+    try { t = await rpc("getTransaction", [x.signature, { maxSupportedTransactionVersion: 0, encoding: "jsonParsed" }]); }
+    catch (e) { continue; }
+    if (!t || (t.meta && t.meta.err)) continue;
+    // Saldos del OWNER antes y despues, por cuenta de token.
+    const saldos = new Map();
+    for (const b of (t.meta?.preTokenBalances || [])) {
+      if (b.owner !== owner) continue;
+      saldos.set(b.accountIndex, { mint: b.mint, pre: Number(b.uiTokenAmount?.uiAmountString || 0), post: 0 });
+    }
+    for (const b of (t.meta?.postTokenBalances || [])) {
+      if (b.owner !== owner) continue;
+      const e = saldos.get(b.accountIndex) || { mint: b.mint, pre: 0, post: 0 };
+      e.post = Number(b.uiTokenAmount?.uiAmountString || 0);
+      saldos.set(b.accountIndex, e);
+    }
+    const movs = [...saldos.values()].map((e) => ({ mint: e.mint, d: e.post - e.pre })).filter((e) => Math.abs(e.d) > 1e-12);
+    for (const m of movs) {
+      if (!jlMints.has(m.mint)) continue;
+      // El subyacente es el otro token que se movio en sentido CONTRARIO.
+      const contra = movs.find((y) => y.mint !== m.mint && Math.sign(y.d) === -Math.sign(m.d));
+      if (!contra) continue;
+      // Precio del subyacente: para un movimiento de hace minutos, el de ahora ES el historico.
+      const px = SOL_STABLES.has(contra.mint) ? 1 : (state.prices[contra.mint] || null);
+      if (px == null) continue;
+      out.push({
+        mint: m.mint, dir: m.d > 0 ? "dep" : "wd", ts: x.blockTime,
+        usd: Math.abs(contra.d) * px, jl: Math.abs(m.d), amt: Math.abs(contra.d), sig: x.signature,
+      });
+    }
+  }
+  return out;
+}
+
 async function enrichJupiterLendCost(owner) {
   const jl = (state.positions || []).filter((p) => p._lending && p.protocol === "jupiter-lend");
   if (!jl.length || (!state.heliusKey && !PROXY_BASE) || !owner) return;
@@ -3275,6 +3326,26 @@ async function enrichJupiterLendCost(owner) {
       else      bucket.wd.push({ ts, usd, jl: jlAmt, amt: underlying.amount, sig: tx.signature || "" });
     }
   }
+
+  // COLA ON-CHAIN: lo que el índice todavía no ha visto. Va ANTES de sumar, porque si
+  // no el depósito recién hecho se cuenta como interés (ver colaJupiterLendOnChain).
+  try {
+    const vistos = new Set();
+    let masNuevo = 0;
+    for (const b of events.values()) {
+      for (const e of [...b.dep, ...b.wd]) { if (e.sig) vistos.add(e.sig); masNuevo = Math.max(masNuevo, e.ts || 0); }
+    }
+    const cola = await colaJupiterLendOnChain(owner, jlMints, masNuevo);
+    let n = 0;
+    for (const e of cola) {
+      if (e.sig && vistos.has(e.sig)) continue;
+      const bucket = events.get(e.mint);
+      if (!bucket) continue;
+      (e.dir === "dep" ? bucket.dep : bucket.wd).push({ ts: e.ts, usd: e.usd, jl: e.jl, amt: e.amt, sig: e.sig });
+      n++;
+    }
+    if (n) console.info(`[jl-cola] ${n} movimiento(s) recuperados de la cadena (el índice aún no los tenía)`);
+  } catch (e) { console.warn("[jl-cola]", e); }
 
   // Stable assets cuyo share price (en USD) crece monotónicamente con el
   // interés; cualquier movimiento ≠ interés del feed Helius/Jupiter es un bug.
