@@ -13,6 +13,9 @@ const DEFAULT_CHAINS = {
     explorer: "https://etherscan.io",
     nativeUsdField: "ethPriceUSD",
     blockscoutApi: "https://eth.blockscout.com/api",
+    // Ver el comentario de `polygon`: sin RPC no hay red de seguridad contra un
+    // explorador que miente. Probados desde el navegador (eth.llamarpc.com NO pasa CORS).
+    rpcUrls: ["https://ethereum-rpc.publicnode.com", "https://eth.drpc.org", "https://rpc.flashbots.net"],
     llamaChain: "ethereum",
     dexscreenerChain: "ethereum",
     uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
@@ -55,6 +58,12 @@ const DEFAULT_CHAINS = {
     explorer: "https://polygonscan.com",
     nativeUsdField: "ethPriceUSD",
     blockscoutApi: "https://polygon.blockscout.com/api",
+    // Sin RPC, el explorador era la ÚNICA fuente de saldos — y el de Polygon devuelve
+    // HTTP 200 con `items: 0` y `coin_balance: 0` teniendo la wallet 74,7 POL y 464,30
+    // USDC (visto el 2026-10-07). Con RPC entran las tres redes de seguridad: nativo por
+    // `eth_getBalance`, rescate de IDLE_RPC_FALLBACK y relectura de `balanceOf` (v364).
+    // Probados desde el navegador; `polygon-rpc.com` está muerto (401 "tenant disable").
+    rpcUrls: ["https://polygon-bor-rpc.publicnode.com", "https://1rpc.io/matic"],
     llamaChain: "polygon",
     dexscreenerChain: "polygon",
     uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
