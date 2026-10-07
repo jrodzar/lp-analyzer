@@ -67,7 +67,9 @@ const DEFAULT_CHAINS = {
     llamaChain: "polygon",
     dexscreenerChain: "polygon",
     uniNftManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
-    nativeSymbol: "POL", nativeName: "Polygon", nativeCoingecko: "matic-network",
+    // `matic-network` quedó obsoleto con el cambio de MATIC a POL: DefiLlama ya no
+    // devuelve nada para ese id y el saldo nativo salía a $0,00 con la cantidad bien.
+    nativeSymbol: "POL", nativeName: "Polygon", nativeCoingecko: "polygon-ecosystem-token",
   },
   base: {
     name: "Base",
