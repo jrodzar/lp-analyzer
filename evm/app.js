@@ -782,7 +782,24 @@ async function explorerFetch(fullUrl) {
         const tmo = down ? 3000 : (noFailover ? (isLogs ? 9000 : 7000) : 25000);
         try {
           const r = await fetchWithTimeout(proxyUrl, { headers: { ...proxyAuth(proxyUrl) } }, { timeoutMs: tmo, tries: 1 });
-          if (r.ok) return r; // 401/5xx → al directo (solo chains con failover)
+          if (r.ok) {
+            // El almacén del proxy sirve su copia GUARDADA cuando no puede actualizarla y lo dice
+            // ("OK-histcache-stale"); el 2026-11-01 una de 6 días contó 340 USDC depositados como
+            // interés. En chains con failover se pregunta directo y manda lo directo solo si trae
+            // AL MENOS lo mismo: un índice directo atrasado (hyperscan) no debe sustituir a la copia.
+            if (isLogs && !noFailover) {
+              try {
+                const j = await r.clone().json();
+                if (j && j.message === "OK-histcache-stale" && Array.isArray(j.result)) {
+                  const d = await explorerDirect(fullUrl).catch(() => null);
+                  const jd = d && d.ok ? await d.clone().json().catch(() => null) : null;
+                  if (jd && Array.isArray(jd.result) && jd.result.length >= j.result.length) return d;
+                }
+              } catch (e) { /* cualquier rareza → la respuesta del proxy, como siempre */ }
+            }
+            return r;
+          }
+          // 401/5xx → al directo (solo chains con failover)
         } catch (e) { /* proxy caído/timeout */ }
         // Chain sin failover client-side: NO reintentar Blockscout directo (mismo explorador
         // degradado, otros ~15s). Solo los getLogs arman el breaker (los tokens no).
@@ -2444,13 +2461,16 @@ async function alchemyTransfers(chainKey, params) {
   return out;
 }
 
-async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
+// `force` salta la caché en memoria: el reintento cuando la liquidez de la cadena no cuadra con
+// la del historial (`liqNeta`, ver fetchPositionsFromRPCDirect).
+async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1, force = false) {
   const cacheKey = `${apiBase}:${tokenId}:${dec0}:${dec1}`; // incluir decimales: reconstructBurnedHyperEVM llama 1º con (18,18) provisional y luego con los reales; sin esto la 2ª colisiona y escala mal el token1 (p.ej. USDC/1e18 → ~0)
   const cached = _histCache.get(cacheKey);
-  if (cached && (Date.now() - cached.ts) < HIST_CACHE_TTL) return cached.data;
+  if (!force && cached && (Date.now() - cached.ts) < HIST_CACHE_TTL) return cached.data;
   const topic1 = "0x" + BigInt(tokenId).toString(16).padStart(64, "0");
   const word = (data, n) => BigInt("0x" + data.slice(2 + n * 64, 2 + n * 64 + 64));
   const isBaseMgr = /base\.blockscout\.com/i.test(apiBase || "");
+  let rancio = false; // el proxy sirvió su copia guardada sin poder actualizarla
   const getLogs = async (topic0) => {
     // PROXY primero (también en Base): con el almacén incremental del Worker (thirdweb →
     // HyperSync → Blockscout de cascada) responde en ms tras la primera siembra y no
@@ -2461,6 +2481,7 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
     try {
       const r = await explorerFetch(url);
       const j = await r.json();
+      if (j && j.message === "OK-histcache-stale") rancio = true;
       if (Array.isArray(j.result)) return j.result;
     } catch (e) { /* proxy caído/breaker → thirdweb directo si es Base */ }
     if (isBaseMgr) {
@@ -2475,15 +2496,18 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
   const [incLogs, decLogs, colLogs] = await mapLimit([EV_INCREASE, EV_DECREASE, EV_COLLECT], 2, getLogs);
 
   let inc0 = 0n, inc1 = 0n, dec0r = 0n, dec1r = 0n, col0 = 0n, col1 = 0n;
+  // Liquidez que el historial dice que tiene la posición (palabra 0 de Increase/Decrease). Tiene
+  // que ser EXACTAMENTE la de la cadena; si no, falta algún evento.
+  let liqNeta = 0n;
   let mintTs = null;
   const events = []; // {ts, type, a0, a1} para reconstruir la serie temporal
   for (const l of incLogs) {
-    inc0 += word(l.data, 1); inc1 += word(l.data, 2);
+    inc0 += word(l.data, 1); inc1 += word(l.data, 2); liqNeta += word(l.data, 0);
     const ts = parseInt(l.timeStamp, 16);
     if (mintTs === null || ts < mintTs) mintTs = ts;
     events.push({ ts, type: "inc", a0: word(l.data, 1), a1: word(l.data, 2), tx: l.transactionHash });
   }
-  for (const l of decLogs) { dec0r += word(l.data, 1); dec1r += word(l.data, 2); events.push({ ts: parseInt(l.timeStamp, 16), type: "dec", a0: word(l.data, 1), a1: word(l.data, 2), tx: l.transactionHash }); }
+  for (const l of decLogs) { dec0r += word(l.data, 1); dec1r += word(l.data, 2); liqNeta -= word(l.data, 0); events.push({ ts: parseInt(l.timeStamp, 16), type: "dec", a0: word(l.data, 1), a1: word(l.data, 2), tx: l.transactionHash }); }
   for (const l of colLogs) { col0 += word(l.data, 1); col1 += word(l.data, 2); events.push({ ts: parseInt(l.timeStamp, 16), type: "col", a0: word(l.data, 1), a1: word(l.data, 2), tx: l.transactionHash }); }
 
   const max0 = (a, b) => (a > b ? a - b : 0n);
@@ -2495,12 +2519,14 @@ async function fetchPositionHistory(apiBase, nftMgr, tokenId, dec0, dec1) {
     collectedFees0: bigIntToDecimal(max0(col0, dec0r), dec0),
     collectedFees1: bigIntToDecimal(max0(col1, dec1r), dec1),
     mintTs, events, dec0, dec1,
+    liqNeta: liqNeta.toString(),
   };
+  if (rancio) data.rancio = true;
   // NO cachear un histórico SIN Increase: todo tokenId real tiene al menos el mint.
   // Vacío aquí = alguna fuente mintió (fallo≠vacío: thirdweb 429, Base flaky, proxy
   // sirviendo un vacío cacheado) → mejor reintentar fresco en el siguiente análisis
-  // que grabar la mentira 10 minutos.
-  if (incLogs.length) _histCache.set(cacheKey, { data, ts: Date.now() });
+  // que grabar la mentira 10 minutos. Tampoco la copia vieja del proxy.
+  if (incLogs.length && !rancio) _histCache.set(cacheKey, { data, ts: Date.now() });
   return data;
 }
 
@@ -2708,7 +2734,19 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey, opts = {}) {
         } catch (e) { /* sin eventos para el visor; los totales del subgraph mandan */ }
         return;
       }
-      try { histories[raw.tokenId] = await fetchPositionHistory(histApi, nftMgr, raw.tokenId, d0, d1); }
+      try {
+        let h = await fetchPositionHistory(histApi, nftMgr, raw.tokenId, d0, d1);
+        // ¿Está ENTERO? La liquidez de la cadena tiene que ser Σ añadida − Σ retirada de sus
+        // eventos. Si no, falta un Increase/Decrease (copia vieja del proxy, índice atrasado) y con
+        // él se fabricaría PnL o, peor, principal contado como fees. Un reintento fresco; si sigue
+        // sin cuadrar, `incompleta` (paso 8). Sin historial (mintTs) no hay nada que comprobar.
+        if (h && h.mintTs && h.liqNeta != null && h.liqNeta !== String(raw.liquidity)) {
+          const h2 = await fetchPositionHistory(histApi, nftMgr, raw.tokenId, d0, d1, true).catch(() => null);
+          h = (h2 && h2.liqNeta === String(raw.liquidity)) ? h2 : { ...h, incompleta: true };
+          if (h.incompleta) console.warn(`[evm-hist] #${raw.tokenId} (${chainKey}): historial INCOMPLETO — liquidez ${raw.liquidity} en la cadena, ${(h2 || h).liqNeta} según sus eventos → coste/PnL/IL/fees en pausa`);
+        }
+        histories[raw.tokenId] = h;
+      }
       catch (e) { /* sin histórico para esta posición */ }
     }));
   }
@@ -2769,8 +2807,16 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey, opts = {}) {
 
     // Histórico (si lo hay): depósitos, retiros, fees cobradas y fecha real de minteo
     const hist = histories[raw.tokenId];
+    // Historial que no cuadra con la liquidez de la cadena (ver 7.5): solo se usa su fecha de
+    // apertura (el mint es su evento más viejo); nada de lo que dependa de él se enseña ni se suma.
+    const incompleta = !!(hist && hist.incompleta);
+    const hOk = incompleta ? null : hist;
     let depositedUSD, withdrawnUSD, feesCollectedUSD, openedAt, ageDays, hodlUSD, ilUSD, ilPct, pnlUSD, apr;
-    if (hist && hist.mintTs) {
+    if (incompleta) {
+      depositedUSD = currentValueUSD; withdrawnUSD = 0; feesCollectedUSD = 0;
+      openedAt = hist.mintTs; ageDays = Math.max((now - openedAt) / 86400, 1 / 24); hodlUSD = currentValueUSD;
+      ilUSD = null; ilPct = null; pnlUSD = null; apr = null;
+    } else if (hist && hist.mintTs) {
       // Cerrada → congelar HODL/retirado al precio del CIERRE (cp); abierta → precio actual (p0/p1).
       const cp = closed ? closePrices[raw.tokenId] : null;
       const hp0 = cp ? cp.p0 : p0, hp1 = cp ? cp.p1 : p1;
@@ -2799,9 +2845,9 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey, opts = {}) {
       tickUpper: raw.tickUpper,
       feeGrowthInside0LastX128: raw.feeGrowthInside0LastX128,
       feeGrowthInside1LastX128: raw.feeGrowthInside1LastX128,
-      depositedToken0: hist ? String(hist.deposited0) : "0", depositedToken1: hist ? String(hist.deposited1) : "0",
-      withdrawnToken0: hist ? String(hist.withdrawn0) : "0", withdrawnToken1: hist ? String(hist.withdrawn1) : "0",
-      collectedFeesToken0: hist ? String(hist.collectedFees0) : "0", collectedFeesToken1: hist ? String(hist.collectedFees1) : "0",
+      depositedToken0: hOk ? String(hOk.deposited0) : "0", depositedToken1: hOk ? String(hOk.deposited1) : "0",
+      withdrawnToken0: hOk ? String(hOk.withdrawn0) : "0", withdrawnToken1: hOk ? String(hOk.withdrawn1) : "0",
+      collectedFeesToken0: hOk ? String(hOk.collectedFees0) : "0", collectedFeesToken1: hOk ? String(hOk.collectedFees1) : "0",
       transaction: { timestamp: String(openedAt) },
       pool: {
         id: poolAddr, feeTier: String(raw.fee),
@@ -2841,17 +2887,18 @@ async function fetchPositionsFromRPCDirect(ownerAddress, chainKey, opts = {}) {
       apr,
       ageDays,
       openedAt,
-      deposited0: hist ? hist.deposited0 : 0,
-      deposited1: hist ? hist.deposited1 : 0,
+      deposited0: hOk ? hOk.deposited0 : 0,
+      deposited1: hOk ? hOk.deposited1 : 0,
       // cantidades de fees cobradas por token (NETAS de principal). Para el valor
       // realizable se agrupan como un cobro único en openedAt (los eventos col
       // crudos incluyen principal, así que no sirven por evento).
-      collectedFees0: hist ? hist.collectedFees0 : 0,
-      collectedFees1: hist ? hist.collectedFees1 : 0,
+      collectedFees0: hOk ? hOk.collectedFees0 : 0,
+      collectedFees1: hOk ? hOk.collectedFees1 : 0,
       raw: fakeRaw,
       _rpcOnly: true, // marca para el UI
+      _histIncompleta: incompleta,
       // serie temporal (depósitos + fees) reconstruida de eventos para el histórico
-      timelineSeries: hist && hist.events ? buildTimelineFromEvents(hist.events, t0.decimals, t1.decimals, p0, p1) : null,
+      timelineSeries: hOk && hOk.events ? buildTimelineFromEvents(hOk.events, t0.decimals, t1.decimals, p0, p1) : null,
       // eventos crudos inc/dec/col para el acordeón de logs (HyperEVM no tiene
       // subgraph → eventLogHTML los clasifica vía classifyRpcEvents en vez de
       // classifyEvents(snapshots)).
@@ -3354,10 +3401,18 @@ async function reconstructBurnedHyperEVM(chainKey, owner, openIds) {
       };
       const [t0, t1] = await Promise.all([meta(a0), meta(a1)]);
       // hist (con los decimales reales) y precios actuales no dependen entre sí → en paralelo
-      const [hist, prices] = await Promise.all([
+      let [hist, prices] = await Promise.all([
         fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, t0.decimals, t1.decimals),
         priceTokensViaPool(rpc, chain.factoryAddress, { [a0]: { symbol: t0.symbol, decimals: t0.decimals }, [a1]: { symbol: t1.symbol, decimals: t1.decimals } }, chainKey).catch(() => ({})),
       ]);
+      // Quemada → su liquidez es 0: Σ añadida − Σ retirada de sus eventos tiene que dar 0. Si no,
+      // al historial le falta un Decrease y su Collect contaría PRINCIPAL como fees → reintento
+      // fresco; si sigue sin cuadrar, se omite esta vez (y no llega al memo de abajo).
+      if (hist.liqNeta != null && hist.liqNeta !== "0") {
+        const h2 = await fetchPositionHistory(chain.blockscoutApi, nftMgr, tokenId, t0.decimals, t1.decimals, true).catch(() => null);
+        if (!h2 || h2.liqNeta !== "0") { console.warn(`[evm-recon] #${tokenId} (${chainKey}): historial INCOMPLETO (liquidez neta ${(h2 || hist).liqNeta} ≠ 0) → se omite hasta que cuadre`); return null; }
+        hist = h2;
+      }
       const p0 = prices[a0] || 0, p1 = prices[a1] || 0;
       // Posición CERRADA → congelar la valoración al DÍA DEL CIERRE (último DecreaseLiquidity),
       // NO al precio de hoy: el PnL/IL de una cerrada es realizado y no debe moverse con el mercado.
@@ -5118,6 +5173,7 @@ function positionCard(p) {
     </div>
 
     ${rangeBarHTML(p.tickLower, p.tickUpper, p.tick, p.token0.decimals, p.token1.decimals, p.inRange, p.closed, p.token0.symbol, p.token1.symbol)}
+    ${p._histIncompleta ? `<div class="text-[10px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded p-1.5">⏳ Historial incompleto: la liquidez de la cadena no cuadra con los movimientos que muestra el historial (falta alguno, normalmente uno recién hecho). Coste, PnL, IL y fees cobradas quedan en pausa —no se suman— hasta que cuadre; el valor y las pendientes sí son de ahora.</div>` : ""}
 
     <div class="grid grid-cols-2 gap-2 text-xs">
       <div class="bg-slate-950/40 rounded-lg p-2">
@@ -5156,7 +5212,7 @@ function positionCard(p) {
         )}
         <div class="font-semibold text-emerald-400 leading-tight"${p._feesRealizable ? ` title="Valor ACTUAL de las fees cobradas (retenidas a precio de hoy + vendidas a USDC al precio del swap)${p._feesAtCollectUSD != null ? ` · al cobrar: ${fmtUSD(p._feesAtCollectUSD)}` : ""}"` : ""}>${fmtUSD(p.feesUSD)} <span class="text-[10px] font-normal text-slate-400">cobradas${p.rewardKind === "AERO" ? " AERO" : ""}</span></div>
         <div class="text-amber-300 font-semibold leading-tight">${p.uncollectedUSD === null ? "n/d" : fmtUSD(p.uncollectedUSD)} <span class="text-[10px] font-normal text-slate-400">pendientes${p.rewardKind === "AERO" ? " AERO" : ""}</span></div>
-        <div class="text-[10px] text-slate-400 mt-0.5">${!isFinite(p.apr) ? `APR ${p.rewardKind === "AERO" ? "AERO" : "fees"} ~ —` : infoToggle(
+        <div class="text-[10px] text-slate-400 mt-0.5">${!(typeof p.apr === "number" && isFinite(p.apr)) ? `APR ${p.rewardKind === "AERO" ? "AERO" : "fees"} ~ —` : infoToggle(
           `APR ${p.rewardKind === "AERO" ? "AERO" : "fees"} ~ ${p.apr.toFixed(1)}% · MPR ~ ${(p.apr / 12).toFixed(2)}%`,
           `Anualizado sobre el <b>capital medio</b> del periodo${p.aprBaseUSD ? " (" + fmtUSD(p.aprBaseUSD) + ")" : ""}, no sobre el de hoy. Si no fuera así, añadir liquidez hundiría el APR sin que el pool hubiera cambiado de ritmo: las fees viejas se repartirían entre un capital que aún no las ha generado.`)}</div>
       </div>

@@ -1493,7 +1493,9 @@ function lendingCard(p) {
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Ganancias (interés)</div>
         <div class="font-semibold ${gain == null ? "" : pnlColor(gain)}">${gain == null ? "—" : fmtUSD(gain)}</div>
         <div class="text-[10px] text-slate-400 mt-0.5">${p.apr == null
-          ? (p._aprTooEarly ? `APR — <span class="text-slate-500">(esperando ≥ 1 día)</span>` : "APR —")
+          ? (p._histIncompleta ? infoToggle("APR — · historial incompleto",
+              `Las participaciones de la cadena (${fmtToken(p.shares || 0, shareSymbol)}) no cuadran con los depósitos y retiros del historial: falta algún movimiento que el índice todavía no muestra, o entró jl sin contrapartida (una transferencia entre wallets). Antes que contar un depósito como interés, se deja en blanco y no se suma a las fees. Se completa solo en cuanto cuadre.`)
+            : p._aprTooEarly ? `APR — <span class="text-slate-500">(esperando ≥ 1 día)</span>` : "APR —")
           : infoToggle(`APR ~ ${p.apr.toFixed(1)}% · MPR ~ ${(p.apr / 12).toFixed(2)}%`,
               `Anualizado sobre el <b>capital medio</b> del periodo${p.aprBaseUSD ? " (" + fmtUSD(p.aprBaseUSD) + ")" : ""}, no sobre el de hoy. Si no fuera así, meter dinero nuevo hundiría el APR sin que el vault hubiera cambiado de tasa: el interés viejo se repartiría entre un capital que aún no lo ha generado.`)}</div>
       </div>
@@ -3238,36 +3240,102 @@ async function colaJupiterLendOnChain(owner, jlMints, desdeTs) {
   try { sigs = (await rpc("getSignaturesForAddress", [owner, { limit: 15 }])) || []; }
   catch (e) { return out; }
   const nuevas = sigs.filter((x) => x && !x.err && (x.blockTime || 0) > desdeTs).slice(0, 8);
+  // Precio del subyacente: para un movimiento de hace minutos, el de ahora ES el historico.
+  const precioAhora = async (mint) => (SOL_STABLES.has(mint) ? 1 : (state.prices[mint] || null));
   for (const x of nuevas) {
     let t = null;
     try { t = await rpc("getTransaction", [x.signature, { maxSupportedTransactionVersion: 0, encoding: "jsonParsed" }]); }
     catch (e) { continue; }
-    if (!t || (t.meta && t.meta.err)) continue;
-    // Saldos del OWNER antes y despues, por cuenta de token.
-    const saldos = new Map();
-    for (const b of (t.meta?.preTokenBalances || [])) {
-      if (b.owner !== owner) continue;
-      saldos.set(b.accountIndex, { mint: b.mint, pre: Number(b.uiTokenAmount?.uiAmountString || 0), post: 0 });
-    }
-    for (const b of (t.meta?.postTokenBalances || [])) {
-      if (b.owner !== owner) continue;
-      const e = saldos.get(b.accountIndex) || { mint: b.mint, pre: 0, post: 0 };
-      e.post = Number(b.uiTokenAmount?.uiAmountString || 0);
-      saldos.set(b.accountIndex, e);
-    }
-    const movs = [...saldos.values()].map((e) => ({ mint: e.mint, d: e.post - e.pre })).filter((e) => Math.abs(e.d) > 1e-12);
-    for (const m of movs) {
-      if (!jlMints.has(m.mint)) continue;
-      // El subyacente es el otro token que se movio en sentido CONTRARIO.
-      const contra = movs.find((y) => y.mint !== m.mint && Math.sign(y.d) === -Math.sign(m.d));
-      if (!contra) continue;
-      // Precio del subyacente: para un movimiento de hace minutos, el de ahora ES el historico.
-      const px = SOL_STABLES.has(contra.mint) ? 1 : (state.prices[contra.mint] || null);
-      if (px == null) continue;
-      out.push({
-        mint: m.mint, dir: m.d > 0 ? "dep" : "wd", ts: x.blockTime,
-        usd: Math.abs(contra.d) * px, jl: Math.abs(m.d), amt: Math.abs(contra.d), sig: x.signature,
-      });
+    out.push(...await movimientosJlDeTx(t, x.signature, x.blockTime, owner, jlMints, precioAhora));
+  }
+  return out;
+}
+
+// Movimientos de participaciones jl del owner en UNA tx: el saldo de jl que sube o baja y, en
+// sentido contrario, el subyacente que lo paga o lo cobra. `precioDe(mint, ts)` valora el
+// subyacente; sin precio, el movimiento no se cuenta.
+async function movimientosJlDeTx(t, sig, ts, owner, jlMints, precioDe) {
+  const out = [];
+  if (!t || (t.meta && t.meta.err)) return out;
+  // Saldos del OWNER antes y despues, por cuenta de token.
+  const saldos = new Map();
+  for (const b of (t.meta?.preTokenBalances || [])) {
+    if (b.owner !== owner) continue;
+    saldos.set(b.accountIndex, { mint: b.mint, pre: Number(b.uiTokenAmount?.uiAmountString || 0), post: 0 });
+  }
+  for (const b of (t.meta?.postTokenBalances || [])) {
+    if (b.owner !== owner) continue;
+    const e = saldos.get(b.accountIndex) || { mint: b.mint, pre: 0, post: 0 };
+    e.post = Number(b.uiTokenAmount?.uiAmountString || 0);
+    saldos.set(b.accountIndex, e);
+  }
+  const movs = [...saldos.values()].map((e) => ({ mint: e.mint, d: e.post - e.pre })).filter((e) => Math.abs(e.d) > 1e-12);
+  for (const m of movs) {
+    if (!jlMints.has(m.mint)) continue;
+    // El subyacente es el otro token que se movio en sentido CONTRARIO.
+    const contra = movs.find((y) => y.mint !== m.mint && Math.sign(y.d) === -Math.sign(m.d));
+    if (!contra) continue;
+    const px = await precioDe(contra.mint, ts);
+    if (px == null) continue;
+    out.push({
+      mint: m.mint, dir: m.d > 0 ? "dep" : "wd", ts,
+      usd: Math.abs(contra.d) * px, jl: Math.abs(m.d), amt: Math.abs(contra.d), sig,
+    });
+  }
+  return out;
+}
+
+// Participaciones jl del owner LEÍDAS DE LA CADENA, con sus cuentas de token. Las de DAS
+// (p.shares) también van con retraso: justo tras un depósito la cola ya ve el movimiento y DAS
+// todavía no el saldo → el oráculo daría un falso "incompleto". null = no se pudo leer.
+async function saldoJlOnChain(owner, mint) {
+  try {
+    const r = await rpc("getTokenAccountsByOwner", [owner, { mint }, { encoding: "jsonParsed" }]);
+    const cuentas = (r && r.value) || [];
+    let saldo = 0;
+    for (const c of cuentas) saldo += Number(c.account?.data?.parsed?.info?.tokenAmount?.uiAmountString || 0);
+    return { saldo, cuentas: cuentas.map((c) => c.pubkey).filter(Boolean) };
+  } catch (e) { return null; }
+}
+
+// jl es una participación, como las de un vault ERC-4626: el interés sube su PRECIO, no su
+// número → el neto de jl del histórico tiene que dar el saldo de la cadena. Si no, al histórico
+// le falta un movimiento (o entró jl sin contrapartida, p. ej. una transferencia entre wallets).
+function netoJl(ev) {
+  return ev.dep.reduce((s, e) => s + (e.jl || 0), 0) - ev.wd.reduce((s, e) => s + (e.jl || 0), 0);
+}
+function cuadraJl(neto, saldo) {
+  return Math.abs(neto - saldo) <= Math.max(2e-6, Math.abs(saldo) * 1e-7); // importes UI de 6 decimales
+}
+
+// Hueco del índice: las tx que tocaron las cuentas de jl del owner (cada depósito o retiro las
+// mueve) y que el histórico no tiene. Un hueco puede ser de días → cada movimiento al precio de
+// SU día. Acotado (3 páginas de firmas, 40 tx); lo que encuentre lo juzga después el oráculo.
+async function huecoJupiterLend(owner, cuentas, vistos, jlMints) {
+  const out = [];
+  let leidas = 0;
+  const precioDelDia = async (mint, ts) => {
+    if (SOL_STABLES.has(mint)) return 1;
+    let px = null;
+    try { px = await birdeyePriceAt(mint, ts); } catch (e) {}
+    return px != null ? px : (state.prices[mint] || null);
+  };
+  for (const cuenta of cuentas) {
+    let before = null;
+    for (let pag = 0; pag < 3; pag++) {
+      let sigs;
+      try { sigs = (await rpc("getSignaturesForAddress", [cuenta, before ? { limit: 100, before } : { limit: 100 }])) || []; }
+      catch (e) { break; }
+      for (const x of sigs) {
+        if (!x || x.err || vistos.has(x.signature)) continue;
+        if (++leidas > 40) return out;
+        let t = null;
+        try { t = await rpc("getTransaction", [x.signature, { maxSupportedTransactionVersion: 0, encoding: "jsonParsed" }]); }
+        catch (e) { continue; }
+        out.push(...await movimientosJlDeTx(t, x.signature, x.blockTime, owner, jlMints, precioDelDia));
+      }
+      if (sigs.length < 100) break;
+      before = sigs[sigs.length - 1].signature;
     }
   }
   return out;
@@ -3347,6 +3415,41 @@ async function enrichJupiterLendCost(owner) {
     if (n) console.info(`[jl-cola] ${n} movimiento(s) recuperados de la cadena (el índice aún no los tenía)`);
   } catch (e) { console.warn("[jl-cola]", e); }
 
+  // ¿El histórico está ENTERO? (netoJl). La cola de arriba solo mira las 15 últimas firmas del
+  // owner, y el índice de Helius —con su caché soltx— puede quedarse días atrás, como el proxy
+  // de EVM el 2026-11-01 (340 USDC depositados contados como interés). Sin saldo de la cadena no
+  // hay prueba posible y se sigue como siempre.
+  const vistosIdx = new Set(txs.map((t) => t && t.signature).filter(Boolean));
+  for (const ev of events.values()) for (const e of [...ev.dep, ...ev.wd]) if (e.sig) vistosIdx.add(e.sig);
+  for (const p of jl) {
+    const ev = events.get(p.mint);
+    if (!ev) continue;
+    let sc = null;
+    try { sc = await saldoJlOnChain(owner, p.mint); } catch (e) {}
+    if (!sc) continue;
+    if (Math.abs(sc.saldo - (p.shares || 0)) > 1e-9) { // la cadena manda sobre DAS (y con ella el valor)
+      if (p.sharePrice) p.currentValueUSD = sc.saldo * p.sharePrice;
+      p._dasShares = p.shares;
+      p.shares = sc.saldo;
+    }
+    if (cuadraJl(netoJl(ev), sc.saldo)) continue;
+    let hueco = [];
+    try { hueco = await huecoJupiterLend(owner, sc.cuentas, vistosIdx, jlMints); } catch (e) {}
+    let n = 0;
+    for (const e of hueco) {
+      vistosIdx.add(e.sig);
+      const b = events.get(e.mint);
+      if (!b) continue;
+      (e.dir === "dep" ? b.dep : b.wd).push({ ts: e.ts, usd: e.usd, jl: e.jl, amt: e.amt, sig: e.sig });
+      n++;
+    }
+    if (n) console.info(`[jl-hueco] ${n} movimiento(s) que el índice no tenía, recuperados de la cadena`);
+    if (!cuadraJl(netoJl(ev), sc.saldo)) {
+      p._histIncompleta = true;
+      console.warn(`[jl-hueco] historial INCOMPLETO de jl${p.asset}: el histórico da ${netoJl(ev)} y la cadena ${sc.saldo} → interés en "—" hasta que cuadre`);
+    }
+  }
+
   // Stable assets cuyo share price (en USD) crece monotónicamente con el
   // interés; cualquier movimiento ≠ interés del feed Helius/Jupiter es un bug.
   // Para non-stables (jlSOL, jlBTC…) NO podemos comparar así, porque el cambio
@@ -3357,6 +3460,24 @@ async function enrichJupiterLendCost(owner) {
   for (const p of jl) {
     const { dep, wd } = events.get(p.mint) || { dep: [], wd: [] };
     if (!dep.length) continue;
+    if (p._histIncompleta) {
+      // Sin coste base demostrado no hay interés que enseñar ni que sumar: "—" y fuera de las
+      // fees. El visor 📜 sí enseña lo que se sabe.
+      const openedAt = Math.min(...dep.map((e) => e.ts));
+      p.depositedUSD = null;
+      p.withdrawnUSD = null;
+      p.gainsUSD = null;
+      p.feesUSD = 0;
+      p.feesCollectedUSD = 0;
+      p.pnlUSD = null;
+      p.apr = null;
+      p.aprBaseUSD = null;
+      p.openedAt = openedAt;
+      p.ageDays = Math.max((now - openedAt) / 86400, 1 / 24);
+      p.pnlBasis = "tx-scan";
+      p._lendEvents = lendEventsFrom(dep, wd);
+      continue;
+    }
     const depositedUSD = dep.reduce((s, e) => s + e.usd, 0);
     const withdrawnUSD = wd.reduce((s, e) => s + e.usd, 0);
 
@@ -3510,7 +3631,10 @@ async function reconstructClosedJupiterLend(owner) {
     if (!(depositedUSD > 0 && withdrawnUSD > 0)) continue;
     const gainsUSD = withdrawnUSD - depositedUSD; // valor actual 0 (cerrada) → interés REALIZADO
     const openedAt = Math.min(...dep.map((e) => e.ts));
-    const ageDays = Math.max((now - openedAt) / 86400, 1 / 24);
+    // Su vida es apertura → ÚLTIMO retiro. Anualizar hasta hoy diluía el APR con los meses que
+    // ya no estaba abierta (el de RWA SOL, cerrado en mayo, salía al 0,8% en noviembre).
+    const closedAt = Math.max(...wd.map((e) => e.ts));
+    const ageDays = Math.max((closedAt - openedAt) / 86400, 1 / 24);
     const apr = (depositedUSD > 0 && ageDays >= 1) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
     let asset = (name.match(/jupiter\s+lend\s+(\S+)/i) || [])[1];
     asset = asset ? asset.toUpperCase() : "?";
@@ -3521,7 +3645,7 @@ async function reconstructClosedJupiterLend(owner) {
       feesUSD: gainsUSD, feesPendingUSD: 0, feesCollectedUSD: gainsUSD,
       ilUSD: 0, pnlUSD: gainsUSD, pnlBasis: "tx-scan",
       inRange: false, closed: true, reconstructed: true,
-      ageDays, openedAt,
+      ageDays, openedAt, closedAt,
       _lendEvents: lendEventsFrom(dep, wd), // visor 📜 (depósitos/retiros del vault)
       color: hexToColorObj(JUPITER_LEND_COLOR_HEX),
       token0: { symbol: asset, decimals: 0, priceUSD: null },
