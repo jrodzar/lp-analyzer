@@ -986,7 +986,15 @@ let _quickModalTimer = null;
 // Cifrado E2E (WebCrypto: PBKDF2 -> AES-GCM). La contraseña nunca sale del navegador.
 // ============================================================================
 
-const b64 = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes)));
+// Por tramos, como gzipB64: `String.fromCharCode(...bytes)` mete cada byte como ARGUMENTO y
+// pasado ~65k revienta la pila. La caché de transacciones de Solana cifrada ya pasa de 140 KB y
+// con ella fallaba la subida entera desde el 26-sep (ver syncCachesUp).
+const b64 = (bytes) => {
+  const u = new Uint8Array(bytes);
+  let s = "";
+  for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return btoa(s);
+};
 const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
 async function deriveKey(passphrase, saltBytes) {
@@ -1716,17 +1724,22 @@ async function syncCachesUp() {
   try {
     const patch = {};
     for (const kind of Object.keys(CACHE_SYNC_KINDS)) {
-      const plain = JSON.stringify(collectCacheKind(kind));
-      if (plain === "{}") continue;
-      const hash = await cacheHash(plain);
-      if (_cacheUpHash[kind] === hash) continue;
-      const enc = await encryptJSON(await gzipB64(plain), crypto_.key);
-      if ((enc.ct || "").length > CACHE_MAX_FIELD) { console.warn(`[cache-sync] ${kind} supera el techo (${enc.ct.length}) — omitido`); continue; }
-      const ts = Date.now();
-      patch[CACHE_FIELD[kind]] = enc;
-      patch["cacheTs_" + kind] = ts;
-      _cacheUpHash[kind] = hash;
-      try { localStorage.setItem("lp:cachesync:" + kind, String(ts)); } catch (e) {}
+      // Cada tipo en su burbuja: un fallo en uno (fue `soltx`, demasiado grande para el b64
+      // antiguo) tumbaba la subida ENTERA, incluida la foto del pintado instantáneo, que se quedó
+      // 35 días enseñando los números del 26-sep al abrir la app.
+      try {
+        const plain = JSON.stringify(collectCacheKind(kind));
+        if (plain === "{}") continue;
+        const hash = await cacheHash(plain);
+        if (_cacheUpHash[kind] === hash) continue;
+        const enc = await encryptJSON(await gzipB64(plain), crypto_.key);
+        if ((enc.ct || "").length > CACHE_MAX_FIELD) { console.warn(`[cache-sync] ${kind} supera el techo (${enc.ct.length}) — omitido`); continue; }
+        const ts = Date.now();
+        patch[CACHE_FIELD[kind]] = enc;
+        patch["cacheTs_" + kind] = ts;
+        _cacheUpHash[kind] = hash;
+        try { localStorage.setItem("lp:cachesync:" + kind, String(ts)); } catch (e) {}
+      } catch (e) { console.warn(`[cache-sync] ${kind}:`, e); }
     }
     // Último RESULTADO del análisis (pintado instantáneo al abrir en otro dispositivo):
     // items sin cardHTML ni timeline (pesados y regenerables; el render del portfolio ya
