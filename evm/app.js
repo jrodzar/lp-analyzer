@@ -857,30 +857,55 @@ async function lendingTokenTx(apiBase, owner, vault, dec, assetAddr) {
   return { dep, wth };
 }
 
-const EV_ERC20_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"; // Transfer(address,address,uint256)
+// eth_getLogs de [desde, hasta] en el MENOR número de tramos que acepte el RPC. Medido el
+// 2026-11-01: arb1.arbitrum.io traga 10M bloques de una vez (~29 días de Arbitrum) en ~120 ms;
+// publicnode-Base, 50.000 (~28 h); publicnode-Arbitrum ya pide token y 1rpc solo deja 50.
+// Prueba el tramo más grande y, si nadie lo acepta, baja de escalón. Si harían falta más de
+// `maxTramos`, ni lo intenta: null = no se pudo cubrir (fallo ≠ vacío).
+async function getLogsPorTramos(rpcs, filtro, desde, hasta, maxTramos = 30) {
+  for (const paso of [10000000, 50000, 9000]) {
+    if (Math.ceil((hasta - desde + 1) / paso) > maxTramos) return null;
+    try {
+      const out = [];
+      for (let a = desde; a <= hasta; a += paso) {
+        const b = Math.min(a + paso - 1, hasta);
+        const r = await rpcAny(rpcs, "eth_getLogs", [{ ...filtro, fromBlock: "0x" + a.toString(16), toBlock: "0x" + b.toString(16) }]);
+        if (!Array.isArray(r)) throw new Error("getLogs sin array");
+        out.push(...r);
+      }
+      return out;
+    } catch (e) { /* ningún RPC aceptó este tamaño de tramo → escalón menor */ }
+  }
+  return null;
+}
 
 // LA CADENA MANDA. Los índices (Alchemy, Blockscout) tardan minutos en ver una tx recién
 // firmada. Justo después de "➕ Añadir liquidez" el VALOR ya sube (se lee on-chain) pero el
 // histórico todavía no tiene el depósito → la diferencia se contaba como INTERÉS. Visto en
 // vivo: 9,71 USDC depositados salían como ganancia (APR 12,9% en vez del 4,6% real).
-// Esto lee las últimas ~9.000 blocks por RPC —tiempo real, sin índice de por medio— y
-// devuelve los movimientos owner↔vault del activo. null = no se pudo (fallo ≠ vacío):
-// entonces el histórico se queda como estaba, nunca se inventa nada.
-async function lendingTailChain(rpcs, assetAddr, owner, vault, dec) {
-  if (!rpcs || !assetAddr) return null;
+// Lee por RPC —tiempo real, sin índice de por medio— los eventos del PROPIO vault: Deposit
+// (owner = topic2) y Withdraw (owner = topic3), los mismos que da el índice. Es un contrato con
+// pocos logs, así que una ventana ancha sale barata, y cada evento trae las PARTICIPACIONES, que
+// es lo que deja comprobar si el histórico está entero (participacionesDelHistorico).
+// Sin `desdeBloque`, las últimas ~9.000 (lo recién firmado); con él, desde ahí hasta el head.
+// null = no se pudo (fallo ≠ vacío): el histórico se queda como estaba, nunca se inventa nada.
+async function lendingTailChain(rpcs, owner, vault, dec, desdeBloque = null) {
+  if (!rpcs) return null;
   const pad = (a) => "0x" + String(a).toLowerCase().replace("0x", "").padStart(64, "0");
+  const word = (data, n) => BigInt("0x" + (String(data || "0x").slice(2 + n * 64, 2 + n * 64 + 64) || "0"));
   try {
     const head = parseInt(await rpcAny(rpcs, "eth_blockNumber", []), 16);
     if (!head) return null;
-    const fromBlock = "0x" + Math.max(0, head - 9000).toString(16); // el tope de muchos RPC es 10.000
+    const desde = desdeBloque != null ? Math.max(0, desdeBloque) : Math.max(0, head - 9000); // el tope de muchos RPC es 10.000
     const [entradas, salidas] = await Promise.all([
-      rpcAny(rpcs, "eth_getLogs", [{ fromBlock, toBlock: "latest", address: assetAddr, topics: [EV_ERC20_TRANSFER, pad(owner), pad(vault)] }]),
-      rpcAny(rpcs, "eth_getLogs", [{ fromBlock, toBlock: "latest", address: assetAddr, topics: [EV_ERC20_TRANSFER, pad(vault), pad(owner)] }]),
+      getLogsPorTramos(rpcs, { address: vault, topics: [EV_4626_DEPOSIT, null, pad(owner)] }, desde, head),
+      getLogsPorTramos(rpcs, { address: vault, topics: [EV_4626_WITHDRAW, null, null, pad(owner)] }, desde, head),
     ]);
+    if (!entradas || !salidas) return null;
     const out = [], tsPorBloque = new Map();
     for (const [tipo, logs] of [["dep", entradas], ["wth", salidas]]) {
-      for (const l of (logs || [])) {
-        out.push({ type: tipo, amt: Number(BigInt(l.data || "0x0")) / 10 ** dec, hash: String(l.transactionHash || "").toLowerCase(), bn: l.blockNumber, ts: 0 });
+      for (const l of logs) {
+        out.push({ type: tipo, amt: Number(word(l.data, 0)) / 10 ** dec, shares: word(l.data, 1).toString(), hash: String(l.transactionHash || "").toLowerCase(), bn: l.blockNumber, ts: 0 });
         tsPorBloque.set(l.blockNumber, 0);
       }
     }
@@ -902,7 +927,7 @@ function mergeLendingTail(data, tail) {
     : (e.type === t.type && Math.abs(e.amt - t.amt) < 1e-6 && Math.abs((e.ts || 0) - t.ts) < 600));
   const nuevos = tail.filter((t) => !yaEsta(t));
   if (!nuevos.length) return data;
-  const events = (data.events || []).concat(nuevos.map((t) => ({ ts: t.ts, type: t.type, amt: t.amt, hash: t.hash })));
+  const events = (data.events || []).concat(nuevos.map((t) => ({ ts: t.ts, type: t.type, amt: t.amt, hash: t.hash, shares: t.shares })));
   let d = 0, w = 0, firstTs = null;
   for (const e of events) {
     if (e.type === "dep") { d += e.amt; if (firstTs === null || e.ts < firstTs) firstTs = e.ts; } else w += e.amt;
@@ -910,20 +935,98 @@ function mergeLendingTail(data, tail) {
   return { deposited: d, withdrawn: w, firstTs: firstTs != null ? firstTs : data.firstTs, events, stale: data.stale, staleTs: data.staleTs, tailMerged: nuevos.length };
 }
 
+// Participaciones que el histórico dice que tienes: Σ acuñadas (Deposit) − Σ quemadas (Withdraw).
+// En un vault ERC-4626 el interés sube el PRECIO de la participación, no su número → esto tiene
+// que dar EXACTAMENTE el balanceOf del owner. Si no, al histórico le falta algo (o entraron
+// participaciones por transferencia) y el "interés" saldría inventado.
+// null = algún evento sin participaciones (Alchemy/tokentx/LKG antiguo): esta prueba no aplica.
+function participacionesDelHistorico(events) {
+  let s = 0n;
+  for (const e of (events || [])) {
+    if (e.shares == null) return null;
+    s += e.type === "dep" ? BigInt(e.shares) : -BigInt(e.shares);
+  }
+  return s;
+}
+
+// Historial sin participaciones (Alchemy y tokentx dan transferencias de USDC; el LKG antiguo
+// tampoco las guardaba): se sacan del RECIBO de cada tx, donde va el Deposit/Withdraw del vault.
+// Una llamada por movimiento, por eso solo se usa con el histórico marcado viejo. Si algún
+// recibo no está, devuelve los eventos tal cual (la prueba no aplica y decide la cola ancha).
+async function completarParticipaciones(rpcs, vault, owner, events) {
+  const v = String(vault).toLowerCase(), o = "0x" + String(owner).toLowerCase().replace("0x", "").padStart(64, "0");
+  const out = [];
+  for (const e of (events || [])) {
+    if (e.shares != null) { out.push(e); continue; }
+    if (!e.hash) return events;
+    let r = null;
+    try { r = await rpcAny(rpcs, "eth_getTransactionReceipt", [e.hash]); } catch (err) {}
+    const [topic, pos] = e.type === "dep" ? [EV_4626_DEPOSIT, 2] : [EV_4626_WITHDRAW, 3];
+    const l = r && (r.logs || []).find((x) => String(x.address).toLowerCase() === v && x.topics && x.topics[0] === topic && String(x.topics[pos] || "").toLowerCase() === o);
+    if (!l || String(l.data || "").length < 130) return events;
+    out.push({ ...e, shares: BigInt("0x" + l.data.slice(66, 130)).toString() });
+  }
+  return out;
+}
+
+// Bloque del movimiento MÁS RECIENTE que conoce el histórico: lo que haya después es lo que el
+// índice puede no haber visto. Sin hash (LKG muy antiguo) → null.
+async function bloqueDelUltimoMovimiento(rpcs, events) {
+  const ult = (events || []).filter((e) => e.hash).sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
+  if (!ult) return null;
+  try {
+    const r = await rpcAny(rpcs, "eth_getTransactionReceipt", [ult.hash]);
+    return r && r.blockNumber ? parseInt(r.blockNumber, 16) : null;
+  } catch (e) { return null; }
+}
+
 // Histórico indexado + cola on-chain. `openNow` (shares > 0) fuerza la cola aunque el índice
 // no vea todavía NINGÚN depósito — el caso del primer depósito en un vault nuevo.
-async function fetchLendingHistory(apiBase, vault, owner, dec, force = false, assetAddr = null, rpcs = null, openNow = false) {
+// `sharesNow` (balanceOf del owner, BigInt) es el oráculo de que el histórico está ENTERO.
+async function fetchLendingHistory(apiBase, vault, owner, dec, force = false, assetAddr = null, rpcs = null, openNow = false, sharesNow = null) {
   const data = await fetchLendingHistoryIdx(apiBase, vault, owner, dec, force, assetAddr);
   if (!rpcs || !assetAddr || !(openNow || (data && data.deposited > 0))) return data;
-  const merged = mergeLendingTail(data, await lendingTailChain(rpcs, assetAddr, owner, vault, dec));
-  if (merged && merged !== data) {
+  let merged = mergeLendingTail(data, await lendingTailChain(rpcs, owner, vault, dec));
+  // ¿Está ENTERO? Un índice viejo no avisa. El 2026-11-01 el proxy sirvió su copia de hacía 6
+  // días (la cola de arriba solo mira ~37 min en Arbitrum) y 346,83 USDC depositados el 25 y el
+  // 26-oct salieron como interés: $359 y APR 132% en vez de $12 y 4,4%. Dos pruebas:
+  //  · exacta: las participaciones del histórico = las de la cadena (si los eventos las traen);
+  //  · si no hay con qué contarlas y el histórico viene marcado viejo: una cola ANCHA desde su
+  //    último movimiento hasta el head. Si cubre el hueco, lo que no esté ahí no ha pasado.
+  // Sin demostrarlo → `incompleta`: el llamador deja el interés en "—" en vez de inventarlo.
+  if (merged) {
+    const cuadra = () => {
+      const s = participacionesDelHistorico(merged.events);
+      return (s == null || sharesNow == null) ? null : s === BigInt(sharesNow);
+    };
+    let entero = cuadra();
+    // Viejo y sin participaciones con qué contar → sacarlas de los recibos (ver arriba).
+    if (entero === null && merged.stale && sharesNow != null) {
+      merged = { ...merged, events: await completarParticipaciones(rpcs, vault, owner, merged.events) };
+      entero = cuadra();
+    }
+    if (entero === false || (entero === null && merged.stale)) {
+      const desde = await bloqueDelUltimoMovimiento(rpcs, merged.events);
+      const ancha = desde != null ? await lendingTailChain(rpcs, owner, vault, dec, desde) : null;
+      if (ancha) merged = mergeLendingTail(merged, ancha);
+      entero = cuadra();
+      if (entero === null) entero = !!ancha; // sin participaciones con qué contar, la cola ancha es la prueba
+      if (!entero) {
+        merged = { ...merged, incompleta: true };
+        console.warn(`[lending] histórico INCOMPLETO de ${shortAddr(vault)}: la cadena no cuadra con el índice → interés en "—" hasta que cuadre`);
+      }
+    }
+    if (entero && merged.stale) merged = { ...merged, stale: false, staleTs: null }; // demostrado: ya no es viejo
+  }
+  if (merged && merged !== data && !merged.incompleta) {
     // El merge es la verdad: que lo hereden también el caché en memoria (TTL 10 min — era
     // justo el que servía el histórico viejo tras depositar) y el LKG persistido.
     _histCache.set(`${apiBase}:lend:${vault}:${owner.toLowerCase()}`, { data: merged, ts: Date.now() });
     if (!merged.stale) {
       try { store.setItem("lp:lendhist:" + vault.toLowerCase() + ":" + owner.toLowerCase(), JSON.stringify({ deposited: merged.deposited, withdrawn: merged.withdrawn, firstTs: merged.firstTs, events: merged.events, savedAt: Date.now() })); } catch (e) {}
     }
-    console.info(`[lending] ${merged.tailMerged} movimiento(s) recién firmados: los ve la cadena pero aún no el índice → sumados al histórico`);
+    const nuevos = (merged.events || []).length - ((data && data.events) || []).length;
+    if (nuevos > 0) console.info(`[lending] ${nuevos} movimiento(s) que la cadena ve y el índice todavía no → sumados al histórico`);
   }
   return merged;
 }
@@ -935,7 +1038,10 @@ async function fetchLendingHistoryIdx(apiBase, vault, owner, dec, force = false,
   const isBaseLend = /base\.blockscout\.com/i.test(apiBase || "");
   // null = la fuente FALLÓ (≠ [] vacío real). La confusión fallo↔vacío era la raíz del
   // "depo —" recurrente en Base: un 429 de Alchemy acababa cacheado como historia vacía.
-  let depList = null, wthList = null; // {amt, ts}
+  let depList = null, wthList = null; // {amt, ts, hash, shares?}
+  // El proxy (F-cache) sirve su copia GUARDADA cuando no puede actualizarla y lo dice en
+  // `message`; para el cliente era idéntica a una fresca. Se marca vieja como el LKG.
+  let rancio = false;
   if (isBaseLend) {
     // Alchemy getAssetTransfers (primario en Base): el USDC que el owner mandó al vault =
     // depósitos; vault→owner = retiros. Full-chain ~500ms cuando no está estrangulado.
@@ -952,13 +1058,16 @@ async function fetchLendingHistoryIdx(apiBase, vault, owner, dec, force = false,
       try {
         const r = await explorerFetch(`${apiBase}?module=logs&action=getLogs&fromBlock=0&toBlock=latest&address=${vault}&${qs}`);
         const j = await r.json();
+        if (j && j.message === "OK-histcache-stale") rancio = true;
         return Array.isArray(j.result) ? j.result : null;
       } catch (e) { return null; }
     };
+    // 2ª palabra del evento = participaciones acuñadas/quemadas (oráculo de histórico entero)
+    const shares = (data) => { try { return word(data, 1).toString(); } catch (e) { return undefined; } };
     const dep = await get(`topic0=${EV_4626_DEPOSIT}&topic2=${ownerTopic}&topic0_2_opr=and`);
     const wth = (dep && dep.length) ? await get(`topic0=${EV_4626_WITHDRAW}&topic3=${ownerTopic}&topic0_3_opr=and`) : (dep ? [] : null);
-    if (dep) depList = dep.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16), hash: String(l.transactionHash || "").toLowerCase() }));
-    if (wth) wthList = wth.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, ts: parseInt(l.timeStamp, 16), hash: String(l.transactionHash || "").toLowerCase() }));
+    if (dep) depList = dep.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, shares: shares(l.data), ts: parseInt(l.timeStamp, 16), hash: String(l.transactionHash || "").toLowerCase() }));
+    if (wth) wthList = wth.map((l) => ({ amt: Number(word(l.data, 0)) / 10 ** dec, shares: shares(l.data), ts: parseInt(l.timeStamp, 16), hash: String(l.transactionHash || "").toLowerCase() }));
   }
   // Primario caído → fallback por OTRA ruta del explorer (tokentx por address).
   if (depList === null || wthList === null) {
@@ -984,9 +1093,12 @@ async function fetchLendingHistoryIdx(apiBase, vault, owner, dec, force = false,
   }
   let d = 0, w = 0, firstTs = null;
   const events = [];
-  for (const e of depList) { d += e.amt; if (firstTs === null || e.ts < firstTs) firstTs = e.ts; events.push({ ts: e.ts, type: "dep", amt: e.amt, hash: e.hash }); }
-  for (const e of wthList) { w += e.amt; events.push({ ts: e.ts, type: "wth", amt: e.amt, hash: e.hash }); }
+  for (const e of depList) { d += e.amt; if (firstTs === null || e.ts < firstTs) firstTs = e.ts; events.push({ ts: e.ts, type: "dep", amt: e.amt, hash: e.hash, shares: e.shares }); }
+  for (const e of wthList) { w += e.amt; events.push({ ts: e.ts, type: "wth", amt: e.amt, hash: e.hash, shares: e.shares }); }
   const data = { deposited: d, withdrawn: w, firstTs, events };
+  // Copia vieja del proxy: ni a la caché en memoria (que el siguiente análisis vuelva a
+  // preguntar) ni al LKG (su savedAt de ahora la haría pasar por fresca).
+  if (rancio) return { ...data, stale: true, staleTs: null };
   _histCache.set(cacheKey, { data, ts: Date.now() });
   if (events.length) { try { store.setItem(lkgKey, JSON.stringify({ deposited: d, withdrawn: w, firstTs, events, savedAt: Date.now() })); } catch (e) {} }
   return data;
@@ -1505,7 +1617,7 @@ async function fetchRevertLending(owner) {
       // si nunca depositó → barato en vaults nunca tocados.
       let h = null;
       if (c.explorerApi) {
-        try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, false, assetAddr, c.rpcs, open); } catch (e) {}
+        try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, false, assetAddr, c.rpcs, open, shares); } catch (e) {}
         // Una posición ABIERTA (shares>0) SIEMPRE tiene un Deposit en su histórico. Si vino
         // null/vacío es que TODAS las fuentes fallaron a la vez (Alchemy 429 + tokentx caído
         // y sin LKG persistido — raro tras el fix por capas). ANTES: 3 reintentos BLOQUEANTES
@@ -1516,18 +1628,19 @@ async function fetchRevertLending(owner) {
         // análisis/auto-refresh (el LKG persistido cubre la mayoría de tormentas); el
         // Vigía headless la ve "—" un ciclo como mucho. La corrección no se pierde:
         // solo deja de RETENER el análisis entero.
-        if (open && !(h && h.deposited > 0)) {
+        // Lo mismo si el histórico vino INCOMPLETO (las participaciones no cuadran con la cadena).
+        if ((open && !(h && h.deposited > 0)) || (h && h.incompleta)) {
           await new Promise((res) => setTimeout(res, 1500));
-          try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true, assetAddr, c.rpcs, open); } catch (e) {}
+          try { h = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true, assetAddr, c.rpcs, open, shares); } catch (e) {}
         }
-        if (HAS_DOM && open && !(h && h.deposited > 0)) {
+        if (HAS_DOM && open && (!(h && h.deposited > 0) || h.incompleta)) {
           const vaultLc = c.vault.toLowerCase();
           (async () => {
             for (let r = 0; r < 2; r++) {
               await new Promise((res) => setTimeout(res, 5000 * (r + 1)));
               let h2 = null;
-              try { h2 = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true, assetAddr, c.rpcs, open); } catch (e) {}
-              if (!(h2 && h2.deposited > 0)) continue;
+              try { h2 = await fetchLendingHistory(c.explorerApi, c.vault, owner, dec, true, assetAddr, c.rpcs, open, shares); } catch (e) {}
+              if (!(h2 && h2.deposited > 0) || h2.incompleta) continue;
               const p = (state.positions || []).find((x) => x._lending && x.vault && x.vault.toLowerCase() === vaultLc && String(x.owner).toLowerCase() === owner.toLowerCase());
               if (!p || p.depositedUSD != null) break; // ya no está en pantalla o ya se completó
               const nowBg = Math.floor(Date.now() / 1000);
@@ -1541,6 +1654,7 @@ async function fetchRevertLending(owner) {
               p.pnlUSD = p.gainsUSD == null ? 0 : p.gainsUSD;
               p.hodlUSD = p.depositedUSD || p.currentValueUSD;
               p._lendEvents = h2.events || null;
+              p._histIncompleta = false;
               try { p.timelineSeries = await buildLendingTimelineExact(chainKey, c.rpcs, c.vault, owner, dec, h2.events, priceUSD, p.gainsUSD, nowBg); } catch (e) {}
               try { renderAll(); } catch (e) {}
               break;
@@ -1549,6 +1663,9 @@ async function fetchRevertLending(owner) {
         }
       }
       const everDeposited = !!(h && h.deposited > 0);
+      // Histórico que no cuadra con la cadena: el interés saldría inventado (un depósito que el
+      // índice aún no ve cuenta como ganancia). Se deja en "—" y fuera de los totales.
+      const incompleta = !!(h && h.incompleta);
 
       // Cerrada solo si depositó Y retiró (shares=0 sin retiro = shares transferidas a otra
       // wallet, no un cierre → no se puede computar interés realizado → omitir).
@@ -1558,8 +1675,8 @@ async function fetchRevertLending(owner) {
       const closed = !open;
       // Si el histórico vino VACÍO en una ABIERTA (Blockscout degradado), dejamos interés
       // null → card "—" y el total no se infla (guard de inflación). En CERRADA siempre hay
-      // histórico (lo exige el guard de arriba).
-      if (everDeposited) {
+      // histórico (lo exige el guard de arriba). INCOMPLETO cuenta igual que vacío.
+      if (everDeposited && !incompleta) {
         if (open) {
           depositedUSD = (h.deposited - h.withdrawn) * priceUSD;   // depositado neto
           gainsUSD = currentValueUSD - depositedUSD;               // interés NO realizado
@@ -1584,6 +1701,7 @@ async function fetchRevertLending(owner) {
         closed, reconstructed: closed, inRange: !closed,
         timelineSeries,
         _lendEvents: (h && h.events) || null, // visor 📜 de la ficha (depósitos/retiros)
+        _histIncompleta: incompleta,
       };
     } catch (e) { return null; }
   }));
@@ -4583,7 +4701,8 @@ function lendingCard(p) {
       <div class="bg-slate-950/40 rounded-lg p-2">
         <div class="text-[10px] uppercase tracking-wide text-slate-500">Ganancias (interés)</div>
         <div class="font-semibold ${pnlColor(gain)}">${gain == null ? "—" : fmtUSD(gain)}</div>
-        <div class="text-[10px] text-slate-400 mt-0.5">${p.apr == null ? "APR —" : infoToggle(
+        <div class="text-[10px] text-slate-400 mt-0.5">${p.apr == null ? (p._histIncompleta ? infoToggle("APR — · historial incompleto",
+          `La cadena tiene movimientos de este préstamo que el historial todavía no muestra (las participaciones no cuadran). Antes que contar un depósito como interés, se deja en blanco y no se suma a las fees. Se completa solo en cuanto cuadre.`) : "APR —") : infoToggle(
           `APR ~ ${p.apr.toFixed(1)}% · MPR ~ ${(p.apr / 12).toFixed(2)}%`,
           `Anualizado sobre el <b>capital medio</b> del periodo${p.aprBaseUSD ? " (" + fmtUSD(p.aprBaseUSD) + ")" : ""}, no sobre el de hoy${p.aprBaseUSD && p.depositedUSD && Math.abs(p.aprBaseUSD - p.depositedUSD) / p.depositedUSD > 0.05 ? " (" + fmtUSD(p.depositedUSD) + ")" : ""}. Si no fuera así, meter dinero nuevo hundiría el APR sin que el vault hubiera cambiado de tasa: el interés viejo se repartiría entre un capital que aún no lo ha generado.`)}</div>
       </div>
