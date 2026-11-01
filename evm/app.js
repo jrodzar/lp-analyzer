@@ -2143,10 +2143,14 @@ async function backfillUncollectedFromRPC(positions, onProgress) {
           p.uncollected = uc;
           p.uncollectedUSD = uc.amount0 * p.token0.priceUSD + uc.amount1 * p.token1.priceUSD;
           p.feesTotalUSD = p.feesUSD + p.uncollectedUSD;
-          p.pnlUSD = p.currentValueUSD + p.withdrawnUSD + p.feesUSD + p.uncollectedUSD - p.depositedUSD;
-          const aprBase = p.currentValueUSD > 0 ? p.currentValueUSD : p.depositedUSD;
-          p.apr = aprBase > 0 ? (p.feesTotalUSD / aprBase) * (365 / p.ageDays) * 100 : 0;
-          p.aprBaseUSD = aprBase || null; // lo reescala recomputeAprLP() al capital medio
+          // Historial que no cuadra con la cadena (fetchPositionsFromRPCDirect): las pendientes
+          // sí son de ahora, pero PnL y APR saldrían de un coste que no se conoce → se quedan "—".
+          if (!p._histIncompleta) {
+            p.pnlUSD = p.currentValueUSD + p.withdrawnUSD + p.feesUSD + p.uncollectedUSD - p.depositedUSD;
+            const aprBase = p.currentValueUSD > 0 ? p.currentValueUSD : p.depositedUSD;
+            p.apr = aprBase > 0 ? (p.feesTotalUSD / aprBase) * (365 / p.ageDays) * 100 : 0;
+            p.aprBaseUSD = aprBase || null; // lo reescala recomputeAprLP() al capital medio
+          }
         }
       } catch (e) {
         console.warn(`[${p.chainKey}] RPC backfill ticks falló para ${p.id}:`, e.message || e);
@@ -3980,10 +3984,12 @@ function applyAerodromeAeroAsFees(positions) {
     p.uncollected = { amount0: 0, amount1: 0 };   // no null → la ficha muestra "pendientes"
     p.uncollectedUSD = pend;                      // pendientes = AERO reclamable
     p.feesTotalUSD = claimed + pend;
-    p.pnlUSD = (p.currentValueUSD || 0) + (p.withdrawnUSD || 0) + claimed + pend - (p.depositedUSD || 0);
-    const base = (p.currentValueUSD || 0) > 0 ? p.currentValueUSD : (p.depositedUSD || 0);
-    p.apr = base > 0 && p.ageDays > 0 ? (p.feesTotalUSD / base) * (365 / p.ageDays) * 100 : 0;
-    p.aprBaseUSD = base || null;
+    if (!p._histIncompleta) { // sin coste demostrado, PnL y APR se quedan "—" (ver backfillUncollectedFromRPC)
+      p.pnlUSD = (p.currentValueUSD || 0) + (p.withdrawnUSD || 0) + claimed + pend - (p.depositedUSD || 0);
+      const base = (p.currentValueUSD || 0) > 0 ? p.currentValueUSD : (p.depositedUSD || 0);
+      p.apr = base > 0 && p.ageDays > 0 ? (p.feesTotalUSD / base) * (365 / p.ageDays) * 100 : 0;
+      p.aprBaseUSD = base || null;
+    }
     p.rewardKind = "AERO";                        // la ficha etiqueta las fees como AERO
   }
 }
