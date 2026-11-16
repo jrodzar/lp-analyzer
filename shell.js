@@ -2726,7 +2726,7 @@ function buildPillarGroup(pid, results, colorOf) {
   return wrap;
 }
 
-// Tabla-resumen por pilar (valor · fees · IL · PnL · pos · % del total). Una fila
+// Tabla-resumen por pilar (valor · valor objetivo · fees · IL · PnL · pos · % del total). Una fila
 // por pilar CON wallets + "Sin pilar" si hay + Total. Reutiliza summarizeItems.
 function renderPillarSummary(colorOf) {
   const box = document.getElementById("pf-pillar-summary");
@@ -2750,6 +2750,22 @@ function renderPillarSummary(colorOf) {
   const devCell = (dev) => dev == null ? `<span class="text-slate-600">—</span>`
     : `<span class="${Math.abs(dev) < 2 ? "text-emerald-400" : Math.abs(dev) < 5 ? "text-amber-400" : "text-rose-400"}">${dev >= 0 ? "+" : ""}${dev.toFixed(1)}pp</span>`;
   const objCell = (t) => t == null ? `<span class="text-slate-600">—</span>` : `<span class="text-slate-400">${fmtPct(t)}%</span>`;
+  // Valor objetivo = lo que DEBERÍA valer el pilar con el reparto del repartidor:
+  // total real del portfolio × su % objetivo. Misma base (totalValue) que "% real"
+  // y "Desv", así las tres columnas cuadran. Sale del total real → se difumina en
+  // incógnito (fmtUSD); el title va con fmtUSD0 (texto, no admite el span).
+  const objValCell = (t, real) => {
+    if (t == null || !(totalValue > 0)) return `<span class="text-slate-600">—</span>`;
+    const obj = totalValue * t / 100, falta = obj - real;
+    const lectura = Math.abs(falta) < 0.005 ? "Justo en el objetivo"
+      : falta > 0 ? `Le faltan ${fmtUSD0(falta)} para llegar al objetivo`
+      : `Tiene ${fmtUSD0(-falta)} por encima del objetivo`;
+    return `<span class="text-slate-400" title="${escapeHtml(lectura)}">${fmtUSD(obj)}</span>`;
+  };
+  // Total de la columna: con TODOS los pilares del repartidor (también los que aún
+  // no tienen billeteras y por eso no salen como fila) → si los % suman 100,
+  // coincide con el Total real.
+  const sumPctObj = pillars.reduce((s, p) => s + (Number(p.pct) || 0), 0);
 
   const rows = rowsData.map((rd) => {
     const a = summarizeItems(rd.group.flatMap((r) => r.items || []));
@@ -2758,6 +2774,7 @@ function renderPillarSummary(colorOf) {
     return `<tr class="border-b border-slate-800/50">
       <td class="px-2 py-1.5"><span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full" style="background:${rd.color}"></span><span class="font-semibold text-slate-200">${escapeHtml(rd.name)}</span></span></td>
       <td class="px-2 py-1.5 text-right font-mono text-slate-100">${fmtUSD(a.totalValue)}</td>
+      <td class="px-2 py-1.5 text-right font-mono">${objValCell(rd.target, a.totalValue)}</td>
       <td class="px-2 py-1.5 text-right font-mono text-emerald-400">${fmtUSD(a.totalFees)}</td>
       <td class="px-2 py-1.5 text-right font-mono">${ilCell(a)}</td>
       <td class="px-2 py-1.5 text-right font-mono">${pnlCell(a)}</td>
@@ -2776,6 +2793,7 @@ function renderPillarSummary(colorOf) {
           <tr class="text-[10px] uppercase tracking-wide text-slate-400 border-b border-slate-800">
             <th class="text-left px-2 py-2">Pilar</th>
             <th class="text-right px-2 py-2">Valor</th>
+            <th class="text-right px-2 py-2 whitespace-nowrap" title="Lo que debería valer el pilar: total del portfolio × su % objetivo">Valor objetivo</th>
             <th class="text-right px-2 py-2">Fees</th>
             <th class="text-right px-2 py-2">IL</th>
             <th class="text-right px-2 py-2">PnL</th>
@@ -2790,6 +2808,7 @@ function renderPillarSummary(colorOf) {
           <tr class="border-t border-slate-700 font-semibold">
             <td class="px-2 py-2">Total</td>
             <td class="px-2 py-2 text-right font-mono text-slate-100">${fmtUSD(tot.totalValue)}</td>
+            <td class="px-2 py-2 text-right font-mono text-slate-400">${totalValue > 0 && sumPctObj > 0 ? fmtUSD(totalValue * sumPctObj / 100) : "—"}</td>
             <td class="px-2 py-2 text-right font-mono text-emerald-400">${fmtUSD(tot.totalFees)}</td>
             <td class="px-2 py-2 text-right font-mono">${ilCell(tot)}</td>
             <td class="px-2 py-2 text-right font-mono">${pnlCell(tot)}</td>
