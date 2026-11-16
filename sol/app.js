@@ -579,6 +579,33 @@ function buildJupiterLendPosition(t) {
   };
 }
 
+// Tokens-estafa: airdrops que FALSIFICAN el nombre (un enlace o una red social metidos en el
+// símbolo, "U S D C" con espacios, cebos de airdrop) para llevarte a una web que te vacía la
+// wallet. El explorador les pone precio porque el estafador monta una pool falsa, así que
+// "valen" cientos de dólares que no existen. Se les quita el valor AQUÍ, en el motor, para
+// que no cuenten en ningún total (app, Vigía, cachés) ni reciban botones de acción: quedan
+// marcados (`scam`) y la UI los pinta con su insignia entre el polvo. Caso real
+// (16-nov-2026): "www`discor…" en Arbitrum, 11.288 uds "a $784,29", inflaba el idle de una
+// wallet de ~$16 a $800. MISMA heurística que isLikelyScamToken de shell.js: mantener a la par.
+function esTokenEstafa(t) {
+  const sym = ((t && t.symbol) || "").trim();
+  const name = ((t && t.name) || "").trim();
+  const hay = `${sym} ${name}`;
+  if (/https?:\/\/|\bwww[^a-z0-9\s]|\bt\.me\b|telegram|discord|[a-z0-9-]{2,}\.[a-z]{2,}\/\S/i.test(hay)) return true; // URL / red social / dominio-con-ruta
+  if (/\S\s+\S/.test(sym)) return true;                          // símbolo con espacios internos (U S D C, U S D T…)
+  if (/\b(airdrop|voucher|giveaway)\b/i.test(hay)) return true;  // cebos típicos de airdrop-scam
+  return false;
+}
+function quitarValorEstafas(tokens) {
+  for (const t of (tokens || [])) {
+    if (!t || t.scam || !esTokenEstafa(t)) continue;
+    t.scam = true;
+    t.valueUSDFalso = t.valueUSD || 0; // lo que decía el explorador; solo para diagnóstico
+    t.valueUSD = 0; t.priceUSD = 0;
+  }
+  return tokens;
+}
+
 // Lista los tokens fungibles "sueltos" (idle) de la wallet — los que NO están dentro
 // de posiciones LP. Helius DAS los devuelve junto con precios USD vía Jupiter en
 // `token_info.price_info`. Incluimos también SOL nativo con su balance.
@@ -1906,7 +1933,7 @@ async function analyze() {
 
     // Tokens "idle" — los que están en la wallet pero no están metidos en LPs.
     // Reusa la misma respuesta de Helius (showFungible) + Jupiter via token_info.price_info.
-    state.idleTokens = await fetchIdleTokens(addr).catch(() => []);
+    state.idleTokens = quitarValorEstafas(await fetchIdleTokens(addr).catch(() => []));
 
     // Jupiter Lend: los vault-share tokens (jlUSDC, jlSOL…) NO son idle, son
     // posiciones de lending. Los sacamos del listado idle y los añadimos a

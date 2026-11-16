@@ -815,10 +815,22 @@ function isLikelyScamToken(t) {
   const sym = ((t && t.symbol) || "").trim();
   const name = ((t && t.name) || "").trim();
   const hay = `${sym} ${name}`;
-  if (/https?:\/\/|www\.|\bt\.me\b|telegram|discord|[a-z0-9-]{2,}\.[a-z]{2,}\/\S/i.test(hay)) return true; // URL / red social / dominio-con-ruta
+  // "www" seguido de cualquier separador, no solo de punto: se vio "www`discor…" (acento grave
+  // en vez de punto, para esquivar justo este filtro).
+  if (/https?:\/\/|\bwww[^a-z0-9\s]|\bt\.me\b|telegram|discord|[a-z0-9-]{2,}\.[a-z]{2,}\/\S/i.test(hay)) return true; // URL / red social / dominio-con-ruta
   if (/\S\s+\S/.test(sym)) return true;                          // símbolo con espacios internos (U S D C, U S D T…)
   if (/\b(airdrop|voucher|giveaway)\b/i.test(hay)) return true;  // cebos típicos de airdrop-scam
   return false;
+}
+// Un token-estafa no vale nada aunque el explorador le ponga precio (sale de una pool falsa
+// del estafador). El motor ya se lo quita (quitarValorEstafas en evm/app.js y sol/app.js);
+// esto es la red de seguridad para lo que entra por otro lado —resultados de una caché
+// anterior al arreglo, un motor aún sin actualizar—: sin valor no cuenta en los totales ni
+// recibe botones de acción, y la fila queda con su insignia entre el polvo.
+function sanearIdle(tokens) {
+  return (tokens || []).map((t) => (t && !t.scam && isLikelyScamToken(t))
+    ? { ...t, scam: true, valueUSDFalso: t.valueUSD || 0, valueUSD: 0, priceUSD: 0 }
+    : t);
 }
 // Formatea ticks de fecha y omite repetidos consecutivos (evita fechas duplicadas en rangos cortos)
 function dateTick(fmtOpts) {
@@ -1803,7 +1815,7 @@ async function hydrateCachesDown(key) {
       try {
         const { ts, results } = JSON.parse(await gunzipB64(await decryptJSON(d.cacheLastResEnc, key)));
         if (Array.isArray(results) && results.length) {
-          state.results = results;
+          state.results = results.map((r) => (r && r.idleTokens ? { ...r, idleTokens: sanearIdle(r.idleTokens) } : r));
           renderPortfolio();
           const mins = Math.max(1, Math.round((Date.now() - (ts || 0)) / 60000));
           setPfStatus(`Mostrando datos de hace ${mins} min — actualizando…`, "info");
@@ -3417,7 +3429,7 @@ window.addEventListener("message", (e) => {
   } else if (d.type === "lp-result" && pendingReqs.has(d.reqId)) {
     const resolve = pendingReqs.get(d.reqId);
     pendingReqs.delete(d.reqId);
-    resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [], analysisStatus: d.analysisStatus || null, idleTokens: d.idleTokens || [], feesRealizableUSD: d.feesRealizableUSD != null ? d.feesRealizableUSD : null });
+    resolve({ address: d.address, items: d.items || [], status: d.status, app: d.app, timeline: d.timeline || [], analysisStatus: d.analysisStatus || null, idleTokens: sanearIdle(d.idleTokens || []), feesRealizableUSD: d.feesRealizableUSD != null ? d.feesRealizableUSD : null });
   } else if (d.type === "lp-analyze-done") {
     // el engine terminó el análisis de Quick → cerrar el modal de progreso
     clearTimeout(_quickModalTimer);
@@ -3428,8 +3440,9 @@ window.addEventListener("message", (e) => {
   } else if (d.type === "lp-summary" && (d.app === "evm" || d.app === "sol")) {
     // El engine ha pintado su Quick → renderizamos el mismo resumen aquí encima
     // del iframe, con la misma plantilla que el Portfolio (consistencia garantizada).
-    renderQuickSummary(d.items || [], d.idleTokens || []);
-    renderQuickIdleTokens(d.idleTokens || []);
+    const idleQ = sanearIdle(d.idleTokens || []);
+    renderQuickSummary(d.items || [], idleQ);
+    renderQuickIdleTokens(idleQ);
     // Banner verde/rojo con el resultado del análisis (errores por chain/protocolo)
     const status = d.analysisStatus || {};
     const items = d.items || [];
