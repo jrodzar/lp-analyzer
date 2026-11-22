@@ -2473,6 +2473,35 @@ function renderQuickIdleTokens(tokens) {
   else wrap.classList.add("hidden");
 }
 
+// ── Memoria de secciones desplegadas / colapsadas ───────────────────────────
+// renderPortfolio() reconstruye TODA la lista en cada actualización (tras una
+// operación, el auto-refresco, cambiar la agrupación, el modo incógnito…) y cada
+// <details> nacía con su estado por defecto: lo que el usuario había desplegado
+// se cerraba solo, y al revés. Ahora cada desplegable lleva una clave estable
+// (data-lp-key) sacada de los DATOS —pilar, dirección, id de la posición—, no
+// del orden en pantalla; justo antes de borrar se lee el estado real del DOM y,
+// tras reconstruir, se reaplica. Solo en memoria: al recargar la página vuelven
+// los valores por defecto. Lo que no tiene clave (p. ej. el bloque idle de Quick)
+// se comporta como siempre.
+const _pfAbierto = new Map(); // clave → true (desplegado) / false (colapsado)
+function pfGuardarSecciones() {
+  if (!els.pfSections) return;
+  els.pfSections.querySelectorAll("details[data-lp-key]").forEach((d) => _pfAbierto.set(d.dataset.lpKey, d.open));
+  els.pfSections.querySelectorAll("[data-lp-polvo]").forEach((w) => _pfAbierto.set(w.dataset.lpPolvo, !w.classList.contains("hidden")));
+}
+function pfRestaurarSecciones() {
+  if (!els.pfSections) return;
+  els.pfSections.querySelectorAll("details[data-lp-key]").forEach((d) => {
+    const v = _pfAbierto.get(d.dataset.lpKey);
+    if (v != null && d.open !== v) d.open = v;
+  });
+}
+// Da clave a los desplegables de DENTRO de una ficha (📜 logs y similares).
+function pfMarcarFicha(node, clave) {
+  if (node && clave) node.querySelectorAll("details").forEach((d, i) => { if (!d.dataset.lpKey) d.dataset.lpKey = `f:${clave}:${i}`; });
+  return node;
+}
+
 function renderPortfolio() {
   // Las cerradas SIEMPRE cuentan en los totales/cálculos; en la lista se separan
   // a una sección colapsada por dirección (ver más abajo).
@@ -2549,6 +2578,7 @@ function renderPortfolio() {
     else pillarSummary.classList.add("hidden");
   }
 
+  pfGuardarSecciones(); // lo que había desplegado/colapsado, antes de borrar
   els.pfSections.innerHTML = "";
   if (byPillar) {
     // Grupos en el ORDEN de los pilares de la pestaña Pilares; "Sin pilar" al final.
@@ -2560,6 +2590,7 @@ function renderPortfolio() {
   } else {
     for (const r of state.results) els.pfSections.appendChild(buildWalletSection(r, colorOf));
   }
+  pfRestaurarSecciones(); // …y se deja como estaba
 }
 
 // Pilar (id) al que pertenece un resultado, según la asignación ACTUAL del
@@ -2613,6 +2644,18 @@ function buildWalletSection(r, colorOf, grouped) {
   // Dirección del wallet para que los inyectores de pro (active/*) localicen el
   // result por dirección y NO por índice DOM (que se rompe al agrupar por pilares).
   section.dataset.lpWallet = String(r.entry.address || "").toLowerCase();
+  const addr = section.dataset.lpWallet;
+  section.dataset.lpKey = "w:" + addr; // memoria de desplegado/colapsado (pfGuardarSecciones)
+  // Clave estable por ficha: dirección + venue + id de la posición (el id solo no
+  // basta: un vault de lending o un pool de Curve se repite entre billeteras). Se
+  // numera en el orden del análisis, no en el de pantalla (que cambia con el valor),
+  // por si dos posiciones coinciden (id vacío en alguna reconstruida).
+  const claveFicha = new Map(), vistas = new Map();
+  for (const it of items) {
+    const base = `${addr}|${it.venue || ""}|${it.id || it.pair || ""}`;
+    const n = vistas.get(base) || 0; vistas.set(base, n + 1);
+    claveFicha.set(it, n ? `${base}#${n}` : base);
+  }
 
   const head = document.createElement("summary");
   head.className = "px-4 py-3 cursor-pointer hover:brightness-110 select-none";
@@ -2636,7 +2679,7 @@ function buildWalletSection(r, colorOf, grouped) {
   body.className = "px-4 pb-4 pt-1";
 
   // 1) Tokens "idle" primero (cerrados por defecto).
-  const idleBlock = idleTokensBlock(r.idleTokens || []);
+  const idleBlock = idleTokensBlock(r.idleTokens || [], { key: "idle:" + addr });
   if (idleBlock) body.appendChild(idleBlock);
 
   // 2) Posiciones LP / lending ABIERTAS de la dirección
@@ -2644,7 +2687,7 @@ function buildWalletSection(r, colorOf, grouped) {
     const grid = document.createElement("div");
     grid.className = "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3";
     const sorted = [...openItems].sort((a, b) => (b.valueUSD || 0) - (a.valueUSD || 0));
-    for (const it of sorted) grid.appendChild(portfolioCard(it, colorOf.get(it)));
+    for (const it of sorted) grid.appendChild(pfMarcarFicha(portfolioCard(it, colorOf.get(it)), claveFicha.get(it)));
     body.appendChild(grid);
   } else {
     const empty = document.createElement("div");
@@ -2660,7 +2703,7 @@ function buildWalletSection(r, colorOf, grouped) {
   }
 
   // 3) Posiciones CERRADAS (colapsadas; sus fees/estadística ya cuentan arriba).
-  const closedBlock = closedPositionsBlock(closedItems, colorOf);
+  const closedBlock = closedPositionsBlock(closedItems, colorOf, "cer:" + addr, claveFicha);
   if (closedBlock) body.appendChild(closedBlock);
 
   section.appendChild(body);
@@ -2681,6 +2724,7 @@ function buildPillarGroup(pid, results, colorOf) {
 
   const wrap = document.createElement("details");
   wrap.open = true;
+  wrap.dataset.lpKey = "pil:" + (pid || "sin"); // memoria de desplegado/colapsado
   wrap.className = "pf-pillar-group rounded-xl border border-slate-800 mb-6 overflow-hidden";
 
   // Banner del pilar: fondo TEÑIDO con su color + borde izquierdo grueso + nombre
@@ -2843,12 +2887,13 @@ function updateGroupByToggle(mode) {
 // posiciones con liquidez retirada (closed) para que no estorben en la lista; sus
 // fees cobradas y su estadística YA cuentan en los totales de arriba. Mismo lenguaje
 // visual que el bloque idle (pf-section + chevron).
-function closedPositionsBlock(items, colorOf) {
+function closedPositionsBlock(items, colorOf, key, claveFicha) {
   if (!Array.isArray(items) || !items.length) return null;
   const totVal = items.reduce((s, it) => s + (it.valueUSD || 0), 0);
   const totFees = items.reduce((s, it) => s + (it.feesPendingUSD || 0) + (it.feesUSD || 0), 0);
 
   const wrap = document.createElement("details"); // colapsado por defecto (sin .open)
+  if (key) wrap.dataset.lpKey = key; // memoria de desplegado/colapsado
   wrap.className = "pf-section rounded-xl border border-slate-800 border-l-4 bg-slate-900/40 p-3 mb-4 text-sm";
   wrap.style.borderLeftColor = "#64748b"; // slate-500 — diferenciar del idle (marrón)
   const head = document.createElement("summary");
@@ -2869,7 +2914,7 @@ function closedPositionsBlock(items, colorOf) {
   // interesa es cuánto rindió antes de cerrarla.
   const sorted = [...items].sort((a, b) =>
     ((b.feesUSD || 0) + (b.feesPendingUSD || 0)) - ((a.feesUSD || 0) + (a.feesPendingUSD || 0)));
-  for (const it of sorted) grid.appendChild(portfolioCard(it, colorOf.get(it)));
+  for (const it of sorted) grid.appendChild(pfMarcarFicha(portfolioCard(it, colorOf.get(it)), claveFicha && claveFicha.get(it)));
   wrap.appendChild(grid);
   return wrap;
 }
@@ -2936,6 +2981,7 @@ function idleTokensBlock(tokens, opts = {}) {
 
   const wrap = document.createElement("details");
   if (opts.open) wrap.open = true;
+  if (opts.key) wrap.dataset.lpKey = opts.key; // memoria de desplegado/colapsado (solo Portfolio)
   // Borde lateral marrón al estilo "maletín" 💼 (mismo lenguaje visual que el de las
   // cabeceras de dirección con border-l-4 de color).
   // `pf-section` reutiliza el CSS global (en index.html) que oculta el marcador
@@ -3060,10 +3106,16 @@ function idleTokensBlock(tokens, opts = {}) {
     const dustWrap = document.createElement("div");
     dustWrap.className = "hidden space-y-2 mt-2";
     dustWrap.innerHTML = [...dust, ...noPrice].map(rowFor).join("");
-    toggle.onclick = () => {
-      const hidden = dustWrap.classList.toggle("hidden");
+    const pintaPolvo = (hidden) => {
+      dustWrap.classList.toggle("hidden", hidden);
       toggle.textContent = `${hidden ? "▾" : "▴"} ${hidden ? "Mostrar" : "Ocultar"} ${dust.length + noPrice.length} tokens de bajo valor / sin precio`;
     };
+    toggle.onclick = () => pintaPolvo(!dustWrap.classList.contains("hidden"));
+    // Mismo recuerdo que las secciones: si estaba a la vista antes de reconstruir, sigue a la vista.
+    if (opts.key) {
+      dustWrap.dataset.lpPolvo = "polvo:" + opts.key;
+      if (_pfAbierto.get(dustWrap.dataset.lpPolvo) === true) pintaPolvo(false);
+    }
     extra.appendChild(toggle); extra.appendChild(dustWrap);
     body.appendChild(extra);
   }
