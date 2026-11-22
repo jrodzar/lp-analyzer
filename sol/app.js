@@ -1498,10 +1498,10 @@ function lendingCard(p) {
   // interés. La ficha lo separa: interés (en el activo y en $) por un lado, precio por otro.
   const noEst = !!p._noEstable;
   const depTokTxt = (noEst && p._lendTok && p._lendTok.dep > 0) ? ` · ${fmtToken(p._lendTok.dep, p.asset)}` : "";
-  const precioLinea = (noEst && p._precioUSD != null && isFinite(p._precioUSD))
+  const precioLinea = (noEst && p._precioUSD != null && isFinite(p._precioUSD) && Math.abs(p._precioUSD) >= 0.005)
     ? `<div class="text-[10px] text-slate-400 mt-0.5">${infoToggle(
         `precio de ${p.asset}: <span class="${pnlColor(p._precioUSD)}">${p._precioUSD > 0 ? "+" : ""}${fmtUSD(p._precioUSD)}</span>`,
-        `Lo que ha cambiado el valor en dólares solo porque ${p.asset} ha ${p._precioUSD >= 0 ? "subido" : "bajado"} de precio desde que lo depositaste. <b>No es interés</b>: no entra en Ganancias ni en las fees del portfolio, y se da la vuelta si el precio cambia de sentido.`)}</div>`
+        `Lo que ha cambiado el valor en dólares solo porque ${p.asset} ha ${p._precioUSD >= 0 ? "subido" : "bajado"} de precio ${p.closed ? "entre que lo depositaste y lo retiraste" : "desde que lo depositaste"}. <b>No es interés</b>: no entra en Ganancias ni en las fees del portfolio${p.closed ? "" : ", y se da la vuelta si el precio cambia de sentido"}.`)}</div>`
     : "";
   const interesTokLinea = (noEst && gain != null && p._interesTok != null)
     ? `<div class="text-[10px] text-slate-400 mt-0.5">${p._interesTok > 0 ? "+" : ""}${fmtToken(p._interesTok, p.asset)}</div>`
@@ -1537,7 +1537,7 @@ function lendingCard(p) {
           ? (p._histIncompleta ? infoToggle("APR — · historial incompleto",
               `Las participaciones de la cadena (${fmtToken(p.shares || 0, shareSymbol)}) no cuadran con los depósitos y retiros del historial: falta algún movimiento que el índice todavía no muestra, o entró jl sin contrapartida (una transferencia entre wallets). Antes que contar un depósito como interés, se deja en blanco y no se suma a las fees. Se completa solo en cuanto cuadre.`)
             : (noEst && gain == null && p.depositedUSD != null) ? infoToggle("APR — · interés sin comprobar",
-              `El interés de un préstamo de ${p.asset} se mide en ${p.asset}: lo que hay ahora en el vault menos lo que depositaste. En este análisis no se ha podido leer el vault de la cadena (o algún movimiento no cuadra con él) y, antes que enseñar la subida o bajada del precio como si fuera interés, se deja en blanco y no se suma a las fees. Se rellena solo en el siguiente análisis.`)
+              `El interés de un préstamo de ${p.asset} se mide en ${p.asset}: lo que sale del vault (o hay ahora en él) menos lo que depositaste. En este análisis no se ha podido comprobar con la cadena —no se leyó el vault, o algún movimiento no cuadra— y, antes que enseñar la subida o bajada del precio como si fuera interés, se deja en blanco y no se suma a las fees. Si fue un fallo de lectura, se rellena solo en el siguiente análisis.`)
             : p._aprTooEarly ? `APR — <span class="text-slate-500">(esperando ≥ 1 día)</span>` : "APR —")
           : infoToggle(`APR ~ ${p.apr.toFixed(1)}% · MPR ~ ${(p.apr / 12).toFixed(2)}%`,
               `Anualizado sobre el <b>capital medio</b> del periodo${p.aprBaseUSD ? " (" + fmtUSD(p.aprBaseUSD) + ")" : ""}, no sobre el de hoy. Si no fuera así, meter dinero nuevo hundiría el APR sin que el vault hubiera cambiado de tasa: el interés viejo se repartiría entre un capital que aún no lo ha generado.`)}</div>
@@ -3286,6 +3286,26 @@ function interesLendSolEnTokens(tok, subyacenteAhora, ratioAhora, underlyingMint
   return subyacenteAhora + tok.wd - tok.dep;
 }
 
+// Lo mismo para un lending ya CERRADO: no queda vault que leer, así que el interés es lo que
+// salió menos lo que entró, en tokens. Prueba: todos los movimientos en la misma moneda, las
+// participaciones netean a 0 (se cerró entera) y el ratio subyacente/participación no da saltos
+// (solo sube con el interés). Sin prueba → null.
+function interesLendSolCerrado(dep, wd) {
+  if (!dep || !wd || !dep.length || !wd.length) return null;
+  const evs = [...dep, ...wd];
+  const um = evs[0].um;
+  let rMin = Infinity, rMax = 0;
+  for (const e of evs) {
+    if (!(e.amt > 0) || !(e.jl > 0) || !e.um || e.um !== um) return null;
+    const r = e.amt / e.jl;
+    rMin = Math.min(rMin, r);
+    rMax = Math.max(rMax, r);
+  }
+  if (rMax > rMin * 2) return null;
+  if (!cuadraJl(netoJl({ dep, wd }), 0)) return null;
+  return wd.reduce((t, e) => t + e.amt, 0) - dep.reduce((t, e) => t + e.amt, 0);
+}
+
 // Reconstruye coste base / interés / APR de posiciones Jupiter Lend a partir
 // de las txs del owner. Estrategia: por cada transferencia de un mint jl-* en
 // el que el owner es origen o destino, busca en el mismo tx la transferencia
@@ -3709,7 +3729,7 @@ async function reconstructClosedJupiterLend(owner) {
       if (priceUSD == null) continue;
       const usd = underlying.amount * priceUSD;
       if (!events.has(mint)) events.set(mint, { dep: [], wd: [] });
-      (isIn ? events.get(mint).dep : events.get(mint).wd).push({ ts, usd, amt: underlying.amount, sig: tx.signature || "" });
+      (isIn ? events.get(mint).dep : events.get(mint).wd).push({ ts, usd, jl: t.tokenAmount || 0, amt: underlying.amount, um: underlying.mint, sig: tx.signature || "" });
     }
   }
 
@@ -3725,24 +3745,59 @@ async function reconstructClosedJupiterLend(owner) {
     let name = "";
     try { name = ((await getTokenMeta(mint)) || {}).name || ""; } catch (e) {}
     if (!JUPITER_LEND_NAME_RX.test(name)) continue; // no es Jupiter Lend
+    let asset = (name.match(/jupiter\s+lend\s+(\S+)/i) || [])[1];
+    asset = asset ? asset.toUpperCase() : "?";
+    const noEstable = !STABLE_LENDING_ASSETS.has(asset);
+    if (noEstable) {
+      // Activo que no vale $1: cada tramo al precio de SU día. La pasada de arriba le pone el de
+      // HOY si lo tiene a mano y el del día si no, así que la misma ficha salía distinta según
+      // la wallet. (Solo aquí, ya confirmada la posición: son un puñado de movimientos.)
+      for (const e of [...dep, ...wd]) {
+        let px = null;
+        try { px = await birdeyePriceAt(e.um, e.ts); } catch (_) {}
+        if (px != null) e.usd = e.amt * px;
+      }
+    }
     const depositedUSD = dep.reduce((s, e) => s + e.usd, 0);
     const withdrawnUSD = wd.reduce((s, e) => s + e.usd, 0);
     if (!(depositedUSD > 0 && withdrawnUSD > 0)) continue;
-    const gainsUSD = withdrawnUSD - depositedUSD; // valor actual 0 (cerrada) → interés REALIZADO
+    const usdTotal = withdrawnUSD - depositedUSD; // valor actual 0 (cerrada)
     const openedAt = Math.min(...dep.map((e) => e.ts));
     // Su vida es apertura → ÚLTIMO retiro. Anualizar hasta hoy diluía el APR con los meses que
     // ya no estaba abierta (el de RWA SOL, cerrado en mayo, salía al 0,8% en noviembre).
     const closedAt = Math.max(...wd.map((e) => e.ts));
     const ageDays = Math.max((closedAt - openedAt) / 86400, 1 / 24);
-    const apr = (depositedUSD > 0 && ageDays >= 1) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
-    let asset = (name.match(/jupiter\s+lend\s+(\S+)/i) || [])[1];
-    asset = asset ? asset.toUpperCase() : "?";
+    // Estable: retirado − depositado ES el interés realizado. No estable: esa resta es interés +
+    // PRECIO (un SOL que cae de $90 a $70 daba −$300 de "interés") → el interés, en tokens y al
+    // precio del día del cierre; sin prueba, "—" (ver interesLendSolEnTokens).
+    let gainsUSD = usdTotal;
+    let apr = (depositedUSD > 0 && ageDays >= 1) ? (gainsUSD / depositedUSD) * (365 / ageDays) * 100 : null;
+    let lendTok = null, interesTok = null, precioUSD = null;
+    if (noEstable) {
+      lendTok = tokensLendSol(dep, wd, closedAt);
+      interesTok = interesLendSolCerrado(dep, wd);
+      let pxCierre = null;
+      if (interesTok != null) {
+        try { pxCierre = await birdeyePriceAt(dep[0].um, closedAt); } catch (_) {}
+        if (pxCierre == null) pxCierre = state.prices[dep[0].um] || null;
+      }
+      if (interesTok != null && pxCierre != null) {
+        gainsUSD = interesTok * pxCierre;
+        apr = (lendTok.dep > 0 && ageDays >= 1) ? (interesTok / lendTok.dep) * (365 / ageDays) * 100 : null;
+        precioUSD = usdTotal - gainsUSD;
+      } else {
+        interesTok = null;
+        gainsUSD = null;
+        apr = null;
+      }
+    }
     out.push({
       _lending: true, protocol: "jupiter-lend", chainName: "Solana",
       mint, asset, shares: 0, sharePrice: null,
       currentValueUSD: 0, depositedUSD, withdrawnUSD, gainsUSD, apr,
-      feesUSD: gainsUSD, feesPendingUSD: 0, feesCollectedUSD: gainsUSD,
-      ilUSD: 0, pnlUSD: gainsUSD, pnlBasis: "tx-scan",
+      feesUSD: gainsUSD || 0, feesPendingUSD: 0, feesCollectedUSD: gainsUSD || 0,
+      ilUSD: 0, pnlUSD: noEstable ? usdTotal : gainsUSD, pnlBasis: "tx-scan",
+      _noEstable: noEstable, _lendTok: lendTok, _interesTok: interesTok, _precioUSD: precioUSD,
       inRange: false, closed: true, reconstructed: true,
       ageDays, openedAt, closedAt,
       _lendEvents: lendEventsFrom(dep, wd), // visor 📜 (depósitos/retiros del vault)
