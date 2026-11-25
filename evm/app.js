@@ -1253,11 +1253,34 @@ const _revertVaultsLower = new Set(
 // reclamado no salía por ningún lado.
 const TOKEN_RECOMPENSA = { AERO: { chain: "base", address: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", symbol: "AERO", decimals: 18 } };
 
+// 📌 REGLA (2026-11-25): todo token que la app ENTREGA con "Convertir" (el nativo
+// envuelto, el BTC y el ETH en token de cada red) tiene que estar en esta lista. Lo que
+// acabas de comprar es lo peor indexado: el usuario cambió USDC → WETH en Arbitrum y el
+// WETH (0,19, ~$312) no salía en "Tokens en wallet" — no estaba en el índice del
+// explorador, ni aquí, ni en ninguna posición suya. Con el token en la lista se lee por
+// `balanceOf` y aparece aunque el índice vaya con retraso o no responda.
 const IDLE_RPC_FALLBACK = {
-  ethereum: [{ address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", symbol: "USDC", decimals: 6 }],
-  arbitrum: [{ address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831", symbol: "USDC", decimals: 6 }, { address: "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", symbol: "USD₮0", decimals: 6 }],
-  optimism: [{ address: "0x0b2c639c533813f4aa9d7837caf62653d097ff85", symbol: "USDC", decimals: 6 }],
-  polygon:  [{ address: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", symbol: "USDC", decimals: 6 }],
+  ethereum: [
+    { address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", symbol: "USDC", decimals: 6 },
+    { address: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", symbol: "WETH", decimals: 18 },
+    { address: "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", symbol: "WBTC", decimals: 8 },
+  ],
+  arbitrum: [
+    { address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831", symbol: "USDC", decimals: 6 },
+    { address: "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", symbol: "USD₮0", decimals: 6 },
+    { address: "0x82af49447d8a07e3bd95bd0d56f35241523fbab1", symbol: "WETH", decimals: 18 },
+    { address: "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f", symbol: "WBTC", decimals: 8 },
+  ],
+  optimism: [
+    { address: "0x0b2c639c533813f4aa9d7837caf62653d097ff85", symbol: "USDC", decimals: 6 },
+    { address: "0x4200000000000000000000000000000000000006", symbol: "WETH", decimals: 18 },
+    { address: "0x68f180fcce6836688e9084f035309e29bf0a2095", symbol: "WBTC", decimals: 8 },
+  ],
+  polygon:  [
+    { address: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", symbol: "USDC", decimals: 6 },
+    { address: "0x1bfd67037b42cf73acf2047067bd4f2c47d9bfd6", symbol: "WBTC", decimals: 8 },
+    { address: "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619", symbol: "WETH", decimals: 18 },
+  ],
   // Base: USDC + AERO. El AERO entra porque es lo que COBRAS de las pools stakeadas en
   // Aerodrome y el índice de Blockscout tarda en listarlo. Visto en vivo (2026-08-23):
   // 0,2621 AERO recién reclamados, ausentes del índice —que sí listaba 21 tokens de
@@ -1266,6 +1289,8 @@ const IDLE_RPC_FALLBACK = {
     { address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", symbol: "USDC", decimals: 6 },
     { address: "0x940181a94a35a4569e4529a3cdfb74e38fd98631", symbol: "AERO", decimals: 18 },
     { address: "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2", symbol: "USDT", decimals: 6 },
+    { address: "0x4200000000000000000000000000000000000006", symbol: "WETH", decimals: 18 },
+    { address: "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf", symbol: "cbBTC", decimals: 8 },
   ],
   // HyperEVM: hyperscan se cae con frecuencia y sin él la wallet aparecía SIN idle
   // (visto en vivo: ~$9,6 invisibles). Estos 5 son los tokens del ecosistema que el
